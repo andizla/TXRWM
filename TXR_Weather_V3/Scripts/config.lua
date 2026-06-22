@@ -259,10 +259,10 @@ Config.ModuleToggles = {
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 0, Patch = 13,
-    String = "3.0.13",
+    Major = 3, Minor = 0, Patch = 14,
+    String = "3.0.14",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.0.13",
+    FullName = "TXR Weather Mod v3.0.14",
 }
 
 return Config

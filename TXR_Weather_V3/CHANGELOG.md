@@ -3,7 +3,7 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [3.0.14] - 2026-06-23
 
 ### Added
 - **`Config.Weather.Enabled`** master switch - set `false` for time-of-day +
