@@ -6,11 +6,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
-- **`Config.Weather.Enabled`** master switch — set `false` for time-of-day +
+- **`Config.Weather.Enabled`** master switch - set `false` for time-of-day +
   visuals only (no weather presets, rain, or cycling). For "ToD only" setups.
 - **Installer** (`install.bat` + `install.ps1`): detects the game via Steam,
-  downloads UE4SS and the mod, writes the minimal required Engine.ini
-  (Replace/Merge/Skip with backup + read-only), and disables any old standalone VEAO.
+  downloads UE4SS and the mod, sets up `Engine.ini` from a chosen graphics profile,
+  and disables any old standalone VEAO.
+- **Engine.ini profiles in the installer**: Photomode or Optimizations only, each with
+  or without exposure, plus Minimal. The mod-required cvars (fog + the exposure set) are
+  applied onto whichever profile, and `Config.Exposure.Enabled` is set to match.
 
 ### Changed
 - **config.lua slimmed** (~560 → ~265 lines): comments trimmed; `Config.ModuleToggles`
@@ -25,20 +28,19 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `Config.Visuals` (unbuilt-feature stubs).
 
 ### Fixed
-- **Alt+L / Alt+Shift+L** no longer error — rewired from the removed calibration
+- **Alt+L / Alt+Shift+L** no longer error - rewired from the removed calibration
   nudge to `Shadows.Apply` (force re-apply shadow distance). Resolves the 3.0.13
   orphaned-keybind issue.
 
 ### Known Issues
-- **Use the minimal `Engine.ini`** (shipped / placed by the installer). It's the
-  supported configuration. Brightness, shadow-resolution/distance, and glass-reflection
-  problems are almost always a missing/outdated/custom engine.ini — not the mod. The
-  full "fidelity" engine.ini is optional and **not currently maintained**.
-- **Stars disabled by default** — course-load crash (`0xC0000005`); fix pending.
-- **Auto-headlights** — on/off timing works, but on some cars the lamp meshes stay
+- **Pick an Engine.ini profile in the installer.** Brightness, shadow-resolution/distance,
+  and glass-reflection problems are almost always a skipped Engine.ini step or a
+  custom/outdated file, not the mod.
+- **Stars disabled by default** - course-load crash (`0xC0000005`); fix pending.
+- **Auto-headlights** - on/off timing works, but on some cars the lamp meshes stay
   lit and pop-up headlights (e.g. AE86) don't actuate. Light-actuation fix pending.
-- **Tunnels** — rain and lighting are wrong indoors (broken game map meshes; not fixable).
-- **Wetness** (WIP) — only road markings get wet, not the road surface (missing material).
+- **Tunnels** - rain and lighting are wrong indoors (broken game map meshes; not fixable).
+- **Wetness** (WIP) - only road markings get wet, not the road surface (missing material).
 
 ## [3.0.13] - 2026-06-18
 
@@ -74,10 +76,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Stars module disabled** pending the proper game-thread / preload fix.
 - **Runtime engine-CVAR migration not yet applying.** Moving the Engine.ini
   exposure/fog CVARs (`r.EyeAdaptation.MethodOverride`, `r.fog`, `r.Lumen.SampleFog`,
-  etc.) into the modules does not take effect in-game yet — keep those in Engine.ini
+  etc.) into the modules does not take effect in-game yet - keep those in Engine.ini
   for now. (Code is in place behind `Config.Exposure.SetupCvars` /
   `Config.EnhancedFog.SetupCvars`; investigation continues.)
-- **Alt+L / Alt+Shift+L shadow keybinds are orphaned** after the shadow revert —
+- **Alt+L / Alt+Shift+L shadow keybinds are orphaned** after the shadow revert -
   they call calibration functions that no longer exist and log an error if pressed.
 
 ## [3.0.12] - 2026-06-17
@@ -120,7 +122,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `DirectionalLightComponent`s, and writes the underlying properties directly when
   the setter methods are absent.
 - **Invalid FOV reads** (`GetFOVAngle` returning 0 during camera transitions /
-  course load) no longer spike shadow distance to maximum for a frame — non-positive
+  course load) no longer spike shadow distance to maximum for a frame - non-positive
   reads are now rejected and the last good distance is kept.
 
 ### Known issues / in progress

@@ -24,7 +24,7 @@ Check config and keybinds for info
 
 1\. \[Current Status](#1-current-status)
 
-2\. \[Stable Systems — Do Not Modify](#2-stable-systems--do-not-modify)
+2\. \[Stable Systems - Do Not Modify](#2-stable-systems--do-not-modify)
 
 3\. \[Known Issues](#3-known-issues)
 
@@ -96,7 +96,7 @@ Check config and keybinds for info
 
 
 
-\## 2. Stable Systems — Do Not Modify
+\## 2. Stable Systems - Do Not Modify
 
 
 
@@ -128,10 +128,10 @@ Check config and keybinds for info
 
 \## 3. Known Issues
 
-> **Use the minimal `Engine.ini`** the mod/installer provides — it is the supported, tested
-> configuration. Brightness, shadow resolution/distance, and glass-reflection problems are almost
-> always a missing, outdated, or custom engine.ini, **not** the mod. The full "fidelity" engine.ini
-> is optional and **not currently maintained**.
+> **Pick an Engine.ini profile in the installer** (Photomode / Optimizations only / Minimal, each
+> with or without exposure). Every profile includes the cvars the mod relies on. Brightness, shadow
+> resolution/distance, and glass-reflection problems are almost always a skipped Engine.ini step or
+> a custom/outdated file, **not** the mod.
 >
 > Current major issues: **Stars** is disabled by default (course-load crash, fix pending);
 > **auto-headlights** timing works, but on some cars the lamp meshes stay lit and pop-up headlights
@@ -387,7 +387,7 @@ Check config and keybinds for info
 
 | 12 | Polish \& Debug | Console commands (dn.\*), remaining keybinds, HD stars | Alt+D, Alt+B |
 
-| 13 | VEAO Integration | Autoexposure based on time/available light | — |
+| 13 | VEAO Integration | Autoexposure based on time/available light | - |
 
 | 14 | VEAO engine.ini Port | Graphical enhancements with separate photomode toggle | Alt+V |
 
@@ -709,9 +709,9 @@ UDS\["Simulation Speed Night Multiplier"] = 1.0
 
 | `Dusk Time` | Double | 1800.0 | 1653 |
 
-| `Day Length` | Double | 30.0 | — |
+| `Day Length` | Double | 30.0 | - |
 
-| `Night Length` | Double | 15.0 | — |
+| `Night Length` | Double | 15.0 | - |
 
 
 
@@ -723,7 +723,7 @@ UDS\["Simulation Speed Night Multiplier"] = 1.0
 
 
 
-> ⚠️ \*\*Phase 6 WIP\*\* — Module exists but disabled by default (`Config.Wetness.Enabled = false`)
+> ⚠️ \*\*Phase 6 WIP\*\* - Module exists but disabled by default (`Config.Wetness.Enabled = false`)
 
 > 
 
@@ -797,7 +797,7 @@ Config.Wetness = {
 
 
 
-> ✅ \*\*Phase 7 Complete\*\* — Implemented in `systems/lightning.lua`
+> ✅ \*\*Phase 7 Complete\*\* - Implemented in `systems/lightning.lua`
 
 
 
@@ -825,7 +825,7 @@ Config.Wetness = {
 
 | `Thunder/Lightning` | Double | 0-10 | 10410 |
 
-| `Thunder/Lightning - Manual Override` | Bool | — | 10411 |
+| `Thunder/Lightning - Manual Override` | Bool | - | 10411 |
 
 | `Lightning Flash Frequency` | Double | 14.0 | 10470 |
 
@@ -857,7 +857,7 @@ Lightning.EnableFromPreset(presetData)  -- Reads thunderIntensity from preset
 
 
 
-> ✅ \*\*Phase 7 Complete\*\* — Implemented in `systems/enhanced\_fog.lua`
+> ✅ \*\*Phase 7 Complete\*\* - Implemented in `systems/enhanced\_fog.lua`
 
 
 
@@ -915,7 +915,7 @@ EnhancedFog.Apply(5.0)  -- Applies "heavy" profile
 
 
 
-> ✅ \*\*Phase 6.5 Complete\*\* — Implemented in `systems/shadows.lua`
+> ✅ \*\*Phase 6.5 Complete\*\* - Implemented in `systems/shadows.lua`
 
 
 
@@ -1035,13 +1035,13 @@ local status = Shadows.GetStatus()
 
 \### Keybinds
 
-\- \*\*Alt+L\*\* — Raise flat shadow distance by `Config.Shadows.CalibrationStep` (logs FOV + distance)
+\- \*\*Alt+L\*\* - Raise flat shadow distance by `Config.Shadows.CalibrationStep` (logs FOV + distance)
 
-\- \*\*Alt+Shift+L\*\* — Lower flat shadow distance (logs FOV + distance)
+\- \*\*Alt+Shift+L\*\* - Lower flat shadow distance (logs FOV + distance)
 
 
 
-Note: The flat-mode rework was reverted; the active shadow system is the original adaptive FOV table. Alt+L / Alt+Shift+L now force a re-apply of the shadow distance (via `Shadows.Apply`) — handy if shadows look off after a transition. (They previously drove a calibration nudge that no longer exists.)
+Note: The flat-mode rework was reverted; the active shadow system is the original adaptive FOV table. Alt+L / Alt+Shift+L now force a re-apply of the shadow distance (via `Shadows.Apply`) - handy if shadows look off after a transition. (They previously drove a calibration nudge that no longer exists.)
 
 
 
@@ -1053,7 +1053,7 @@ Note: The flat-mode rework was reverted; the active shadow system is the origina
 
 
 
-> ✅ \*\*Phase 10 Complete\*\* — Implemented in `systems/headlights.lua`
+> ✅ \*\*Phase 10 Complete\*\* - Implemented in `systems/headlights.lua`
 
 
 
@@ -1101,7 +1101,7 @@ Note: The flat-mode rework was reverted; the active shadow system is the origina
 
 \- Brightness uses `BP\_CarLightSpriteComponent\_C:SetIntensity(multiplier)` which sets a material scalar parameter
 
-\- Components not available immediately at map load — uses deferred retry (up to 50 ticks)
+\- Components not available immediately at map load - uses deferred retry (up to 50 ticks)
 
 \- Toggle visibility off/on after SetIntensity to force refresh
 
@@ -1111,11 +1111,11 @@ Note: The flat-mode rework was reverted; the active shadow system is the origina
 
 \### Keybinds
 
-\- \*\*Alt+Q\*\* — Cycle headlight mode (auto → force\_on → force\_off → auto)
+\- \*\*Alt+Q\*\* - Cycle headlight mode (auto → force\_on → force\_off → auto)
 
-\- \*\*Alt+B\*\* — Cycle brightness up
+\- \*\*Alt+B\*\* - Cycle brightness up
 
-\- \*\*Alt+Shift+B\*\* — Cycle brightness down
+\- \*\*Alt+Shift+B\*\* - Cycle brightness down
 
 
 
@@ -1159,7 +1159,7 @@ Headlights.GetStatus()           -- Returns full status table
 
 | `Use Auroras` | Bool | false | 1639 |
 
-| `Aurora Intensity` | Double | — | 1640 |
+| `Aurora Intensity` | Double | - | 1640 |
 
 | `Aurora Speed` | Double | 0.15 | 1641 |
 

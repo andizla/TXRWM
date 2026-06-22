@@ -22,15 +22,27 @@ $UE4SSUrl = 'https://github.com/CookiePLMonster/UE4SS-Bakery/releases/latest/dow
 # (pre-release testing) - the repo/release don't exist yet as of writing.
 $ModUrl   = 'https://github.com/andizla/TXRWM/releases/latest/download/TXR_Weather_V3.zip'
 
-# Minimal required engine.ini (the only cvars the mod needs to function).
-$MinIni = @(
-    '[ConsoleVariables]',
-    'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=1',
-    'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=True',
-    'r.EyeAdaptation.MethodOverride=3',
+# Mod-required console variables the installer OWNS. They are stripped from any
+# chosen base ini and re-appended as one managed block, so the installer is the
+# single source of truth for them on every graphics profile.
+$FogCvars = @(
     'r.fog=1',
-    'r.Lumen.SampleFog=1',
+    'r.Lumen.SampleFog=1'
+)
+$ExpOnCvars = @(
+    'r.EyeAdaptation.MethodOverride=3',
+    'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=1',
     'r.NGX.DLSS.AutoExposure=0'
+)
+$ExpOffCvars = @(
+    'r.NGX.DLSS.AutoExposure=1'
+)
+$ManagedKeys = @(
+    'r.fog',
+    'r.Lumen.SampleFog',
+    'r.EyeAdaptation.MethodOverride',
+    'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange',
+    'r.NGX.DLSS.AutoExposure'
 )
 
 # ----- helpers ---------------------------------------------------------------
@@ -95,22 +107,42 @@ function Find-ModRoot($base){
     return $null
 }
 
-# Merge our required cvars as a managed block at the END of an existing ini so
-# they apply last and win over any conflicting earlier values. Idempotent.
-function Merge-Cvars($path, $minLines){
-    $marker    = '; === TXR Weather Mod (required cvars) - managed by installer ==='
-    $endMarker = '; === end TXR Weather Mod ==='
-    $existing  = @(Get-Content $path)
+# Build an Engine.ini from a base profile: strip the installer-managed cvars from
+# the base, then append one managed [ConsoleVariables] block (fog always, plus the
+# on or off exposure set). A base of @() yields the "minimal" profile.
+function Compose-Ini($baseLines, $exposureOn){
     $out = New-Object System.Collections.Generic.List[string]
-    $inBlock = $false
-    foreach($l in $existing){
-        if($l -eq $marker){ $inBlock = $true; continue }
-        if($l -eq $endMarker){ $inBlock = $false; continue }
-        if(-not $inBlock){ $out.Add($l) }
+    foreach($l in $baseLines){
+        $key = (($l -split '=', 2)[0]).Trim()
+        if($ManagedKeys -contains $key){ continue }   # drop managed cvars from base
+        $out.Add($l)
     }
-    $cvars = $minLines | Where-Object { $_ -ne '' -and ($_ -notmatch '^\s*\[') }
-    $block = @('', $marker, '[ConsoleVariables]') + $cvars + @($endMarker)
-    WriteLines $path ($out + $block)
+    $out.Add('')
+    $out.Add('; === TXR Weather Mod - required cvars (managed by installer) ===')
+    $out.Add('[ConsoleVariables]')
+    foreach($c in $FogCvars){ $out.Add($c) }
+    $expSet = if($exposureOn){ $ExpOnCvars } else { $ExpOffCvars }
+    foreach($c in $expSet){ $out.Add($c) }
+    return [string[]]$out
+}
+
+# Set Config.Exposure.Enabled in the installed mod's config.lua to match the
+# chosen exposure mode (the engine.ini and the module must agree).
+function Set-ExposureFlag($modDst, $on){
+    $cfg = Join-Path $modDst 'Scripts\config.lua'
+    if(-not (Test-Path $cfg)){ return }
+    $val = if($on){ 'true' } else { 'false' }
+    $lines = @(Get-Content $cfg)
+    $inExp = $false
+    for($i = 0; $i -lt $lines.Count; $i++){
+        if($lines[$i] -match '^\s*Config\.Exposure\s*=\s*\{'){ $inExp = $true; continue }
+        if($inExp -and $lines[$i] -match '^\s*Enabled\s*='){
+            $lines[$i] = $lines[$i] -replace 'Enabled\s*=\s*(true|false)', "Enabled = $val"
+            break
+        }
+    }
+    WriteLines $cfg $lines
+    Ok "Set Config.Exposure.Enabled = $val (matches the exposure choice)."
 }
 
 # ----- start -----------------------------------------------------------------
@@ -124,8 +156,8 @@ Say "  1. Find your Tokyo Xtreme Racer install (auto-detected via Steam)."
 Say "  2. Download + install UE4SS - the script loader the mod runs on."
 Say "     Any mods you already have are left in place."
 Say "  3. Install the weather mod and enable it (mods.txt)."
-Say "  4. Set up the small Engine.ini the mod needs for correct exposure/fog."
-Say "     Any existing Engine.ini is backed up first, and you choose what happens to it."
+Say "  4. Set up Engine.ini - pick a graphics profile (photomode / optimizations / minimal)."
+Say "     Any existing Engine.ini is backed up first."
 Say ""
 Say "Nothing on disk is changed until you confirm the location on the next screen." White
 Say ""
@@ -155,7 +187,7 @@ Say "  UE4SS      : downloaded and installed here (your existing Mods are kept)"
 Say "  Mod        : installed to  ue4ss\Mods\$ModName"
 Say "  mods.txt   : the mod is added to the UE4SS load list (your other entries are kept)"
 Say "  Engine.ini : %LOCALAPPDATA%\TokyoXtremeRacer\Saved\Config\Windows"
-Say "               existing file is backed up; you choose Replace / Merge / Skip"
+Say "               you pick a graphics profile; any existing file is backed up first"
 Say ""
 if(-not (AskYesNo 'Proceed with installation?')){
     Say ''
@@ -238,7 +270,7 @@ try {
         else { Warn 'Keeping existing mod files.' }
     }
     if(-not (Test-Path $modDst)){
-        $rc = @($modRoot, $modDst, '/E','/NFL','/NDL','/NJH','/NJS','/NP','/XD','Logs','.backup','/XF','*.bak')
+        $rc = @($modRoot, $modDst, '/E','/NFL','/NDL','/NJH','/NJS','/NP','/XD','Logs','.backup','engines','/XF','*.bak')
         & robocopy @rc | Out-Null
         if($LASTEXITCODE -ge 8){ throw "robocopy failed copying the mod (code $LASTEXITCODE)" }
         Ok "Installed mod to $modDst"
@@ -274,40 +306,54 @@ try {
         }
     }
 
-    # 5) engine.ini (Replace / Merge / Skip) ---------------------------------
-    Step 'Engine.ini (required CVARs)'
-    Say '    The mod needs a few console variables (exposure + fog) that live in'
-    Say '    Engine.ini - without them the game can look too bright or washed out.'
-    Say '    Any existing file is backed up first; it is then made read-only so the'
-    Say '    game cannot overwrite it.'
-    $cfgDir = Join-Path $env:LOCALAPPDATA 'TokyoXtremeRacer\Saved\Config\Windows'
-    New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
-    $iniDst  = Join-Path $cfgDir 'Engine.ini'
-    $skipped = $false
+    # 5) engine.ini (graphics profile selector) -----------------------------
+    Step 'Engine.ini - graphics profile'
+    Say '    Engine.ini supplies the cvars the mod relies on (exposure + fog) and'
+    Say '    sets the graphics profile. Pick one (any existing Engine.ini is backed up):'
+    Say ''
+    Say '      1) Photomode + exposure             highest fidelity, resource heavy   [recommended]' Green
+    Say '      2) Photomode, no exposure           highest fidelity, vanilla brightness'
+    Say '      3) Optimizations only + exposure    best for midrange / non-DLSS rigs   [recommended]' Green
+    Say '      4) Optimizations only, no exposure  midrange / non-DLSS, vanilla brightness'
+    Say '      5) Minimal                          only what the mod needs, lightest'
+    Say '      6) Skip                             leave my Engine.ini untouched'
+    Say ''
+    $pick = (Read-Host '    Choice [1-6, Enter = 1]').Trim()
+    if($pick -eq ''){ $pick = '1' }
 
-    if(Test-Path $iniDst){
-        $f = Get-Item $iniDst
-        if($f.IsReadOnly){ $f.IsReadOnly = $false }
-        $bak = "$iniDst.bak." + (Get-Date -Format 'yyyyMMdd_HHmmss')
-        Copy-Item $iniDst $bak
-        Ok "Backed up existing Engine.ini -> $(Split-Path $bak -Leaf)"
-        Warn 'An Engine.ini already exists.'
-        Say  '    [R] Replace with the minimal required file'
-        Say  '    [M] Merge - keep yours, add the required cvars at the end (recommended)'
-        Say  '    [S] Skip - leave your Engine.ini untouched'
-        $choice = (Read-Host '    Choice [R/M/S]').Trim()
-        switch -Regex ($choice){
-            '^[Rr]' { WriteLines $iniDst $MinIni; Ok 'Replaced with minimal Engine.ini.' }
-            '^[Mm]' { Merge-Cvars $iniDst $MinIni; Ok 'Merged required cvars at end of Engine.ini.' }
-            default { Warn 'Skipped. Exposure/fog may look wrong until the required cvars are present.'; $skipped = $true }
-        }
-    } else {
-        WriteLines $iniDst $MinIni
-        Ok 'Wrote new Engine.ini.'
+    $engDir = Join-Path $modRoot 'engines'
+    $base = $null; $exposureOn = $true; $label = ''; $doIni = $true
+    switch($pick){
+        '1' { $base = Join-Path $engDir 'photomode_engine.ini';         $exposureOn = $true;  $label = 'Photomode + exposure' }
+        '2' { $base = Join-Path $engDir 'photomode_engine.ini';         $exposureOn = $false; $label = 'Photomode, no exposure' }
+        '3' { $base = Join-Path $engDir 'optimization_only_engine.ini'; $exposureOn = $true;  $label = 'Optimizations only + exposure' }
+        '4' { $base = Join-Path $engDir 'optimization_only_engine.ini'; $exposureOn = $false; $label = 'Optimizations only, no exposure' }
+        '5' { $base = $null;                                            $exposureOn = $true;  $label = 'Minimal' }
+        default { $doIni = $false; Warn 'Skipped - Engine.ini left untouched (mod-required cvars may be absent).' }
     }
-    if(-not $skipped){
+
+    if($doIni){
+        $baseLines = @()
+        if($base){
+            if(Test-Path $base){ $baseLines = @(Get-Content $base) }
+            else { Warn "Base profile file not found ($([IO.Path]::GetFileName($base))) - using Minimal instead."; $label = 'Minimal (fallback)' }
+        }
+        $iniLines = Compose-Ini $baseLines $exposureOn
+
+        $cfgDir = Join-Path $env:LOCALAPPDATA 'TokyoXtremeRacer\Saved\Config\Windows'
+        New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+        $iniDst = Join-Path $cfgDir 'Engine.ini'
+        if(Test-Path $iniDst){
+            $f = Get-Item $iniDst
+            if($f.IsReadOnly){ $f.IsReadOnly = $false }
+            $bak = "$iniDst.bak." + (Get-Date -Format 'yyyyMMdd_HHmmss')
+            Copy-Item $iniDst $bak
+            Ok "Backed up existing Engine.ini to $(Split-Path $bak -Leaf)"
+        }
+        WriteLines $iniDst $iniLines
         (Get-Item $iniDst).IsReadOnly = $true
-        Ok 'Set Engine.ini read-only (stops the game overwriting it).'
+        Ok "Installed Engine.ini profile: $label (read-only)."
+        Set-ExposureFlag $modDst $exposureOn
     }
 
 } finally {
