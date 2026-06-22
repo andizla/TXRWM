@@ -1,0 +1,17 @@
+# Runtime (generated at play time)
+Logs/
+*.log
+last_state.txt
+
+# Dev backups
+.backup/
+*.bak
+
+# Dev / test leftovers
+test_phase1.lua
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
