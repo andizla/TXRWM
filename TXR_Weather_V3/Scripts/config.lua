@@ -36,6 +36,52 @@ Config.Weather = {
     },
 }
 
+-- ============== SCHEDULER (Phase 11: random preset scheduler) ==============
+-- Auto-changes weather to a weighted-random preset on a randomized interval.
+-- All changes route through Weather.Apply (stable rain/dry/clouds/fog pipeline).
+-- A manual change (Alt+S/Alt+R) or persistence restore re-arms the timer, so the
+-- scheduler never instantly overrides a deliberate pick. Respects Weather.Enabled.
+Config.Scheduler = {
+    Enabled = true,             -- master switch for AUTO changes (Alt+P works regardless)
+    MinIntervalSeconds = 180,   -- shortest hold on a preset (3 min)
+    MaxIntervalSeconds = 480,   -- longest hold on a preset (8 min)
+    TransitionSeconds = 20.0,   -- blend time for scheduled changes (smooth)
+
+    -- Set false to keep the scheduler from ever picking precipitation presets
+    -- (rain/snow/dust). Useful while the in-tunnel rain issue persists. Does not
+    -- affect manual Alt+S cycling - only the auto scheduler and Alt+P.
+    AllowPrecipitation = true,
+
+    -- Base weighted pool. Higher = more likely. Any PRESET_DATA name is valid;
+    -- snow/dust are omitted by default (Tokyo expressway vibe). Set 0 to exclude.
+    Weights = {
+        Clear_Skies       = 4.0,
+        Partly_Cloudy     = 4.0,
+        Cloudy            = 3.0,
+        Overcast          = 2.0,
+        Foggy             = 1.0,
+        Rain_Light        = 2.0,
+        Rain              = 1.0,
+        Rain_Thunderstorm = 0.5,
+    },
+
+    -- Time-of-day weight MULTIPLIERS, applied on top of the base weight depending
+    -- on the current period (day / night / dawn / dusk). A preset not listed for a
+    -- period defaults to 1.0 (unchanged). Periods come from Config.TimeOfDay
+    -- (day = ~08:00-18:00). Example below makes clear skies rare during the day and
+    -- favors more dramatic skies, so daytime isn't boring.
+    TimeWeights = {
+        day = {
+            Clear_Skies   = 0.15,  -- clear sky is rare while the sun is up
+            Partly_Cloudy = 1.0,
+            Cloudy        = 1.5,
+            Overcast      = 1.5,
+            Foggy         = 1.2,
+        },
+        -- night / dawn / dusk omitted = all multipliers 1.0 (use the base pool).
+    },
+}
+
 -- ============== TIME OF DAY ==============
 Config.TimeOfDay = {
     DefaultSpeed = 53.333,  -- normal speed (~30 min day cycle)
@@ -53,9 +99,10 @@ Config.Wetness = {
 -- ============== STARS ==============
 Config.Stars = {
     Enabled = true,
-    HDStars = true,  -- use the high-res Real Stars texture
-    TexturePath = "/Game/UltraDynamicSky/Textures/Sky/Real_Stars.Real_Stars",
-    Tiling = 1.0,    -- 1.0 = full-sky, no repeat
+    -- Enabling "Simulate Real Stars" makes UDS use its own built-in 360-degree
+    -- real-star map; we no longer swap the texture ourselves (that off-thread
+    -- object write was the old course-load crash). Apply is deferred past BeginPlay.
+    Tiling = nil,    -- nil = keep UDS default
     Intensity = nil, -- nil = keep UDS default
 }
 
@@ -64,7 +111,9 @@ Config.Transitions = {
     Enabled = true,
     SlowDawnStart = 500, SlowDawnEnd = 700,    -- 05:00 - 07:00
     SlowDuskStart = 1730, SlowDuskEnd = 1930,  -- 17:30 - 19:30
-    SlowSpeed = 21.333,  -- speed during slow windows (40% of normal)
+    -- Time speed during dawn/dusk as a FRACTION of normal. Lower = slower, so the
+    -- window lingers longer in real time. 0.40 = original feel (~5.7 min dusk).
+    SlowFactor = 0.40,
 }
 
 -- ============== KEYBINDS ==============
@@ -74,6 +123,8 @@ Config.Keybinds = {
     CycleWeatherPrev = { Key = "S", Modifiers = {"Alt", "Shift"} },
     ToggleTimeSpeed  = { Key = "T", Modifiers = {"Alt"} },   -- Normal/Fast/Pause
     ResetWeather     = { Key = "R", Modifiers = {"Alt"} },
+    RandomPreset     = { Key = "P", Modifiers = {"Alt"} },          -- scheduler: random preset now
+    ForceClear       = { Key = "P", Modifiers = {"Alt", "Shift"} }, -- force Clear Skies
     DebugForceWetness= { Key = "W", Modifiers = {"Alt"} },
     DebugForceDry    = { Key = "W", Modifiers = {"Alt", "Shift"} },
     ShadowDistanceUp = { Key = "L", Modifiers = {"Alt"} },
@@ -150,6 +201,16 @@ Config.Atmosphere = {
     EnableGodRays = true,
     EnableAurora = true,
     EnableSecondCloudLayer = true,
+
+    -- City glow (Tokyo night ambiance): light pollution + night sky glow, ramped
+    -- in at night. Light pollution lights cloud bases from below (warm sodium
+    -- amber by default); night sky glow keeps the night sky from going pitch black.
+    EnableCityGlow = true,
+    LightPollutionMax = 1.0,   -- peak light-pollution intensity at deep night (tune to taste)
+    NightSkyGlowMax = 0.5,     -- peak ambient night-sky glow
+    -- Colors are LinearColor {R,G,B,A}; defaults live in atmosphere.lua. Uncomment to override:
+    -- LightPollutionColor = {R = 1.00, G = 0.55, B = 0.25, A = 1.0},
+    -- NightSkyGlowColor   = {R = 0.45, G = 0.50, B = 0.65, A = 1.0},
 }
 
 -- ============== HEADLIGHTS ==============
@@ -158,7 +219,7 @@ Config.Headlights = {
     Mode = "auto",   -- auto | force_on | force_off
     OnTOD = 1830,    -- on after 18:30
     OffTOD = 630,    -- off after 06:30
-    DefaultBrightnessLevel = 4,  -- 1=0.5x 2=1.0x 3=2.0x 4=3.0x 5=5.0x
+    DefaultBrightnessLevel = 3,  -- 1=0.5x 2=1.0x 3=2.0x 4=3.0x 5=5.0x
 }
 
 -- ============== AUDIO ==============
@@ -246,6 +307,7 @@ Config.Exposure = {
 -- tick/setup never runs. (Actors/Presets/Keybinds are core and not toggleable.)
 Config.ModuleToggles = {
     Weather     = true,
+    Scheduler   = true,
     TimeOfDay   = true,
     CloudsFog   = true,
     Shadows     = true,
@@ -254,15 +316,15 @@ Config.ModuleToggles = {
     Headlights  = true,
     Atmosphere  = true,
     Audio       = true,
-    Stars       = false,  -- DISABLED: causes a course-load crash, fix pending
+    Stars       = true,   -- re-enabled 2026-06-24 with the safe bool+Static-Properties+settle-gate rewrite
 }
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 0, Patch = 14,
-    String = "3.0.14",
+    Major = 3, Minor = 0, Patch = 15,
+    String = "3.0.15",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.0.14",
+    FullName = "TXR Weather Mod v3.0.15",
 }
 
 return Config

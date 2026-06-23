@@ -22,9 +22,13 @@ local SLOW_DAWN_END   = 700   -- 07:00
 local SLOW_DUSK_START = 1730  -- 17:30
 local SLOW_DUSK_END   = 1930  -- 19:30
 
--- Speed during transitions (V1.34: 0.6667/1.6667 = 40%)
-local SLOW_SPEED = 21.333     -- 40% of normal (53.333 * 0.4)
-local NORMAL_SPEED = 53.333
+-- Speed during dawn/dusk, expressed as a fraction of normal speed. Lower factor
+-- = slower time = the window lingers longer in real time. 1.34 used 40%; we
+-- deepen it so dusk/dawn last noticeably longer. Both are recomputed from config
+-- in Init() (NORMAL_SPEED from Config.TimeOfDay.DefaultSpeed).
+local NORMAL_SPEED = 53.333          -- overwritten from config in Init
+local SLOW_FACTOR  = 0.20            -- fraction of normal during the slow window
+local SLOW_SPEED   = NORMAL_SPEED * SLOW_FACTOR
 
 -- Tokyo Tint timing (in TOD units, from V1.34)
 local TINT_LEAD_TOD = 240        -- Start tint this much BEFORE slow window
@@ -338,19 +342,34 @@ function Transitions.Init()
     
     Log.Info(MODULE, "Initializing transitions module")
     
+    -- Normal speed tracks the time-of-day default so the post-window restore matches it.
+    if Config.TimeOfDay and Config.TimeOfDay.DefaultSpeed then
+        NORMAL_SPEED = Config.TimeOfDay.DefaultSpeed
+    end
+
     -- Read config overrides if present
     if Config.Transitions then
         if Config.Transitions.SlowDawnStart then SLOW_DAWN_START = Config.Transitions.SlowDawnStart end
         if Config.Transitions.SlowDawnEnd then SLOW_DAWN_END = Config.Transitions.SlowDawnEnd end
         if Config.Transitions.SlowDuskStart then SLOW_DUSK_START = Config.Transitions.SlowDuskStart end
         if Config.Transitions.SlowDuskEnd then SLOW_DUSK_END = Config.Transitions.SlowDuskEnd end
-        if Config.Transitions.SlowSpeed then SLOW_SPEED = Config.Transitions.SlowSpeed end
+        if Config.Transitions.SlowFactor then SLOW_FACTOR = Config.Transitions.SlowFactor end
+        -- Legacy absolute override still honored if someone set it.
+        if Config.Transitions.SlowSpeed then SLOW_FACTOR = Config.Transitions.SlowSpeed / NORMAL_SPEED end
         if Config.Transitions.Enabled == false then
             Log.Info(MODULE, "Transitions disabled in config")
             isInitialized = true
             return true
         end
     end
+
+    -- Slow speed is a fraction of normal so it tracks any DefaultSpeed change.
+    SLOW_SPEED = NORMAL_SPEED * SLOW_FACTOR
+    Log.Info(MODULE, "Slow-time configured", {
+        normal = NORMAL_SPEED,
+        factor = SLOW_FACTOR,
+        slow = string.format("%.2f", SLOW_SPEED),
+    })
     
     isInitialized = true
     State.SetModuleStatus("transitions", true)

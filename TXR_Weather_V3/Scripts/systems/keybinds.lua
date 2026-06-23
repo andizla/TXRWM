@@ -16,6 +16,7 @@ local Wetness = nil
 local Actors = nil
 local Shadows = nil
 local Headlights = nil
+local Scheduler = nil
 
 local MODULE = "Keybinds"
 
@@ -107,6 +108,14 @@ local function getHeadlights()
         if success then Headlights = mod end
     end
     return Headlights
+end
+
+local function getScheduler()
+    if not Scheduler then
+        local success, mod = pcall(require, "systems.scheduler")
+        if success then Scheduler = mod end
+    end
+    return Scheduler
 end
 
 --- Convert modifier array to flags
@@ -268,6 +277,30 @@ local function onResetWeather()
     Log.Info(MODULE, "Weather reset to default")
 end
 
+local function onRandomPreset()
+    local scheduler = getScheduler()
+    if not scheduler then
+        Log.Warn(MODULE, "Scheduler module not available")
+        return
+    end
+
+    local newPreset = scheduler.PickNow()
+    if newPreset then
+        Log.Info(MODULE, "Random preset applied", {to = newPreset})
+    end
+end
+
+local function onForceClear()
+    local weather = getWeather()
+    if not weather then
+        Log.Warn(MODULE, "Weather module not available")
+        return
+    end
+
+    weather.ForceClear()
+    Log.Info(MODULE, "Weather force-cleared")
+end
+
 local function onToggleTimeSpeed()
     local tod = getTimeOfDay()
     if not tod then
@@ -405,6 +438,15 @@ function Keybinds.Init(config)
     -- Register weather reset
     if config.ResetWeather then
         registerKeybind("ResetWeather", config.ResetWeather, onResetWeather)
+    end
+
+    -- Register scheduler controls (Phase 11): Alt+P random preset, Alt+Shift+P force clear
+    if config.RandomPreset then
+        registerKeybind("RandomPreset", config.RandomPreset, onRandomPreset)
+    end
+
+    if config.ForceClear then
+        registerKeybind("ForceClear", config.ForceClear, onForceClear)
     end
     
     -- Register time control

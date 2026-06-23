@@ -27,6 +27,15 @@ local AURORA_NIGHT_START = 1950  -- 19:30 - aurora becomes visible
 local AURORA_NIGHT_END = 550     -- 05:30 - aurora fades out
 local AURORA_MAX_INTENSITY = 1.5
 
+-- City glow (Tokyo night ambiance): light pollution + night sky glow, ramped in
+-- at night on the same window as the aurora. Light pollution lights the cloud
+-- bases from below; night sky glow adds a minimum ambient to the night sky.
+local ENABLE_CITY_GLOW = true
+local LIGHT_POLLUTION_MAX = 1.0   -- peak light-pollution intensity at deep night
+local NIGHT_SKY_GLOW_MAX = 0.5    -- peak ambient night-sky glow
+local LIGHT_POLLUTION_COLOR = {R = 1.00, G = 0.55, B = 0.25, A = 1.0}  -- warm sodium amber
+local NIGHT_SKY_GLOW_COLOR  = {R = 0.45, G = 0.50, B = 0.65, A = 1.0}  -- faint cool
+
 -- God rays cutoff (disable when too cloudy)
 local GOD_RAYS_CLOUD_CUTOFF = 7.2  -- Disable god rays above this cloud coverage
 
@@ -56,6 +65,12 @@ local PROP_LIGHT_SHAFT_INTENSITY = "Light Shaft Intensity"
 local PROP_USE_SECOND_CLOUD_LAYER = "Use Second Cloud Layer"
 local PROP_SECOND_LAYER_OPACITY = "Second Cloud Layer Opacity"
 
+-- City glow (light pollution + night sky glow)
+local PROP_LIGHT_POLLUTION_INTENSITY = "Light Pollution Intensity"
+local PROP_LIGHT_POLLUTION_COLOR     = "Light Pollution Color"
+local PROP_NIGHT_SKY_GLOW            = "Night Sky Glow"
+local PROP_NIGHT_SKY_GLOW_COLOR      = "Night Sky Glow Color"
+
 -- ============== STATE ==============
 local isInitialized = false
 local currentAuroraIntensity = 0.0
@@ -68,6 +83,11 @@ local targetGodRayIntensity = 0.0
 local auroraOn = false
 local lastGodRayWritten = nil
 local lastAuroraWritten = nil
+
+-- City glow ramp state
+local currentCityGlow = 0.0
+local lastLightPollutionWritten = nil
+local lastNightSkyGlowWritten = nil
 
 -- ============== INTERNAL FUNCTIONS ==============
 
@@ -124,31 +144,32 @@ local function isAuroraNight(tod)
     return tod >= AURORA_NIGHT_START or tod <= AURORA_NIGHT_END
 end
 
+--- Night intensity factor 0..1 (0 in daytime, smooth sine peaking at midnight).
+--- Shared by aurora and city glow so they ramp on the same night window.
+--- @param tod number
+--- @return number 0.0 to 1.0
+local function nightFactor01(tod)
+    if not isAuroraNight(tod) then
+        return 0.0
+    end
+
+    local nightDepth
+    if tod >= AURORA_NIGHT_START then
+        -- Evening side: 1950 to 2400
+        nightDepth = ((tod - AURORA_NIGHT_START) / (2400 - AURORA_NIGHT_START)) * 0.5  -- 0 to 0.5
+    else
+        -- Morning side: 0 to 550
+        nightDepth = 1.0 - ((tod / AURORA_NIGHT_END) * 0.5)  -- 1.0 down to 0.5
+    end
+
+    return math.max(0.0, math.sin(nightDepth * math.pi))
+end
+
 --- Calculate aurora intensity based on TOD
 --- @param tod number
 --- @return number 0.0 to AURORA_MAX_INTENSITY
 local function calculateAuroraIntensity(tod)
-    if not isAuroraNight(tod) then
-        return 0.0
-    end
-    
-    -- Calculate how deep into night we are
-    local nightDepth = 0.0
-    
-    if tod >= AURORA_NIGHT_START then
-        -- Evening side: 1950 to 2400
-        local progress = (tod - AURORA_NIGHT_START) / (2400 - AURORA_NIGHT_START)
-        nightDepth = progress * 0.5  -- 0 to 0.5
-    else
-        -- Morning side: 0 to 550
-        local progress = tod / AURORA_NIGHT_END
-        nightDepth = 1.0 - (progress * 0.5)  -- 1.0 down to 0.5
-    end
-    
-    -- Peak at midnight (TOD 0/2400)
-    -- Smooth curve: use sine for natural fade
-    local intensity = math.sin(nightDepth * math.pi) * AURORA_MAX_INTENSITY
-    return math.max(0.0, intensity)
+    return nightFactor01(tod) * AURORA_MAX_INTENSITY
 end
 
 --- Calculate god ray intensity based on cloud coverage
@@ -199,6 +220,21 @@ function Atmosphere.Init()
         if Config.Atmosphere.EnableSecondCloudLayer ~= nil then
             ENABLE_SECOND_CLOUD_LAYER = Config.Atmosphere.EnableSecondCloudLayer
         end
+        if Config.Atmosphere.EnableCityGlow ~= nil then
+            ENABLE_CITY_GLOW = Config.Atmosphere.EnableCityGlow
+        end
+        if Config.Atmosphere.LightPollutionMax ~= nil then
+            LIGHT_POLLUTION_MAX = Config.Atmosphere.LightPollutionMax
+        end
+        if Config.Atmosphere.NightSkyGlowMax ~= nil then
+            NIGHT_SKY_GLOW_MAX = Config.Atmosphere.NightSkyGlowMax
+        end
+        if Config.Atmosphere.LightPollutionColor then
+            LIGHT_POLLUTION_COLOR = Config.Atmosphere.LightPollutionColor
+        end
+        if Config.Atmosphere.NightSkyGlowColor then
+            NIGHT_SKY_GLOW_COLOR = Config.Atmosphere.NightSkyGlowColor
+        end
         if Config.Atmosphere.Enabled == false then
             Log.Info(MODULE, "Atmosphere disabled in config")
             isInitialized = true
@@ -245,9 +281,18 @@ function Atmosphere.Setup()
         Log.Debug(MODULE, "Aurora system ready")
     end
 
+    -- City glow: set colors once; intensities ramp with night in Tick
+    if ENABLE_CITY_GLOW then
+        writeUDS(PROP_LIGHT_POLLUTION_COLOR, LIGHT_POLLUTION_COLOR)
+        writeUDS(PROP_NIGHT_SKY_GLOW_COLOR, NIGHT_SKY_GLOW_COLOR)
+        Log.Debug(MODULE, "City glow colors set")
+    end
+
     -- Force the next tick to push fresh values
     lastGodRayWritten = nil
     lastAuroraWritten = nil
+    lastLightPollutionWritten = nil
+    lastNightSkyGlowWritten = nil
     
     Log.Info(MODULE, "Atmosphere setup complete")
 end
@@ -316,6 +361,24 @@ function Atmosphere.Tick()
             lastGodRayWritten = currentGodRayIntensity
         end
     end
+
+    -- City glow: light pollution + night sky glow, ramped in at night
+    if ENABLE_CITY_GLOW then
+        local nightF = nightFactor01(currentTOD)
+        currentCityGlow = smoothStep(currentCityGlow, nightF, SMOOTHING_SPEED)
+
+        local lightPollution = currentCityGlow * LIGHT_POLLUTION_MAX
+        local nightGlow = currentCityGlow * NIGHT_SKY_GLOW_MAX
+
+        if not lastLightPollutionWritten or math.abs(lightPollution - lastLightPollutionWritten) > 0.005 then
+            writeUDS(PROP_LIGHT_POLLUTION_INTENSITY, lightPollution)
+            lastLightPollutionWritten = lightPollution
+        end
+        if not lastNightSkyGlowWritten or math.abs(nightGlow - lastNightSkyGlowWritten) > 0.005 then
+            writeUDS(PROP_NIGHT_SKY_GLOW, nightGlow)
+            lastNightSkyGlowWritten = nightGlow
+        end
+    end
 end
 
 --- Get current aurora intensity
@@ -349,6 +412,8 @@ function Atmosphere.GetStatus()
         godRaysEnabled = ENABLE_GOD_RAYS,
         auroraEnabled = ENABLE_AURORA,
         secondCloudLayerEnabled = ENABLE_SECOND_CLOUD_LAYER,
+        cityGlowEnabled = ENABLE_CITY_GLOW,
+        cityGlow = currentCityGlow,
     }
 end
 

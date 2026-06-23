@@ -133,9 +133,12 @@ Check config and keybinds for info
 > resolution/distance, and glass-reflection problems are almost always a skipped Engine.ini step or
 > a custom/outdated file, **not** the mod.
 >
-> Current major issues: **Stars** is disabled by default (course-load crash, fix pending);
-> **auto-headlights** timing works, but on some cars the lamp meshes stay lit and pop-up headlights
-> (e.g. AE86) don't actuate.
+> Current major issues: **screen-space / material weather effects** (screen droplets, frost,
+> wetness/puddles) do not render in TXR (the game doesn't composite UDW's post-process and the road
+> materials lack UDW's functions) and are not Lua-fixable; **tunnel rain** can't be occluded from Lua
+> (tunnels have no overhead collision to trace); **auto-headlights** timing works, but on some cars
+> the lamp meshes stay lit and pop-up headlights (e.g. AE86) don't actuate. (Stars: fixed and
+> re-enabled in 3.0.15.)
 
 
 
@@ -287,6 +290,10 @@ Check config and keybinds for info
 
 | Alt+Shift+S | Cycle weather preset (previous) |
 
+| Alt+P | Random weather preset now (scheduler) |
+
+| Alt+Shift+P | Force clear weather |
+
 | Alt+T | Cycle time speed |
 
 | Alt+R | Reset weather |
@@ -316,10 +323,6 @@ Check config and keybinds for info
 |---------|----------|-------|
 
 | Alt+D | Previous preset (alternate) | 12 |
-
-| Alt+P | Random preset | 11 |
-
-| Alt+Shift+P | Force clear | 11 |
 
 | Alt+V | Toggle VEAO Photomode | 14 |
 
@@ -1658,6 +1661,10 @@ EnhancedFog.Apply(5.0)
 \## Version History
 
 
+
+\- \*\*v3.0.15\*\* - Phase 11: random weather scheduler (weighted pool + time-of-day weights + precip toggle; Alt+P / Alt+Shift+P); city glow (light pollution + night sky glow, night-ramped); dawn/dusk slow-time is now fraction-based (`Config.Transitions.SlowFactor`); Stars re-enabled and the course-load crash fixed (game-thread `Static Properties - Stars` + settle gate, no off-thread texture write); orphaned the non-working screen-droplets + tunnel-rain experiments
+
+\- \*\*v3.0.14\*\* - `Config.Weather.Enabled` master switch; installer + Engine.ini profile selector; config slimmed; removed runtime CVAR migration (cvars ship in Engine.ini)
 
 \- \*\*v3.0.13\*\* - Phase 13: Exposure module (VEAO port) + `Config.Exposure`; fixed course-load crash by disabling the Stars module (off-thread asset load + object-property write corrupted UE4SS reflection); reverted the 3.0.12 shadow rework to the original adaptive table (the `FindAllOf` blanket apply crashed on v1.5); added `core/cvars.lua` and per-module `Config.ModuleToggles`
 \- \*\*v3.0.12\*\* - Phase 12: HD Stars module; shadow system rework (flat/adaptive modes, v1.5-robust apply, invalid-FOV guard, live Alt+L calibration); performance pass (throttled log flush, console-log flag honored, cached camera/module lookups, fewer redundant per-tick writes)

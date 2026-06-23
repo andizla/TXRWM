@@ -6,12 +6,13 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 ## Features
 - Dynamic time of day - adjustable speed, pause, and persistence across sessions
 - Weather preset cycling - clear, cloudy, fog, rain, thunderstorm, and more
+- Random weather scheduler - weighted and time-of-day aware (clear skies rarer by day)
 - Lightning / thunderstorm flashes
 - Enhanced volumetric fog
 - Daytime + FOV-scaled shadows (work with photomode zoom)
 - HD real-stars night sky
 - Automatic time-based headlights with brightness control (see known issues)
-- Atmospherics - god rays, night auroras, cloud shadows
+- Atmospherics - god rays, night auroras, cloud shadows, Tokyo city glow (night light pollution)
 - Auto-exposure / photomode aperture (ported from VEAO)
 - Fully compatible with manual time adjustments done by CoolConsoleCommands by Shibexd, i will implement my own soon
 
@@ -53,6 +54,7 @@ profile, so try Photomode if a lighter profile looks flat.
 | Key | Action |
 |-----|--------|
 | `Alt+S` / `Alt+Shift+S` | Cycle weather preset (next / prev) |
+| `Alt+P` / `Alt+Shift+P` | Random weather preset / force clear |
 | `Alt+T` | Cycle time speed (normal / fast / pause) |
 | `Alt+R` | Reset weather |
 | `Alt+Q` | Headlight mode (auto / on / off) |
@@ -68,11 +70,13 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
 - **Pick an Engine.ini profile in the installer** (see above). Brightness, shadow-quality, and
   glass-reflection problems are almost always a skipped Engine.ini step or a custom/outdated one,
   not the mod.
-- **Stars module disabled by default** - causes a course-load crash; proper fix pending.
 - **Auto-headlights** - the on/off *timing* works, but on some cars the lamp meshes stay lit and
   pop-up headlights (e.g. AE86) don't actuate. Light-actuation fix pending.
-- **Rain in tunnels / odd sun & shadows indoors** - the game's map meshes are broken; not fixable from the mod.
-- **Surface wetness** only affects road markings - the game lacks the road material for full wetness.
+- **Rain in tunnels / odd sun & shadows indoors** - the game's tunnel meshes have no interior
+  collision, so weather and lighting can't be occluded there from the mod.
+- **Surface wetness and screen weather effects** - the game's road materials lack Ultra Dynamic
+  Weather's wetness logic, and the game doesn't composite UDW's screen-space effects (rain-on-lens,
+  frost, etc.), so those don't render. Not fixable from the mod; would need cooked content.
 - **Transitions might be rough** i am working on ingame time of day/weather/brightness value GUI to easily report these events when noticed
 ## Credits
 Inspired by **Silent**'s original Dynamic Day/Night Cycle. **EDGERUNN3R** took it further and made Ultra Dynamic TXR. This project was started together with **EDGERUNN3R**, who shared his early source and helped get it set up and understand UDS and UE4SS. TXR Weather Mod V3 is a full rewrite by **Ten** (andizla) and uses none of the original Ultra Dynamic TXR 1.34 code.

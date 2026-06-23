@@ -75,6 +75,7 @@ end
 
 local Actors = nil
 local Weather = nil
+local Scheduler = nil
 local Presets = nil
 local TimeOfDay = nil
 local Keybinds = nil
@@ -234,6 +235,15 @@ local function loadSystemModules()
         Log.Debug("Main", "Exposure module not loaded")
     end
 
+    -- Phase 11: Random weather preset scheduler
+    Scheduler = safeRequire("systems.scheduler", "Scheduler")
+    if Scheduler then
+        Log.Info("Main", "System module loaded: Scheduler")
+        if Scheduler.Init then Scheduler.Init() end
+    else
+        Log.Debug("Main", "Scheduler module not loaded")
+    end
+
     -- Phase 6: Wetness simulation (disabled by default - WIP)
     if Config.Wetness and Config.Wetness.Enabled then
         Wetness = safeRequire("systems.wetness", "Wetness")
@@ -311,6 +321,11 @@ local function onTick()
         -- Phase 3+: Weather updates (skip in PA)
         if Weather and Weather.Tick and not State.IsPAFrozen() then
             Weather.Tick()
+        end
+
+        -- Phase 11: Random weather scheduler (skip in PA)
+        if Scheduler and Scheduler.Tick and not State.IsPAFrozen() then
+            Scheduler.Tick()
         end
         
         -- Apply initial settings once actors are discovered (but not in PA or just restored from PA)
@@ -436,6 +451,11 @@ local function onTick()
         -- Headlights (auto on/off based on time)
         if Headlights and Headlights.Tick and not State.IsPAFrozen() then
             Headlights.Tick()
+        end
+
+        -- Stars (settle-gated apply, deferred past BeginPlay)
+        if Stars and Stars.Tick and not State.IsPAFrozen() then
+            Stars.Tick()
         end
 
         -- Auto-exposure scheduler (self-throttled; also runs in garage/menu,
@@ -720,6 +740,7 @@ local function initialize()
     local tg = Config.ModuleToggles
     if tg then
         if tg.Weather     == false then Weather = nil end
+        if tg.Scheduler   == false then Scheduler = nil end
         if tg.TimeOfDay   == false then TimeOfDay = nil end
         if tg.CloudsFog   == false then CloudsFog = nil end
         if tg.Shadows     == false then Shadows = nil end

@@ -3,6 +3,57 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.0.15] - 2026-06-24
+
+### Added
+- **Random weather scheduler** (`systems/scheduler.lua`, Phase 11): auto-changes
+  weather to a weighted-random preset on a randomized interval (default 3-8 min).
+  All changes route through `Weather.Apply`, so the stable rain/dry/clouds/fog
+  pipeline stays in the loop (not UDW's native random variation). A manual change
+  or persistence restore re-arms the timer so it never overrides a deliberate pick.
+- **`Config.Scheduler.TimeWeights`**: per-period (day/night/dawn/dusk) weight
+  multipliers on top of the base pool. Default makes clear skies rare during the
+  day so daytime isn't boring.
+- **`Config.Scheduler.AllowPrecipitation`**: set `false` to keep the scheduler
+  from ever picking rain/snow/dust (does not affect manual cycling).
+- **New keybinds**: Alt+P (random preset now), Alt+Shift+P (force clear).
+- **City glow** (`Config.Atmosphere`): light pollution + night sky glow, ramped in
+  at night. Light pollution lights cloud bases warm amber (Tokyo city-haze look);
+  night sky glow keeps nights from going pitch black. Tunable
+  `LightPollutionMax` / `NightSkyGlowMax` and colors.
+
+### Changed
+- **Dawn/dusk slow-time** is now a fraction of normal speed
+  (`Config.Transitions.SlowFactor`, default `0.40`) instead of a hardcoded value,
+  and the post-window restore tracks `Config.TimeOfDay.DefaultSpeed`.
+
+### Fixed
+- **Stars re-enabled and the course-load crash (`0xC0000005`) fixed.** Rewrote
+  `systems/stars.lua`: it no longer loads or writes the star texture object
+  off-thread. It sets the `Simulate Real Stars` bool and calls UDS's own
+  `Static Properties - Stars` on the game thread (UDS resolves its own texture),
+  deferred past `BeginPlay` by a settle gate. Verified crash-free across course
+  loads and PA transitions.
+
+### Removed
+- **Screen Droplets and tunnel-rain experiments** unwired from the active code
+  (module files left orphaned for reference). Both confirmed non-functional in TXR
+  (see Known Issues). Frees the Alt+D and Alt+U keys.
+
+### Known Issues
+- **Screen-space / post-process weather effects** (screen droplets, frost, heat
+  distortion, wind fog) and **material wetness/puddles** do not render in TXR. The
+  game does not composite UDW's post-process component onto the view, and the road
+  materials lack UDW's material functions. Confirmed not fixable from the Lua mod;
+  would require cooked content (a pak).
+- **Tunnel rain** is not fixable from Lua: tunnels have no overhead collision on any
+  query channel, so UDW's particle occlusion has nothing to trace against. Would
+  require placed occlusion volumes via a content pak.
+- **Auto-headlights** - on/off timing works, but on some cars the lamp meshes stay
+  lit and pop-up headlights (e.g. AE86) don't actuate. Light-actuation fix pending.
+- **Pick an Engine.ini profile in the installer.** Brightness, shadow, and
+  glass-reflection issues are almost always a skipped Engine.ini step, not the mod.
+
 ## [3.0.14] - 2026-06-23
 
 ### Added
