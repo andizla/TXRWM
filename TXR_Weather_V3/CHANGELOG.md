@@ -26,6 +26,8 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Dawn/dusk slow-time** is now a fraction of normal speed
   (`Config.Transitions.SlowFactor`, default `0.40`) instead of a hardcoded value,
   and the post-window restore tracks `Config.TimeOfDay.DefaultSpeed`.
+- **Photomode Engine.ini profile** retuned (Lumen reflection roughness, volumetric
+  cloud/fog sampling, AO/GI denoiser, streaming and foliage LOD).
 
 ### Fixed
 - **Stars re-enabled and the course-load crash (`0xC0000005`) fixed.** Rewrote
