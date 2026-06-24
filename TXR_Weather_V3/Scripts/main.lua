@@ -91,6 +91,9 @@ local Headlights = nil
 local Audio = nil
 local Stars = nil
 local Exposure = nil
+local WindDebris = nil
+local LightRays = nil
+local Moon = nil
 
 -- Attempt to load system modules (may not exist yet)
 local function loadSystemModules()
@@ -233,6 +236,33 @@ local function loadSystemModules()
         if Exposure.Init then Exposure.Init() end
     else
         Log.Debug("Main", "Exposure module not loaded")
+    end
+
+    -- Wind debris (UDW Niagara debris, scales with wind intensity)
+    WindDebris = safeRequire("systems.wind_debris", "WindDebris")
+    if WindDebris then
+        Log.Info("Main", "System module loaded: WindDebris")
+        if WindDebris.Init then WindDebris.Init() end
+    else
+        Log.Debug("Main", "WindDebris module not loaded")
+    end
+
+    -- Volumetric cloud light rays (UDS Niagara god-ray shafts through cloud gaps)
+    LightRays = safeRequire("systems.volumetric_light_rays", "LightRays")
+    if LightRays then
+        Log.Info("Main", "System module loaded: LightRays")
+        if LightRays.Init then LightRays.Init() end
+    else
+        Log.Debug("Main", "LightRays module not loaded")
+    end
+
+    -- Moon appearance (phases + scale)
+    Moon = safeRequire("systems.moon", "Moon")
+    if Moon then
+        Log.Info("Main", "System module loaded: Moon")
+        if Moon.Init then Moon.Init() end
+    else
+        Log.Debug("Main", "Moon module not loaded")
     end
 
     -- Phase 11: Random weather preset scheduler
@@ -456,6 +486,21 @@ local function onTick()
         -- Stars (settle-gated apply, deferred past BeginPlay)
         if Stars and Stars.Tick and not State.IsPAFrozen() then
             Stars.Tick()
+        end
+
+        -- Wind debris (settle-gated one-shot apply)
+        if WindDebris and WindDebris.Tick and not State.IsPAFrozen() then
+            WindDebris.Tick()
+        end
+
+        -- Volumetric cloud light rays (settle-gated one-shot apply)
+        if LightRays and LightRays.Tick and not State.IsPAFrozen() then
+            LightRays.Tick()
+        end
+
+        -- Moon appearance (settle-gated one-shot apply)
+        if Moon and Moon.Tick and not State.IsPAFrozen() then
+            Moon.Tick()
         end
 
         -- Auto-exposure scheduler (self-throttled; also runs in garage/menu,
@@ -748,6 +793,9 @@ local function initialize()
         if tg.Atmosphere  == false then Atmosphere = nil end
         if tg.Headlights  == false then Headlights = nil end
         if tg.Audio       == false then Audio = nil end
+        if tg.WindDebris  == false then WindDebris = nil end
+        if tg.LightRays   == false then LightRays = nil end
+        if tg.Moon        == false then Moon = nil end
         if tg.Stars       == false then Stars = nil end
         if tg.Persistence == false then Persistence = nil end
         Log.Info("Main", "BISECT module toggles applied", {

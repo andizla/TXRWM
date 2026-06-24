@@ -1662,6 +1662,8 @@ EnhancedFog.Apply(5.0)
 
 
 
+\- \*\*v3.0.16\*\* - more native UDS/UDW effects: Wind Debris (Niagara debris in wind/storms), Volumetric Cloud Light Rays (god-ray shafts through cloud gaps, natural-gap rays via `Individual Clouds Light Rays`), Moon appearance (phases + over-time + `Moon Scale`). Sun lens flare attempted but it is a post-process material on UDS's PostProcess component (not composited by TXR) - built then orphaned.
+
 \- \*\*v3.0.15\*\* - Phase 11: random weather scheduler (weighted pool + time-of-day weights + precip toggle; Alt+P / Alt+Shift+P); city glow (light pollution + night sky glow, night-ramped); dawn/dusk slow-time is now fraction-based (`Config.Transitions.SlowFactor`); Stars re-enabled and the course-load crash fixed (game-thread `Static Properties - Stars` + settle gate, no off-thread texture write); orphaned the non-working screen-droplets + tunnel-rain experiments
 
 \- \*\*v3.0.14\*\* - `Config.Weather.Enabled` master switch; installer + Engine.ini profile selector; config slimmed; removed runtime CVAR migration (cvars ship in Engine.ini)

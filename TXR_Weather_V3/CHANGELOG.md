@@ -3,6 +3,32 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.0.16] - 2026-06-25
+
+### Added
+- **Wind Debris**: UDW Niagara debris (leaves/dust) blowing through the air, scaled
+  by the wind intensity of the current weather state (shows in windy / storm presets).
+  `Config.WindDebris`.
+- **Volumetric Cloud Light Rays**: UDS god-ray shafts that break down through gaps in
+  the cloud cover, rendered by a Niagara system of additive ray cards. Shows in daytime
+  under broken / overcast cloud. `Individual Clouds Light Rays` casts rays through
+  natural cloud gaps (no cloud painting needed). `Config.LightRays`.
+- **Moon appearance**: realistic moon phases (instead of a flat full disc), optional
+  phase change over time, and a `Scale` knob for a bigger, cinematic moon. `Config.Moon`.
+
+### Known Issues
+- **Sun lens flare is not available.** UDS's filmic sun flare is a post-process material
+  on UDS's own PostProcess component, which TXR does not composite, the same dead-end as
+  the other screen-space effects. The module was built then left orphaned.
+- **Screen-space / material weather effects** (screen droplets, frost, wetness/puddles)
+  do not render in TXR (post-process not composited; road materials lack UDW's functions).
+  Not fixable from the mod; would need cooked content.
+- **Tunnel rain** is not fixable from Lua (tunnels have no overhead collision to occlude
+  against).
+- **Auto-headlights** - on/off timing works, but on some cars lamp meshes stay lit and
+  pop-ups (e.g. AE86) don't actuate. Fix pending.
+- **Pick an Engine.ini profile in the installer** for correct brightness/shadows/reflections.
+
 ## [3.0.15] - 2026-06-24
 
 ### Added

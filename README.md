@@ -12,7 +12,8 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 - Daytime + FOV-scaled shadows (work with photomode zoom)
 - HD real-stars night sky
 - Automatic time-based headlights with brightness control (see known issues)
-- Atmospherics - god rays, night auroras, cloud shadows, Tokyo city glow (night light pollution)
+- Atmospherics - god rays, volumetric cloud light rays, night auroras, cloud shadows, Tokyo city glow (night light pollution)
+- Wind debris in storms, and moon phases / scalable moon
 - Auto-exposure / photomode aperture (ported from VEAO)
 - Fully compatible with manual time adjustments done by CoolConsoleCommands by Shibexd, i will implement my own soon
 

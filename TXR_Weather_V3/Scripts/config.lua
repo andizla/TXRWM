@@ -106,6 +106,39 @@ Config.Stars = {
     Intensity = nil, -- nil = keep UDS default
 }
 
+-- ============== WIND DEBRIS ==============
+-- UDW Niagara debris (leaves/dust) that appears when wind intensity is high (storms).
+-- Default OFF while in testing; set Enabled=true.
+Config.WindDebris = {
+    Enabled = true,
+    SpawnCount = nil,  -- nil = UDW default
+    Debug = false,     -- log a readback (~3s) while enabled; set false once diagnosed
+}
+
+-- ============== MOON ==============
+-- Moon appearance: realistic phases (not a flat full disc), optional phase change
+-- over time, and a Scale knob for a bigger, cinematic moon. Sky-rendered, works in TXR.
+Config.Moon = {
+    Enabled = true,
+    RenderPhases = true,    -- realistic phases instead of a full disc
+    PhaseOverTime = true,   -- phase advances night to night (set false to pin Phase)
+    Phase = nil,            -- 0-1 to force a phase (e.g. 0.2 crescent); needs PhaseOverTime=false
+    Scale = nil,            -- nil = UDS default; bump (e.g. 1.5) for a bigger atmospheric moon
+    Contrast = nil,         -- nil = UDS default
+}
+
+-- ============== VOLUMETRIC LIGHT RAYS ==============
+-- UDS god-ray shafts through gaps in the cloud cover (Niagara additive cards, like
+-- rain - renders in TXR). Shows in daytime under broken/overcast cloud. IndividualClouds
+-- > 0 casts rays through NATURAL gaps so they show without painting cloud coverage.
+Config.LightRays = {
+    Enabled = true,
+    Intensity = nil,         -- nil = UDS default
+    IndividualClouds = 1.0,  -- 0-1: rays through natural cloud gaps (0 = painted gaps only)
+    UsingSun = true,         -- sun as the ray source
+    Debug = false,           -- periodic readback while enabled (one-shot at apply always logs)
+}
+
 -- ============== TRANSITIONS (dawn/dusk slow-time + Tokyo tint) ==============
 Config.Transitions = {
     Enabled = true,
@@ -316,15 +349,18 @@ Config.ModuleToggles = {
     Headlights  = true,
     Atmosphere  = true,
     Audio       = true,
+    WindDebris  = true,
+    LightRays   = true,
+    Moon        = true,
     Stars       = true,   -- re-enabled 2026-06-24 with the safe bool+Static-Properties+settle-gate rewrite
 }
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 0, Patch = 15,
-    String = "3.0.15",
+    Major = 3, Minor = 0, Patch = 16,
+    String = "3.0.16",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.0.15",
+    FullName = "TXR Weather Mod v3.0.16",
 }
 
 return Config
