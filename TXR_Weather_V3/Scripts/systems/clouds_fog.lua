@@ -461,19 +461,25 @@ function CloudsFog.Tick(dt)
             internalState.cloudCurrent = CloudsFog.GetCloudCoverage() or targetCloud
         end
         
-        -- Apply smoothing (skip when preset active for immediate response)
-        local newCloud
+        -- Ramp toward the target. Preset changes used to SNAP here (the abrupt
+        -- weather jump); now they ease over PresetTransitionSeconds, like TOD
+        -- changes do. Immediate applies (reset/initial load, transition < 1s)
+        -- already pre-set cloudCurrent to target in ApplyPreset, so ExpSmooth is a
+        -- no-op snap for those.
+        local cloudSmoothSeconds
         if presetActive then
-            newCloud = targetCloud
+            cloudSmoothSeconds = Config.CloudsFog.PresetTransitionSeconds
+                or Config.CloudsFog.CloudSmoothingSeconds
         else
-            newCloud = Utils.ExpSmooth(
-                internalState.cloudCurrent,
-                targetCloud,
-                Config.CloudsFog.CloudSmoothingSeconds,
-                dt
-            )
+            cloudSmoothSeconds = Config.CloudsFog.CloudSmoothingSeconds
         end
-        
+        local newCloud = Utils.ExpSmooth(
+            internalState.cloudCurrent,
+            targetCloud,
+            cloudSmoothSeconds,
+            dt
+        )
+
         writeCloudCoverage(newCloud)
         internalState.cloudCurrent = newCloud
     end
@@ -495,19 +501,22 @@ function CloudsFog.Tick(dt)
             internalState.fogCurrent = CloudsFog.GetFog() or targetFog
         end
         
-        -- Apply smoothing (skip when preset active for immediate response)
-        local newFog
+        -- Ramp toward the target (see cloud note above): preset changes ease over
+        -- PresetTransitionSeconds instead of snapping; immediate applies stay snaps.
+        local fogSmoothSeconds
         if presetActive then
-            newFog = targetFog
+            fogSmoothSeconds = Config.CloudsFog.PresetTransitionSeconds
+                or Config.CloudsFog.FogSmoothingSeconds
         else
-            newFog = Utils.ExpSmooth(
-                internalState.fogCurrent,
-                targetFog,
-                Config.CloudsFog.FogSmoothingSeconds,
-                dt
-            )
+            fogSmoothSeconds = Config.CloudsFog.FogSmoothingSeconds
         end
-        
+        local newFog = Utils.ExpSmooth(
+            internalState.fogCurrent,
+            targetFog,
+            fogSmoothSeconds,
+            dt
+        )
+
         writeFog(newFog)
         internalState.fogCurrent = newFog
     end

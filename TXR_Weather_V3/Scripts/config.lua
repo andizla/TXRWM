@@ -103,7 +103,7 @@ Config.Stars = {
     -- real-star map; we no longer swap the texture ourselves (that off-thread
     -- object write was the old course-load crash). Apply is deferred past BeginPlay.
     Tiling = nil,    -- nil = keep UDS default
-    Intensity = nil, -- nil = keep UDS default
+    Intensity = 1.5, -- nil = keep UDS default
 }
 
 -- ============== WIND DEBRIS ==============
@@ -123,7 +123,7 @@ Config.Moon = {
     RenderPhases = true,    -- realistic phases instead of a full disc
     PhaseOverTime = true,   -- phase advances night to night (set false to pin Phase)
     Phase = nil,            -- 0-1 to force a phase (e.g. 0.2 crescent); needs PhaseOverTime=false
-    Scale = nil,            -- nil = UDS default; bump (e.g. 1.5) for a bigger atmospheric moon
+    Scale = 1.5,            -- nil = UDS default; bump (e.g. 1.5) for a bigger atmospheric moon
     Contrast = nil,         -- nil = UDS default
 }
 
@@ -162,9 +162,13 @@ Config.Keybinds = {
     DebugForceDry    = { Key = "W", Modifiers = {"Alt", "Shift"} },
     ShadowDistanceUp = { Key = "L", Modifiers = {"Alt"} },
     ShadowDistanceDown = { Key = "L", Modifiers = {"Alt", "Shift"} },
-    CycleHeadlights  = { Key = "Q", Modifiers = {"Alt"} },
+    CycleHeadlights    = { Key = "Q", Modifiers = {"Alt"} },          -- manual headlights on/off (auto is config-only)
     BrightnessUp     = { Key = "B", Modifiers = {"Alt"} },
     BrightnessDown   = { Key = "B", Modifiers = {"Alt", "Shift"} },
+    -- Exposure tuning feedback: press when the picture looks wrong; logs time,
+    -- weather, and the exposure values in effect (grep the log for "ExposureTune").
+    ExposureTooDark   = { Key = "D", Modifiers = {"Alt"} },
+    ExposureTooBright = { Key = "D", Modifiers = {"Alt", "Shift"} },
 }
 
 -- ============== PERSISTENCE ==============
@@ -249,10 +253,26 @@ Config.Atmosphere = {
 -- ============== HEADLIGHTS ==============
 Config.Headlights = {
     Enabled = true,
-    Mode = "auto",   -- auto | force_on | force_off
-    OnTOD = 1830,    -- on after 18:30
-    OffTOD = 630,    -- off after 06:30
+    -- AUTO vs MANUAL is set HERE only (there is no runtime auto-toggle keybind):
+    --   "auto"      = exposure-driven on/off (Alt+Q manual toggle is ignored).
+    --   "force_on"  = manual, default on  (Alt+Q toggles on/off, also in the garage).
+    --   "force_off" = manual, default off (Alt+Q toggles on/off, also in the garage).
+    -- The manual on/off state + brightness persist across restarts; "auto" does not
+    -- get overridden by the persisted state.
+    Mode = "auto",
+
+    -- Auto mode tracks the Exposure module's interpolated brightness (lens proxy:
+    -- ~0.78 bright day .. ~30 deep night) instead of a fixed clock, so the lamps
+    -- follow available light and stay in sync if you retune exposure. The On/Off
+    -- pair is a hysteresis band (On > Off) to stop flicker around the threshold.
+    OnLens  = 6.0,   -- turn ON once brightness-lens rises above this (getting dark)
+    OffLens = 3.5,   -- turn OFF once it falls below this (getting light)
+
     DefaultBrightnessLevel = 3,  -- 1=0.5x 2=1.0x 3=2.0x 4=3.0x 5=5.0x
+
+    -- Fallback ONLY when the Exposure module is disabled/unavailable (no lens signal).
+    OnTOD = 1900,    -- on after 19:00
+    OffTOD = 600,    -- off after 06:00
 }
 
 -- ============== AUDIO ==============
@@ -357,10 +377,10 @@ Config.ModuleToggles = {
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 0, Patch = 16,
-    String = "3.0.16",
+    Major = 3, Minor = 0, Patch = 17,
+    String = "3.0.17",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.0.16",
+    FullName = "TXR Weather Mod v3.0.17",
 }
 
 return Config

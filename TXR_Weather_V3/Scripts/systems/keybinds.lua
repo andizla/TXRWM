@@ -17,6 +17,7 @@ local Actors = nil
 local Shadows = nil
 local Headlights = nil
 local Scheduler = nil
+local Exposure = nil
 
 local MODULE = "Keybinds"
 
@@ -116,6 +117,14 @@ local function getScheduler()
         if success then Scheduler = mod end
     end
     return Scheduler
+end
+
+local function getExposure()
+    if not Exposure then
+        local success, mod = pcall(require, "systems.exposure")
+        if success then Exposure = mod end
+    end
+    return Exposure
 end
 
 --- Convert modifier array to flags
@@ -362,15 +371,16 @@ local function onShadowDistanceDown()
     Log.Info(MODULE, "Shadow distance re-applied")
 end
 
-local function onCycleHeadlights()
+local function onToggleHeadlights()
     local headlights = getHeadlights()
     if not headlights then
         Log.Warn(MODULE, "Headlights module not available")
         return
     end
-    
-    local newMode = headlights.CycleMode()
-    Log.Info(MODULE, "Headlight mode cycled", {mode = newMode})
+
+    -- Manual on/off only (force_on <-> force_off). Auto is a separate keybind.
+    local newMode = headlights.ToggleManual()
+    Log.Info(MODULE, "Headlight manual toggled", {mode = newMode})
 end
 
 local function onBrightnessUp()
@@ -393,6 +403,26 @@ local function onBrightnessDown()
     
     local level, multiplier = headlights.CycleBrightnessDown()
     Log.Info(MODULE, "Brightness decreased", {level = level, multiplier = multiplier})
+end
+
+--- Exposure tuning feedback: flag the current picture as too dark / too bright.
+--- Logs time + weather + the exposure values in effect (greppable tag "ExposureTune").
+local function onExposureTooDark()
+    local exposure = getExposure()
+    if not exposure or not exposure.LogFeedback then
+        Log.Warn(MODULE, "Exposure module not available")
+        return
+    end
+    exposure.LogFeedback("dark")
+end
+
+local function onExposureTooBright()
+    local exposure = getExposure()
+    if not exposure or not exposure.LogFeedback then
+        Log.Warn(MODULE, "Exposure module not available")
+        return
+    end
+    exposure.LogFeedback("bright")
 end
 
 -- ============== PUBLIC API ==============
@@ -474,9 +504,9 @@ function Keybinds.Init(config)
         registerKeybind("ShadowDistanceDown", config.ShadowDistanceDown, onShadowDistanceDown)
     end
     
-    -- Register headlight mode cycling
+    -- Register headlight manual on/off toggle (auto mode is config-only)
     if config.CycleHeadlights then
-        registerKeybind("CycleHeadlights", config.CycleHeadlights, onCycleHeadlights)
+        registerKeybind("CycleHeadlights", config.CycleHeadlights, onToggleHeadlights)
     end
     
     -- Register brightness controls
@@ -502,7 +532,16 @@ function Keybinds.Init(config)
     else
         Log.Debug(MODULE, "BrightnessDown not in config")
     end
-    
+
+    -- Exposure tuning feedback (Alt+D too dark, Alt+Shift+D too bright)
+    if config.ExposureTooDark then
+        registerKeybind("ExposureTooDark", config.ExposureTooDark, onExposureTooDark)
+    end
+
+    if config.ExposureTooBright then
+        registerKeybind("ExposureTooBright", config.ExposureTooBright, onExposureTooBright)
+    end
+
     isInitialized = true
     State.SetModuleStatus("keybinds", true)
     

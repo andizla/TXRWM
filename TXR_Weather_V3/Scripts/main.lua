@@ -478,7 +478,7 @@ local function onTick()
             Atmosphere.Tick()
         end
         
-        -- Headlights (auto on/off based on time)
+        -- Headlights (auto on/off; auto mode follows the exposure brightness)
         if Headlights and Headlights.Tick and not State.IsPAFrozen() then
             Headlights.Tick()
         end

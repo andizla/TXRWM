@@ -35,8 +35,10 @@ local slots = {}
 
 -- ============== STATE ==============
 local isInitialized = false
-local currentSlot = nil             -- last applied slot (0-based), nil = none yet
+local currentSlot = nil             -- last evaluated slot (0-based), nil = none yet
 local lastCheckClock = 0.0          -- os.clock() of last evaluation (throttle)
+local lastInterpLens = nil          -- last interpolated lens (brightness proxy; see GetBrightnessLens)
+local lastApplied = { sky = nil, leak = nil, lens = nil }  -- last pushed cvar values (skip redundant pushes)
 
 -- ============== INTERNAL FUNCTIONS ==============
 
@@ -111,30 +113,38 @@ local function scheduleExec(cmds)
     return true
 end
 
---- Apply a slot's CVARs.
---- @param slotZeroBased number 0..SLOT_COUNT-1
+local function lerp(a, b, t) return a + (b - a) * t end
+
+--- Push exposure cvars for explicit sky/leak/lens values. Skips the push when the
+--- values are unchanged from the last one (the day/night cores are flat for hours),
+--- so the smooth ramp only emits console commands during the transition windows.
+--- @param sky number
+--- @param leak number
+--- @param lens number
 --- @param tod number for logging
---- @return boolean success (commands scheduled)
-local function applySlot(slotZeroBased, tod)
-    local idx = slotZeroBased + 1   -- 0-based slot -> 1-based table index
-    local cfg = slots[idx]
-    if not cfg then
-        Log.Warn(MODULE, "Slot has no config", {slot = slotZeroBased, idx = idx, tod = tod})
-        return false
+--- @param reason string for logging
+--- @return boolean success (commands scheduled, or true if skipped as unchanged)
+local function applyValues(sky, leak, lens, tod, reason)
+    local eps = 1e-4
+    if lastApplied.sky
+        and math.abs(sky  - lastApplied.sky)  < eps
+        and math.abs(leak - lastApplied.leak) < eps
+        and math.abs(lens - lastApplied.lens) < eps then
+        return true   -- unchanged: skip redundant push
     end
 
     local scheduled = scheduleExec({
-        string.format("%s %.6f", CVAR_SKY,  cfg.sky),
-        string.format("%s %.6f", CVAR_LEAK, cfg.leak),
-        string.format("%s %.6f", CVAR_LENS, cfg.lens),
+        string.format("%s %.6f", CVAR_SKY,  sky),
+        string.format("%s %.6f", CVAR_LEAK, leak),
+        string.format("%s %.6f", CVAR_LENS, lens),
     })
 
-    Log.Info(MODULE, "Applied exposure slot", {
-        slot = slotZeroBased,
-        tod = string.format("%.0f", tod),
-        sky = cfg.sky,
-        leak = cfg.leak,
-        lens = cfg.lens,
+    lastApplied.sky, lastApplied.leak, lastApplied.lens = sky, leak, lens
+
+    Log.Info(MODULE, "Applied exposure", {
+        tod = string.format("%.0f", tod or 0),
+        reason = reason or "",
+        sky = sky, leak = leak, lens = lens,
         scheduled = scheduled,
     })
     return scheduled
@@ -183,6 +193,7 @@ end
 function Exposure.OnCourseLoad()
     currentSlot = nil
     lastCheckClock = 0.0
+    lastApplied.sky, lastApplied.leak, lastApplied.lens = nil, nil, nil
 end
 
 --- Per-tick update. Cheap: only re-evaluates the slot every UPDATE_INTERVAL
@@ -200,28 +211,92 @@ function Exposure.Update()
 
     -- Garage: force the night slot (slot 0). Works without UDS actors.
     if actors.IsInGarage and actors.IsInGarage() then
-        if currentSlot ~= 0 then
+        local cfg = slots[1]
+        if cfg then
             currentSlot = 0
-            applySlot(0, 0.0)
+            lastInterpLens = cfg.lens
+            applyValues(cfg.sky, cfg.leak, cfg.lens, 0.0, "garage")
         end
         return true
     end
 
-    -- Course: pick the slot from current TOD.
+    -- Course: interpolate between the current slot and the next so the exposure
+    -- ramps continuously instead of snapping at 30-min boundaries (kills the
+    -- dawn/dusk cliffs). The interpolated lens is also the brightness signal the
+    -- headlights module consumes (GetBrightnessLens).
     local tod = getTimeOfDay()
     if not tod then return true end
     local currentTOD = tod.GetCurrentTOD()
     if not currentTOD then return true end   -- no valid UDS read this cycle
 
     currentTOD = clamp(currentTOD, 0.0, 2400.0)
-    local slot = clamp(math.floor(currentTOD / SLOT_SIZE_TOD), 0, SLOT_COUNT - 1)
+    local f = currentTOD / SLOT_SIZE_TOD
+    local slot = clamp(math.floor(f), 0, SLOT_COUNT - 1)
+    local frac = clamp(f - slot, 0.0, 1.0)
 
-    if slot ~= currentSlot then
-        currentSlot = slot
-        applySlot(slot, currentTOD)
+    local a = slots[slot + 1]
+    if not a then return true end
+    local b = slots[(slot + 1) % SLOT_COUNT + 1] or a  -- next slot, wraps 48->1
+
+    local sky  = lerp(a.sky,  b.sky,  frac)
+    local leak = lerp(a.leak, b.leak, frac)
+    local lens = lerp(a.lens, b.lens, frac)
+
+    currentSlot = slot
+    lastInterpLens = lens
+    applyValues(sky, leak, lens, currentTOD, "slot " .. slot)
+    return true
+end
+
+--- Current interpolated lens value: the exposure brightness proxy (~0.78 bright
+--- day .. ~30 deep night). The headlights module reads this so the lamps track
+--- exposure instead of a hardcoded clock. nil until the first on-course evaluation.
+--- @return number|nil
+function Exposure.GetBrightnessLens()
+    return lastInterpLens
+end
+
+--- Log one tuning datapoint when the player flags the current lighting as too
+--- dark / too bright (debug keybinds). Captures the time, weather, world context,
+--- and the exposure values actually in effect, so reading the log afterwards tells
+--- us which slot to nudge and in which direction. Greppable tag: "ExposureTune".
+--- The `where` field also diagnoses the "exposure not active in cutscenes" report:
+--- if it isn't "course" during a cutscene, the cutscene world isn't being driven.
+--- @param direction string "dark" (too dark) | "bright" (too bright)
+function Exposure.LogFeedback(direction)
+    local tod, todStr = nil, "--:--"
+    local t = getTimeOfDay()
+    if t then
+        local ok, v = pcall(t.GetCurrentTOD)
+        if ok then tod = v end
+        if t.FormatTime then pcall(function() todStr = t.FormatTime(tod) end) end
     end
 
-    return true
+    local preset = "unknown"
+    pcall(function() preset = State.GetCurrentPreset() or "none" end)
+
+    local where = "unknown"
+    local actors = getActors()
+    if actors then
+        if actors.IsInGarage and actors.IsInGarage() then
+            where = "garage"
+        elseif actors.GetWorldTag then
+            pcall(function() where = actors.GetWorldTag() or "unknown" end)
+        end
+    end
+
+    Log.Info("ExposureTune", "FEEDBACK too-" .. tostring(direction), {
+        verdict      = direction,                 -- "dark" or "bright"
+        time         = todStr,
+        tod          = tod and string.format("%.0f", tod) or "nil",
+        weather      = preset,
+        where        = where,                     -- course/pa/garage/outgame/unknown
+        slot         = currentSlot,
+        applied_sky  = lastApplied.sky,
+        applied_leak = lastApplied.leak,
+        applied_lens = lastApplied.lens,
+        interp_lens  = lastInterpLens,
+    })
 end
 
 -- Alias so the module can be ticked as either Tick() or Update().

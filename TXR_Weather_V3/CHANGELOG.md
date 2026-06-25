@@ -3,6 +3,39 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.0.17] - 2026-06-26
+
+### Changed
+- **Headlights follow the exposure brightness in Auto mode** instead of a fixed
+  clock. The lights now switch on/off with the actual scene brightness (the
+  exposure lens curve) with a hysteresis band so they do not flicker at the
+  boundary. Falls back to time-of-day thresholds if the exposure module is off.
+- **Smoother weather transitions.** Cloud coverage and fog now ramp to a new
+  preset over `Config.CloudsFog.PresetTransitionSeconds` instead of snapping, so
+  weather changes ease in to match the precipitation blend (no more abrupt pop).
+- **Smoother exposure transitions.** Auto-exposure now interpolates continuously
+  between its time-of-day slots instead of stepping every 30 minutes, removing the
+  dawn/dusk brightness cliffs.
+
+### Added
+- **Headlight manual toggle, persistent, and works in the garage.** Alt+Q is a
+  clean manual on/off toggle (no more three-state cycle that desynced). Auto
+  (exposure-driven) mode is set in config only (`Config.Headlights.Mode`). The
+  manual on/off state and brightness level persist across sessions. Manual modes
+  now also work in the garage, not just on a course.
+- **Exposure tuning feedback keys.** Alt+D ("too dark") and Alt+Shift+D ("too
+  bright") log the current time, weather, and exposure values so the right
+  exposure slot can be nudged from the log.
+
+### Known Issues
+- Flashing the high-beams resets the headlight brightness back to default until the
+  next brightness change (the game recomputes intensity on its own hi-beam path).
+
+### Notes
+- Retractable pop-up headlights are left entirely to the game's native hi-beam
+  behaviour; the mod no longer touches them (driving them from script fought the
+  native flash).
+
 ## [3.0.16] - 2026-06-25
 
 ### Added

@@ -2,6 +2,12 @@
 -- systems/headlights.lua
 -- Phase 10: Automatic headlight control based on time of day
 -- Fixed: Uses UEHelpers pattern from V2 for vehicle discovery
+--
+-- Reverted to the original V2-style actuation (FindAllOf + SetVisibility/SetActive/
+-- SetIntensity) after the BP-function rewrite regressed. Two additions kept:
+--   * AUTO mode is driven by the Exposure module's brightness (lens proxy) with
+--     hysteresis, not a hardcoded clock (falls back to TOD if no lens available).
+--   * Mode + brightness level PERSIST to headlight_state.txt across sessions.
 
 local Headlights = {}
 
@@ -14,6 +20,7 @@ local Utils = require("core.utils")
 -- Lazy-load to avoid circular dependencies
 local Actors = nil
 local TimeOfDay = nil
+local Exposure = nil
 
 local MODULE = "Headlights"
 
@@ -21,9 +28,14 @@ local MODULE = "Headlights"
 -- Headlight mode: "auto" | "force_on" | "force_off"
 local currentMode = "auto"
 
--- TOD thresholds for auto mode
+-- TOD thresholds for auto mode (fallback only, when no exposure lens is available)
 local HEADLIGHT_ON_TOD = 1830   -- Turn on after 18:30 (dusk)
 local HEADLIGHT_OFF_TOD = 630   -- Turn off after 06:30 (dawn)
+
+-- Auto mode brightness thresholds (exposure lens proxy: ~0.78 day .. ~30 night).
+-- On > Off = hysteresis band so the lights do not flicker at the boundary.
+local ON_LENS = 6.0
+local OFF_LENS = 3.5
 
 -- ============== STATE ==============
 local isInitialized = false
@@ -65,12 +77,46 @@ local function getTimeOfDay()
     return TimeOfDay
 end
 
---- Check if TOD is in night range (headlights should be on)
+local function getExposure()
+    if not Exposure then
+        local success, mod = pcall(require, "systems.exposure")
+        if success then Exposure = mod end
+    end
+    return Exposure
+end
+
+--- Check if TOD is in night range (fallback when no exposure lens is available)
 --- @param tod number
 --- @return boolean
 local function isNightTime(tod)
     -- Night wraps around midnight: on after HEADLIGHT_ON_TOD or before HEADLIGHT_OFF_TOD
     return tod >= HEADLIGHT_ON_TOD or tod < HEADLIGHT_OFF_TOD
+end
+
+--- Decide whether headlights should be on in AUTO mode. Driven by the Exposure
+--- module's interpolated brightness (lens) with hysteresis, so the lights track
+--- available light instead of a fixed clock; falls back to TOD if no lens yet.
+--- @param tod number current time of day (for the fallback)
+--- @return boolean
+local function computeAutoDesired(tod)
+    local exp = getExposure()
+    local lens = nil
+    if exp and exp.GetBrightnessLens then
+        local ok, v = pcall(exp.GetBrightnessLens)
+        if ok then lens = v end
+    end
+
+    if type(lens) == "number" then
+        -- Hysteresis: once on, stay on until below OFF_LENS; once off, need ON_LENS.
+        if headlightsOn then
+            return lens > OFF_LENS
+        else
+            return lens >= ON_LENS
+        end
+    end
+
+    -- Fallback: TOD thresholds.
+    return isNightTime(tod)
 end
 
 --- Check if a UObject is valid (V2 pattern)
@@ -108,8 +154,8 @@ local function safeCallMethod(obj, methodName, ...)
     if not obj then return false end
     local args = {...}
     local ok = pcall(function()
-        if obj[methodName] then 
-            obj[methodName](obj, table.unpack(args)) 
+        if obj[methodName] then
+            obj[methodName](obj, table.unpack(args))
         end
     end)
     return ok
@@ -137,25 +183,25 @@ local function getPlayerPawn()
     return nil
 end
 
---- Set vehicle lights using V2's working method calls
---- @param obj userdata Vehicle/Pawn
+--- Set vehicle lights using V2's working method calls.
+--- @param obj userdata|nil Vehicle/Pawn (may be nil in the garage; the FindAllOf
+---            component methods still drive the displayed car's lights)
 --- @param on boolean
 local function setVehicleLights(obj, on)
-    if not isValidActor(obj) then return false end
-    
     local want = on
     if Config.Headlights and Config.Headlights.Invert then
         want = not on
     end
-    
+
     local success = false
-    
-    -- Method 1: V2-style method calls (SetLightOn etc.)
+
+    -- Method 1: V2-style method calls on the pawn (only when we have one).
+    if isValidActor(obj) then
     success = safeCallMethod(obj, 'SetLightOn', want)
     if want then
         safeCallMethod(obj, 'SetLightSpriteScale', 0)
     end
-    
+
     -- Tail/back lamps
     if want then
         safeCallMethod(obj, 'SetBackLampOn', true)
@@ -169,8 +215,10 @@ local function setVehicleLights(obj, on)
         safeCallMethod(obj, 'SetTailLightsOn', false)
         safeCallMethod(obj, 'SetRearLightsOn', false)
     end
-    
-    -- Method 2: Direct BP_HeadLightComponent control (TXR-specific)
+    end  -- isValidActor(obj)
+
+    -- Method 2: Direct BP_HeadLightComponent control (TXR-specific). Works via
+    -- FindAllOf with no pawn, so it drives the displayed car in the garage too.
     local hlCount = 0
     pcall(function()
         local headlightComps = FindAllOf("BP_HeadLightComponent_C")
@@ -204,7 +252,7 @@ local function setVehicleLights(obj, on)
     if hlCount > 0 then
         Log.Debug(MODULE, "BP_HeadLightComponent controlled", {count = hlCount, on = want})
     end
-    
+
     -- Method 3: Generic SpotLightComponent on vehicle
     local spotCount = 0
     pcall(function()
@@ -229,8 +277,61 @@ local function setVehicleLights(obj, on)
     if spotCount > 0 then
         Log.Debug(MODULE, "SpotLightComponent controlled", {count = spotCount, on = want})
     end
-    
+
     return success
+end
+
+-- ============== PERSISTENCE (mode + brightness level) ==============
+
+--- Resolve the mod root folder (same pattern as persistence.lua).
+local function getModRoot()
+    local info = debug.getinfo(1, "S")
+    if info and info.source then
+        local source = info.source:gsub("@", "")
+        local root = source:match("(.+)[/\\]systems[/\\]") or ""
+        if root ~= "" then
+            root = root:match("(.+)[/\\]") or root
+        end
+        return root
+    end
+    return "."
+end
+
+local function getStateFilePath()
+    return getModRoot() .. "\\headlight_state.txt"
+end
+
+--- Persist the current mode + brightness level so they survive a restart.
+local function saveState()
+    local ok, f = pcall(io.open, getStateFilePath(), "w")
+    if ok and f then
+        f:write("mode=" .. tostring(currentMode) .. "\n")
+        f:write("brightness=" .. tostring(currentBrightnessLevel) .. "\n")
+        f:close()
+        Log.Debug(MODULE, "Saved headlight state", {mode = currentMode, brightness = currentBrightnessLevel})
+    end
+end
+
+--- Load persisted brightness level, and the persisted MANUAL on/off state.
+--- Auto vs manual is config-authoritative (set in config only), so a persisted
+--- mode is restored only when it is a manual state AND config is not "auto".
+--- @param allowModeOverride boolean true when config mode is manual
+local function loadState(allowModeOverride)
+    local ok, f = pcall(io.open, getStateFilePath(), "r")
+    if not (ok and f) then return end
+    for line in f:lines() do
+        local k, v = line:match("^(%w+)=(.+)$")
+        if k == "mode" and allowModeOverride and (v == "force_on" or v == "force_off") then
+            currentMode = v
+        elseif k == "brightness" then
+            local n = tonumber(v)
+            if n and n >= 1 and n <= #BRIGHTNESS_MULTIPLIERS then
+                currentBrightnessLevel = n
+            end
+        end
+    end
+    f:close()
+    Log.Info(MODULE, "Loaded headlight state", {mode = currentMode, brightness = currentBrightnessLevel})
 end
 
 -- ============== PUBLIC API ==============
@@ -242,9 +343,9 @@ function Headlights.Init()
         Log.Warn(MODULE, "Already initialized")
         return true
     end
-    
+
     Log.Info(MODULE, "Initializing headlights module")
-    
+
     -- Read config
     if Config.Headlights then
         if Config.Headlights.Mode then
@@ -255,6 +356,12 @@ function Headlights.Init()
         end
         if Config.Headlights.OffTOD then
             HEADLIGHT_OFF_TOD = Config.Headlights.OffTOD
+        end
+        if Config.Headlights.OnLens then
+            ON_LENS = Config.Headlights.OnLens
+        end
+        if Config.Headlights.OffLens then
+            OFF_LENS = Config.Headlights.OffLens
         end
         if Config.Headlights.DefaultBrightnessLevel then
             local level = Config.Headlights.DefaultBrightnessLevel
@@ -268,10 +375,14 @@ function Headlights.Init()
             return true
         end
     end
-    
+
+    -- Restore persisted brightness, and the manual on/off state only when config
+    -- is NOT auto (auto mode is configured in config only, never persisted/keybound).
+    loadState(currentMode ~= "auto")
+
     isInitialized = true
     State.SetModuleStatus("headlights", true)
-    
+
     Log.Info(MODULE, "Headlights initialized", {mode = currentMode})
     return true
 end
@@ -280,17 +391,22 @@ end
 function Headlights.Tick()
     if not isInitialized then return end
     if Config.Headlights and Config.Headlights.Enabled == false then return end
-    
+
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then return end
-    
+    if not actors then return end
+    local onCourse = actors.IsOnCourse()
+    local inGarage = actors.IsInGarage and actors.IsInGarage()
+    -- Run on a course, OR in the garage (manual modes only - see auto skip below).
+    if not onCourse and not inGarage then return end
+
     -- Don't run during PA
     if State.IsPAFrozen and State.IsPAFrozen() then return end
-    
-    -- Get player pawn (vehicle) - required for any light control
+
+    -- Pawn is required on a course; in the garage it may be nil and the FindAllOf
+    -- component path in setVehicleLights still drives the displayed car.
     local pawn = getPlayerPawn()
-    if not pawn then return end  -- No vehicle, skip tick
-    
+    if onCourse and not pawn then return end
+
     -- Force modes don't need time check
     if currentMode == "force_on" then
         if not headlightsOn or modeChanged then
@@ -311,23 +427,27 @@ function Headlights.Tick()
         end
         return
     end
-    
+
+    -- Auto mode is exposure/time driven and only meaningful on a course.
+    if not onCourse then return end
+
     -- Auto mode: check time
     local tod = getTimeOfDay()
     if not tod then return end
-    
+
     local currentTOD = tod.GetCurrentTOD()
     if not currentTOD then return end
-    
+
     -- Only update on significant TOD change or mode change (avoid spam)
     if not modeChanged and lastTOD and math.abs(currentTOD - lastTOD) < 5 then
         return
     end
     lastTOD = currentTOD
     modeChanged = false
-    
-    local shouldBeOn = isNightTime(currentTOD)
-    
+
+    -- Driven by the exposure brightness (lens) with hysteresis; TOD is the fallback.
+    local shouldBeOn = computeAutoDesired(currentTOD)
+
     if shouldBeOn and not headlightsOn then
         setVehicleLights(pawn, true)
         headlightsOn = true
@@ -340,7 +460,7 @@ function Headlights.Tick()
         pendingBrightnessApply = false
         Log.Info(MODULE, "Auto headlights OFF", {tod = currentTOD})
     end
-    
+
     -- Retry pending brightness application
     if pendingBrightnessApply and headlightsOn then
         brightnessRetryCount = brightnessRetryCount + 1
@@ -366,13 +486,38 @@ function Headlights.CycleMode()
     else
         currentMode = "auto"
     end
-    
+
     -- Flag for update on next tick
     modeChanged = true
-    
+    saveState()
+
     Log.Info(MODULE, "Headlight mode cycled", {mode = currentMode})
     return currentMode
 end
+
+--- Manual on/off toggle (one keybind). Disabled while auto is active: the user
+--- must turn auto off first. When in a manual mode, flips the actual light state.
+--- Two states, never "auto", so the pop-ups stay in sync.
+--- @return string newMode
+function Headlights.ToggleManual()
+    if currentMode == "auto" then
+        Log.Info(MODULE, "Manual toggle ignored - auto is active")
+        return currentMode
+    end
+    if headlightsOn then
+        currentMode = "force_off"
+    else
+        currentMode = "force_on"
+    end
+    modeChanged = true
+    saveState()
+    Log.Info(MODULE, "Headlight manual toggle", {mode = currentMode, wasOn = headlightsOn})
+    return currentMode
+end
+
+-- Auto mode is configured in config only (Config.Headlights.Mode = "auto"); there
+-- is intentionally no runtime auto toggle (a second toggle could desync from the
+-- manual on/off state).
 
 --- Set headlight mode directly
 --- @param mode string "auto" | "force_on" | "force_off"
@@ -380,6 +525,7 @@ function Headlights.SetMode(mode)
     if mode == "auto" or mode == "force_on" or mode == "force_off" then
         currentMode = mode
         modeChanged = true
+        saveState()
         Log.Info(MODULE, "Headlight mode set", {mode = currentMode})
     end
 end
@@ -406,6 +552,8 @@ function Headlights.GetStatus()
         lastTOD = lastTOD,
         onThreshold = HEADLIGHT_ON_TOD,
         offThreshold = HEADLIGHT_OFF_TOD,
+        onLens = ON_LENS,
+        offLens = OFF_LENS,
         brightnessLevel = currentBrightnessLevel,
         brightnessMultiplier = BRIGHTNESS_MULTIPLIERS[currentBrightnessLevel],
     }
@@ -419,7 +567,7 @@ end
 --- @return number count of modified lights
 applyBrightness = function(multiplier)
     local count = 0
-    
+
     -- Try BP_CarLightSpriteComponent_C first (controls visual glow/bloom)
     pcall(function()
         local sprites = FindAllOf("BP_CarLightSpriteComponent_C")
@@ -436,8 +584,8 @@ applyBrightness = function(multiplier)
             end
         end
     end)
-    
-    -- Also try BP_HeadLightComponent_C 
+
+    -- Also try BP_HeadLightComponent_C
     pcall(function()
         local components = FindAllOf("BP_HeadLightComponent_C")
         if components then
@@ -455,7 +603,7 @@ applyBrightness = function(multiplier)
             end
         end
     end)
-    
+
     -- Toggle headlights off then on to force refresh
     if count > 0 then
         -- Quick toggle via BP_HeadLightComponent visibility
@@ -475,7 +623,7 @@ applyBrightness = function(multiplier)
             end
         end)
     end
-    
+
     return count
 end
 
@@ -486,15 +634,16 @@ function Headlights.CycleBrightnessUp()
     if currentBrightnessLevel > #BRIGHTNESS_MULTIPLIERS then
         currentBrightnessLevel = 1
     end
-    
+
     local multiplier = BRIGHTNESS_MULTIPLIERS[currentBrightnessLevel]
     applyBrightness(multiplier)
-    
+    saveState()
+
     Log.Info(MODULE, "Brightness level up", {
         level = currentBrightnessLevel,
         multiplier = multiplier
     })
-    
+
     return currentBrightnessLevel, multiplier
 end
 
@@ -505,15 +654,16 @@ function Headlights.CycleBrightnessDown()
     if currentBrightnessLevel < 1 then
         currentBrightnessLevel = #BRIGHTNESS_MULTIPLIERS
     end
-    
+
     local multiplier = BRIGHTNESS_MULTIPLIERS[currentBrightnessLevel]
     applyBrightness(multiplier)
-    
+    saveState()
+
     Log.Info(MODULE, "Brightness level down", {
         level = currentBrightnessLevel,
         multiplier = multiplier
     })
-    
+
     return currentBrightnessLevel, multiplier
 end
 

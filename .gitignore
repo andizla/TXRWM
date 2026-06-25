@@ -15,3 +15,4 @@ test_phase1.lua
 .idea/
 .DS_Store
 Thumbs.db
+headlight_state.txt
