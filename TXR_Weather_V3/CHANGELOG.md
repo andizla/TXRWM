@@ -6,6 +6,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [3.0.18] - 2026-06-27
 
 ### Changed
+- **Auto headlights are more reliable.** They reconcile to the correct on/off state
+  on course load, and the cast light plus the brightness boost now only show when a
+  car's lights are actually on.
+- **Reworked the dawn/dusk exposure ramp** for a smoother, better-matched day/night
+  transition (still tuning).
+- **Slower, smoother scheduled weather changes.**
+- **Sharper close-range shadows** in the Photomode Engine.ini profile.
+
+### Internal
+- Removed unused modules and dead code.
+
+## [3.0.17] - 2026-06-26
+
+### Changed
 - **Headlights follow the exposure brightness in Auto mode** instead of a fixed
   clock. The lights now switch on/off with the actual scene brightness (the
   exposure lens curve) with a hysteresis band so they do not flicker at the
