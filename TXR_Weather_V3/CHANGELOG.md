@@ -6,29 +6,6 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ## [3.0.18] - 2026-06-27
 
 ### Changed
-- **Headlights switch on and off with the actual scene brightness** (the exposure
-  lens curve) with a hysteresis band so they do not flicker at the boundary. Falls
-  back to time-of-day if the exposure module is off.
-- **Smoother weather transitions:** cloud coverage and fog ramp to a new preset
-  instead of snapping, so weather changes ease in to match the precipitation blend.
-- **Smoother exposure transitions:** auto-exposure interpolates continuously between
-  its time-of-day slots instead of stepping every 30 minutes, removing the dawn and
-  dusk brightness cliffs. (still tuning this)
-- **Photomode Engine.ini:** better reflections, other minor stuff.
-
-### Added
-- **Headlight manual toggle, persistent.** Alt+Q is a clean manual on/off toggle
-  (no more three-state cycle that desynced). Auto mode is set in config only
-  (`Config.Headlights.Mode`). The manual on/off state and brightness level persist
-  across sessions.
-
-### Known Issues
-- Flashing the high-beams resets the headlight brightness back to default until the
-  next brightness change (the game recomputes intensity on its own hi-beam path).
-
-## [3.0.17] - 2026-06-26
-
-### Changed
 - **Headlights follow the exposure brightness in Auto mode** instead of a fixed
   clock. The lights now switch on/off with the actual scene brightness (the
   exposure lens curve) with a hysteresis band so they do not flicker at the
