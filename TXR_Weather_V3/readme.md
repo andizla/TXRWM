@@ -136,9 +136,9 @@ Check config and keybinds for info
 > Current major issues: **screen-space / material weather effects** (screen droplets, frost,
 > wetness/puddles) do not render in TXR (the game doesn't composite UDW's post-process and the road
 > materials lack UDW's functions) and are not Lua-fixable; **tunnel rain** can't be occluded from Lua
-> (tunnels have no overhead collision to trace); **auto-headlights** timing works, but on some cars
-> the lamp meshes stay lit and pop-up headlights (e.g. AE86) don't actuate. (Stars: fixed and
-> re-enabled in 3.0.15.)
+> (tunnels have no overhead collision to trace); **high-beam flash** resets the headlight brightness
+> to default until the next brightness change (the game recomputes intensity on its own hi-beam path).
+> (Auto headlights now track scene brightness; Stars: fixed and re-enabled in 3.0.15.)
 
 
 
@@ -300,7 +300,7 @@ Check config and keybinds for info
 
 | Alt+L | Raise flat shadow distance (calibration, logs FOV+distance) |
 
-| Alt+Q | Cycle headlight mode (auto/on/off) |
+| Alt+Q | Headlights on/off (manual; Auto mode is set in config) |
 
 | Alt+B | Cycle headlight brightness up (0.5x → 1x → 2x → 3x → 5x) |
 

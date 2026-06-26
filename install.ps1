@@ -145,19 +145,38 @@ function Set-ExposureFlag($modDst, $on){
     Ok "Set Config.Exposure.Enabled = $val (matches the exposure choice)."
 }
 
+# Set Config.Headlights.Mode in the installed mod's config.lua: "auto" (exposure
+# driven) or a manual default ("force_off" = off until toggled with Alt+Q).
+function Set-HeadlightMode($modDst, $mode){
+    $cfg = Join-Path $modDst 'Scripts\config.lua'
+    if(-not (Test-Path $cfg)){ return }
+    $lines = @(Get-Content $cfg)
+    $inHl = $false
+    for($i = 0; $i -lt $lines.Count; $i++){
+        if($lines[$i] -match '^\s*Config\.Headlights\s*=\s*\{'){ $inHl = $true; continue }
+        if($inHl -and $lines[$i] -match '^\s*Mode\s*='){
+            $lines[$i] = $lines[$i] -replace 'Mode\s*=\s*"[^"]*"', "Mode = `"$mode`""
+            break
+        }
+    }
+    WriteLines $cfg $lines
+    Ok "Set Config.Headlights.Mode = `"$mode`" (headlight control)."
+}
+
 # ----- start -----------------------------------------------------------------
 Say "================================================" White
 Say "  TXR Weather Mod V3 - Installer" White
 Say "  by Ten." White
 Say "================================================" White
 Say ""
-Say "This will set the mod up in 4 steps:" White
+Say "This will set the mod up in 5 steps:" White
 Say "  1. Find your Tokyo Xtreme Racer install (auto-detected via Steam)."
 Say "  2. Download + install UE4SS - the script loader the mod runs on."
 Say "     Any mods you already have are left in place."
 Say "  3. Install the weather mod and enable it (mods.txt)."
 Say "  4. Set up Engine.ini - pick a graphics profile (photomode / optimizations / minimal)."
 Say "     Any existing Engine.ini is backed up first."
+Say "  5. Choose headlight behaviour (auto or manual)."
 Say ""
 Say "Nothing on disk is changed until you confirm the location on the next screen." White
 Say ""
@@ -355,6 +374,18 @@ try {
         Ok "Installed Engine.ini profile: $label (read-only)."
         Set-ExposureFlag $modDst $exposureOn
     }
+
+    # 6) headlights (auto vs manual) ----------------------------------------
+    Step 'Headlights - auto or manual'
+    Say '    Headlights can switch on and off automatically with the scene brightness,'
+    Say '    or you can control them yourself.'
+    Say ''
+    Say '      1) Auto    follow the scene brightness, on at dusk / off at dawn   [recommended]' Green
+    Say '      2) Manual  off by default; toggle with Alt+Q (Alt+B sets brightness)'
+    Say ''
+    $hl = (Read-Host '    Choice [1-2, Enter = 1]').Trim()
+    $hlMode = if($hl -eq '2'){ 'force_off' } else { 'auto' }
+    Set-HeadlightMode $modDst $hlMode
 
 } finally {
     if(Test-Path $tmp){ Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }

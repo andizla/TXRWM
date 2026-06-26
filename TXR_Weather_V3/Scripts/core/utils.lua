@@ -4,37 +4,6 @@
 
 local Utils = {}
 
--- ============== SAFE CALL WRAPPER ==============
-
---- Safely call a function with error handling
---- @param fn function The function to call
---- @param ... any Arguments to pass
---- @return boolean success, any result_or_error
-function Utils.SafeCall(fn, ...)
-    if type(fn) ~= "function" then
-        return false, "Not a function"
-    end
-    return pcall(fn, ...)
-end
-
---- Safely call a function and log errors
---- @param Log table The logging module
---- @param module string Module name for logging
---- @param description string What the call is doing
---- @param fn function The function to call
---- @param ... any Arguments to pass
---- @return boolean success, any result
-function Utils.SafeCallWithLog(Log, module, description, fn, ...)
-    local success, result = pcall(fn, ...)
-    if not success then
-        if Log then
-            Log.Error(module, description .. " failed: " .. tostring(result))
-        end
-        return false, result
-    end
-    return true, result
-end
-
 -- ============== ACTOR/UOBJECT VALIDATION ==============
 
 --- Check if a UObject reference is valid
@@ -137,25 +106,6 @@ function Utils.SafeGetFunction(obj, functionName)
     return nil, false
 end
 
---- Safely call a function on a UObject
---- @param obj any The object
---- @param functionName string The function name
---- @param ... any Arguments
---- @return any result, boolean success
-function Utils.SafeCallMethod(obj, functionName, ...)
-    local fn, found = Utils.SafeGetFunction(obj, functionName)
-    if not found then
-        return nil, false
-    end
-    
-    local args = {...}
-    local success, result = pcall(function()
-        return fn(table.unpack(args))
-    end)
-    
-    return result, success
-end
-
 -- ============== NUMBER UTILITIES ==============
 
 --- Convert a value to number with fallback default
@@ -247,36 +197,6 @@ end
 
 -- ============== TABLE UTILITIES ==============
 
---- Shallow copy a table
---- @param t table The table to copy
---- @return table
-function Utils.ShallowCopy(t)
-    if type(t) ~= "table" then
-        return t
-    end
-    local copy = {}
-    for k, v in pairs(t) do
-        copy[k] = v
-    end
-    return copy
-end
-
---- Check if a table contains a value
---- @param t table The table to search
---- @param value any The value to find
---- @return boolean
-function Utils.Contains(t, value)
-    if type(t) ~= "table" then
-        return false
-    end
-    for _, v in pairs(t) do
-        if v == value then
-            return true
-        end
-    end
-    return false
-end
-
 --- Get table keys as an array
 --- @param t table The table
 --- @return table Array of keys
@@ -288,20 +208,6 @@ function Utils.Keys(t)
         end
     end
     return keys
-end
-
---- Merge two tables (second overwrites first)
---- @param t1 table Base table
---- @param t2 table Override table
---- @return table Merged table
-function Utils.Merge(t1, t2)
-    local result = Utils.ShallowCopy(t1)
-    if type(t2) == "table" then
-        for k, v in pairs(t2) do
-            result[k] = v
-        end
-    end
-    return result
 end
 
 -- ============== TIME UTILITIES ==============
@@ -321,22 +227,6 @@ end
 function Utils.DeltaTime(startTime, endTime)
     endTime = endTime or Utils.GetTime()
     return endTime - startTime
-end
-
--- ============== VALIDATION HELPERS ==============
-
---- Validate that a value is of expected type
---- @param value any The value to check
---- @param expectedType string Expected type name
---- @param name string Name of value for error messages
---- @return boolean valid, string|nil error
-function Utils.ValidateType(value, expectedType, name)
-    local actualType = type(value)
-    if actualType ~= expectedType then
-        return false, string.format("%s: expected %s, got %s", 
-            name or "value", expectedType, actualType)
-    end
-    return true, nil
 end
 
 -- ============== ANIMATION/SMOOTHING ==============
@@ -360,7 +250,7 @@ function Utils.ExpSmooth(current, target, smoothTime, dt)
         return target
     end
     local factor = 1 - math.exp(-dt / smoothTime)
-    return current + (target - target) * factor + (target - current) * factor
+    return current + (target - current) * factor
 end
 
 -- ============== TIME-BASED FACTORS ==============

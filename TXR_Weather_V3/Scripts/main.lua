@@ -424,6 +424,12 @@ local function onTick()
                     Exposure.OnCourseLoad()
                 end
 
+                -- Reconcile headlights: clear any cast-only desync the game's native
+                -- auto leaves at load by re-asserting the desired state on entry.
+                if Headlights and Headlights.OnCourseLoad then
+                    Headlights.OnCourseLoad()
+                end
+
                 initialWeatherApplied = true
             end
         end
@@ -440,7 +446,7 @@ local function onTick()
             end
             initialWeatherApplied = false
             _pendingRestore = true  -- Signal to restore on next actor detection
-            print("[TXR] Actors lost - pending restore on next detection")
+            Log.Info("Main", "Actors lost - pending restore on next detection")
         end
         
         -- Phase 4+: Time updates (skip in PA)
@@ -519,147 +525,6 @@ local function onTick()
 end
 
 -- ============== UE4SS HOOKS ==============
-
--- Get world tag from actor's world object
-local function getWorldTagFromActor(actor)
-    if not actor then return "unknown" end
-    
-    -- Check validity
-    local isValid = false
-    pcall(function()
-        if actor.IsValid then isValid = actor:IsValid() end
-    end)
-    if not isValid then return "unknown" end
-    
-    -- Get world object
-    local worldObj = nil
-    pcall(function()
-        if actor.GetWorld then worldObj = actor:GetWorld() end
-    end)
-    
-    -- Check world validity
-    local worldValid = false
-    if worldObj then
-        pcall(function()
-            if worldObj.IsValid then worldValid = worldObj:IsValid() end
-        end)
-    end
-    if not worldValid then return "unknown" end
-    
-    -- Get world string and detect tag
-    local ws = nil
-    pcall(function() ws = tostring(worldObj) end)
-    
-    if type(ws) == "string" then
-        local lw = ws:lower()
-        if lw:find("garage") or lw:find("outgame") or lw:find("ls_") then
-            return "outgame"
-        elseif lw:find("_pa") or lw:find("/pa") or lw:find(" pa ") or lw:find("pa_") or lw:find("pause") then
-            return "pa"
-        end
-    end
-    
-    return "course"
-end
-
--- Capture course state while actors still valid
-local function captureCurrentState()
-    local uds = Actors and Actors.GetUDS()
-    local udw = Actors and Actors.GetUDW()
-    
-    local tod = -1
-    local cloud = -1
-    local fog = -1
-    local speed = Config.TimeOfDay.DefaultSpeed
-    
-    if uds then
-        pcall(function() tod = uds["Time Of Day"] end)
-        pcall(function() speed = uds["Simulation Speed"] end)
-    end
-    
-    if udw then
-        pcall(function() cloud = udw["Cloud Coverage"] end)
-        pcall(function() fog = udw["Fog"] end)
-    end
-    
-    local preset = State.GetCurrentPreset()
-    
-    return {
-        tod = Utils.ToNumber(tod, -1),
-        cloud = Utils.ToNumber(cloud, -1),
-        fog = Utils.ToNumber(fog, -1),
-        speed = Utils.ToNumber(speed, Config.TimeOfDay.DefaultSpeed),
-        preset = preset
-    }
-end
-
--- Apply frozen state to PA
-local function applyPAFreeze(actor)
-    -- Get captured state
-    local captured = State.GetCapturedPAState()
-    
-    -- Set TOD from captured state
-    if captured and captured.tod and captured.tod >= 0 then
-        pcall(function() actor["Time Of Day"] = captured.tod end)
-        Log.Info("Main", string.format("PA: Applied captured TOD=%.2f", captured.tod))
-    end
-    
-    -- Freeze time
-    pcall(function() actor["Animate Time of Day"] = false end)
-    pcall(function() actor["Time Speed"] = 0 end)
-    pcall(function() actor["Simulation Speed"] = 0 end)
-    
-    -- Apply cloud/fog to UDW if available
-    local udw = nil
-    pcall(function() udw = actor["Ultra Dynamic Weather"] end)
-    if udw and captured then
-        if captured.cloud and captured.cloud >= 0 then
-            pcall(function() udw["Cloud Coverage - Manual Override"] = true end)
-            pcall(function() udw["Cloud Coverage"] = captured.cloud end)
-        end
-        if captured.fog and captured.fog >= 0 then
-            pcall(function() udw["Fog - Manual Override"] = true end)
-            pcall(function() udw["Fog"] = captured.fog end)
-        end
-    end
-    
-    State.SetPAFrozen(true)
-    Log.Info("Main", "PA: Time frozen")
-end
-
--- Restore state when returning from PA
-local function restoreFromPA(actor)
-    local captured = State.GetCapturedPAState()
-    if not captured then return end
-    
-    -- Restore TOD
-    if captured.tod and captured.tod >= 0 then
-        pcall(function() actor["Time Of Day"] = captured.tod end)
-        Log.Info("Main", string.format("Course: Restored TOD=%.2f from PA", captured.tod))
-    end
-    
-    -- Resume time
-    pcall(function() actor["Animate Time of Day"] = true end)
-    pcall(function() actor["Simulation Speed"] = captured.speed or Config.TimeOfDay.DefaultSpeed end)
-    pcall(function() actor["Time Speed"] = 1.0 end)
-    
-    -- Restore cloud/fog
-    local udw = nil
-    pcall(function() udw = actor["Ultra Dynamic Weather"] end)
-    if udw then
-        if captured.cloud and captured.cloud >= 0 then
-            pcall(function() udw["Cloud Coverage - Manual Override"] = true end)
-            pcall(function() udw["Cloud Coverage"] = captured.cloud end)
-        end
-        if captured.fog and captured.fog >= 0 then
-            pcall(function() udw["Fog - Manual Override"] = true end)
-            pcall(function() udw["Fog"] = captured.fog end)
-        end
-    end
-    
-    State.SetPAFrozen(false)
-    Log.Info("Main", "Course: Restored state from PA")
-end
 
 local function setupHooks()
     Log.Info("Main", "Setting up UE4SS hooks...")
@@ -859,8 +724,6 @@ local _CourseStateBeforePA = nil
 -- LoadMapPreHook - fires BEFORE map unload while actors still valid
 if RegisterLoadMapPreHook then
     RegisterLoadMapPreHook(function()
-        print("[TXR] LoadMapPreHook fired")
-        
         -- Get world tag from Actors module (or State) - NOT local variable
         local currentTag = "unknown"
         if Actors and Actors.GetWorldTag then
@@ -890,9 +753,6 @@ if RegisterLoadMapPreHook then
             local speed = State and State.GetTimeSpeed() or 53.333
             local preset = State and State.GetCurrentPreset() or "Clear_Skies"
             
-            print(string.format("[TXR] LoadMapPreHook: Read live values TOD=%.2f cloud=%.2f fog=%.2f preset=%s",
-                tod, cloud, fog, preset or "?"))
-            
             -- Only save if we got valid values
             if tod >= 0 and tod <= 2400 then
                 _CourseStateBeforePA = {
@@ -908,11 +768,9 @@ if RegisterLoadMapPreHook then
                 if Log then Log.Info("Main", string.format("Captured pre-PA: TOD=%.2f cloud=%.2f fog=%.2f preset=%s", 
                     tod, cloud or -1, fog or -1, preset or "?")) end
             else
-                print(string.format("[TXR] LoadMapPreHook: Invalid TOD=%.2f - cannot capture", tod or -1))
                 if Log then Log.Warn("Main", string.format("Invalid TOD on unload: %.2f", tod or -1)) end
             end
         else
-            print(string.format("[TXR] LoadMapPreHook: Actors not valid (uds=%s udw=%s)", tostring(udsValid), tostring(udwValid)))
             if Log then Log.Debug("Main", "No valid actors on unload - cannot capture state") end
         end
         
@@ -923,7 +781,6 @@ if RegisterLoadMapPreHook then
         
         _LastWorldTag = currentTag
     end)
-    print("[TXR] RegisterLoadMapPreHook completed")
 end
 
 -- Sky class caching like V1.34
@@ -994,9 +851,6 @@ if RegisterBeginPlayPreHook then
         -- Must match at least one detection method
         if not (isSkyCls or isCourseCls or isSkyByName) then return end
         
-        print(string.format("[TXR] BeginPlayPreHook: Sky actor detected (IsA=%s/%s name=%s)", 
-            tostring(isSkyCls), tostring(isCourseCls), actorName and actorName:sub(1,50) or "?"))
-        
         -- Get world tag from actor
         local tag = "course"
         local worldString = "unknown"
@@ -1014,15 +868,11 @@ if RegisterBeginPlayPreHook then
             end
         end)
         
-        -- DEBUG: Always log the world string so we can see what PA looks like
-        print(string.format("[TXR] World string: %s", worldString))
-        print(string.format("[TXR] World tag: %s (was %s)", tag, _LastWorldTag))
-        if Log then Log.Info("Main", string.format("BeginPlayPreHook: worldString=%s tag=%s (was %s)", 
+        if Log then Log.Info("Main", string.format("BeginPlayPreHook: worldString=%s tag=%s (was %s)",
             worldString:sub(1,80), tag, _LastWorldTag)) end
         
         -- Handle PA entry - V1.32 pattern: load from file, apply, freeze
         if tag == "pa" then
-            print("[TXR] Entering PA - loading state and freezing")
             if Log then Log.Info("Main", "Entering PA - loading state from file") end
             
             -- STEP 1: Load state from persistence file FIRST (V1.32 pattern)
@@ -1035,8 +885,6 @@ if RegisterBeginPlayPreHook then
                     savedCloud = data.cloud
                     savedFog = data.fog
                     savedPreset = data.preset
-                    print(string.format("[TXR] PA: Loaded from file: TOD=%.2f cloud=%.2f fog=%.2f preset=%s",
-                        savedTOD or -1, savedCloud or -1, savedFog or -1, savedPreset or "?"))
                 end
             end
             
@@ -1057,7 +905,6 @@ if RegisterBeginPlayPreHook then
             -- STEP 2: Apply saved TOD to PA actor
             if savedTOD and savedTOD >= 0 and savedTOD <= 2400 then
                 pcall(function() Actor["Time Of Day"] = savedTOD end)
-                print(string.format("[TXR] PA: Set TOD to %.2f", savedTOD))
             end
             
             -- STEP 3: Get UDW and apply cloud/fog
@@ -1073,18 +920,15 @@ if RegisterBeginPlayPreHook then
                 if savedCloud and savedCloud >= 0 then
                     pcall(function() udw["Cloud Coverage - Manual Override"] = true end)
                     pcall(function() udw["Cloud Coverage"] = savedCloud end)
-                    print(string.format("[TXR] PA: Set Cloud to %.2f", savedCloud))
                 end
                 if savedFog ~= nil then
                     pcall(function() udw["Fog - Manual Override"] = true end)
                     pcall(function() udw["Fog"] = savedFog end)
-                    print(string.format("[TXR] PA: Set Fog to %.2f", savedFog))
                 end
             end
             
             -- STEP 4: Re-apply weather preset to get rain/effects
             if savedPreset and Weather and Weather.Apply then
-                print(string.format("[TXR] PA: Re-applying weather preset: %s", savedPreset))
                 if Log then Log.Info("Main", "PA: Re-applying preset " .. tostring(savedPreset)) end
                 pcall(function() Weather.Apply(savedPreset, 0) end)
             end
@@ -1111,7 +955,6 @@ if RegisterBeginPlayPreHook then
         -- Don't restore here - let the main tick loop's Persistence.Restore() handle it
         -- This matches Fix1 behavior where TOD worked
         elseif tag == "course" and _pendingRestore then
-            print("[TXR] Course entry after map transition - will restore in tick loop")
             if Log then Log.Info("Main", "Course entry - deferring restore to tick loop") end
             _pendingRestore = false
             -- restoredFromPA stays false so tick loop will call Persistence.Restore()
@@ -1122,7 +965,6 @@ if RegisterBeginPlayPreHook then
         -- Update State module
         if State and State.SetWorldContext then State.SetWorldContext(tag) end
     end)
-    print("[TXR] RegisterBeginPlayPreHook completed")
 end
 
 -- Export for external access if needed

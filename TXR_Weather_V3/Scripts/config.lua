@@ -45,7 +45,7 @@ Config.Scheduler = {
     Enabled = true,             -- master switch for AUTO changes (Alt+P works regardless)
     MinIntervalSeconds = 180,   -- shortest hold on a preset (3 min)
     MaxIntervalSeconds = 480,   -- longest hold on a preset (8 min)
-    TransitionSeconds = 20.0,   -- blend time for scheduled changes (smooth)
+    TransitionSeconds = 40.0,   -- blend time for scheduled changes (smooth)
 
     -- Set false to keep the scheduler from ever picking precipitation presets
     -- (rain/snow/dust). Useful while the in-tunnel rain issue persists. Does not
@@ -85,7 +85,7 @@ Config.Scheduler = {
 -- ============== TIME OF DAY ==============
 Config.TimeOfDay = {
     DefaultSpeed = 53.333,  -- normal speed (~30 min day cycle)
-    FastSpeed = 160.0,      -- Alt+T fast-forward
+    FastSpeed = 320.0,      -- Alt+T fast-forward
     StartingTOD = nil,      -- 0-2400, or nil to not override
     DawnStart = 600, DawnEnd = 800,    -- 06:00 - 08:00
     DuskStart = 1800, DuskEnd = 2000,  -- 18:00 - 20:00
@@ -191,7 +191,7 @@ Config.CloudsFog = {
 
     CloudSmoothingSeconds = 30.0,
     FogSmoothingSeconds = 45.0,
-    PresetTransitionSeconds = 5.0,
+    PresetTransitionSeconds = 10.0,
 
     -- Long-term drift
     CloudDriftAmplitude = 0.4, CloudDriftPeriod = 180.0,
@@ -255,10 +255,11 @@ Config.Headlights = {
     Enabled = true,
     -- AUTO vs MANUAL is set HERE only (there is no runtime auto-toggle keybind):
     --   "auto"      = exposure-driven on/off (Alt+Q manual toggle is ignored).
-    --   "force_on"  = manual, default on  (Alt+Q toggles on/off, also in the garage).
-    --   "force_off" = manual, default off (Alt+Q toggles on/off, also in the garage).
+    --   "force_on"  = manual, default on  (Alt+Q toggles on/off).
+    --   "force_off" = manual, default off (Alt+Q toggles on/off).
     -- The manual on/off state + brightness persist across restarts; "auto" does not
-    -- get overridden by the persisted state.
+    -- get overridden by the persisted state. (Headlights are course-only; garage
+    -- lights are left to the game.)
     Mode = "auto",
 
     -- Auto mode tracks the Exposure module's interpolated brightness (lens proxy:
@@ -310,47 +311,47 @@ Config.Exposure = {
         -- PRE-DAWN
         [ 9] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 04:00-04:30
         [10] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 04:30-05:00
-        [11] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 05:00-05:30
-        [12] = { sky = 0.500, leak = 0.050, lens = 25.00 }, -- 05:30-06:00
-        -- DAWN TRANSITION
-        [13] = { sky = 0.050, leak = 0.050, lens =  3.78 }, -- 06:00-06:30
-        [14] = { sky = 0.050, leak = 0.050, lens =  3.78 }, -- 06:30-07:00
-        [15] = { sky = 0.050, leak = 0.050, lens =  2.78 }, -- 07:00-07:30
+        -- DAWN TRANSITION (gain drops night -> day; LOWER lens = darker dawn)
+        [11] = { sky = 0.900, leak = 0.050, lens = 24.00 }, -- 05:00-05:30
+        [12] = { sky = 0.600, leak = 0.050, lens = 14.00 }, -- 05:30-06:00
+        [13] = { sky = 0.250, leak = 0.050, lens =  5.00 }, -- 06:00-06:30
+        [14] = { sky = 0.120, leak = 0.050, lens =  2.50 }, -- 06:30-07:00
+        [15] = { sky = 0.080, leak = 0.050, lens =  1.80 }, -- 07:00-07:30
+        [16] = { sky = 0.030, leak = 0.050, lens =  1.00 }, -- 07:30-08:00
+        [17] = { sky = 0.010, leak = 0.050, lens =  0.70 }, -- 08:00-08:30
+        [18] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 08:30-09:00
         -- DAY
-        [16] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 07:30-08:00
-        [17] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 08:00-08:30
-        [18] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 08:30-09:00
-        [19] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 09:00-09:30
-        [20] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 09:30-10:00
-        [21] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 10:00-10:30
-        [22] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 10:30-11:00
-        [23] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 11:00-11:30
-        [24] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 11:30-12:00
-        [25] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 12:00-12:30
-        [26] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 12:30-13:00
-        [27] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 13:00-13:30
-        [28] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 13:30-14:00
-        [29] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 14:00-14:30
-        [30] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 14:30-15:00
-        [31] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 15:00-15:30
-        [32] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 15:30-16:00
-        [33] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 16:00-16:30
-        [34] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 16:30-17:00
-        [35] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 17:00-17:30
-        [36] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 17:30-18:00
-        -- LATE AFTERNOON -> EVENING
-        [37] = { sky = 0.005, leak = 0.050, lens =  0.78 }, -- 18:00-18:30
-        [38] = { sky = 0.005, leak = 0.050, lens =  1.00 }, -- 18:30-19:00
-        [39] = { sky = 0.005, leak = 0.050, lens =  3.00 }, -- 19:00-19:30
-        [40] = { sky = 0.005, leak = 0.050, lens =  5.00 }, -- 19:30-20:00
-        [41] = { sky = 0.050, leak = 0.050, lens = 10.00 }, -- 20:00-20:30
-        [42] = { sky = 0.500, leak = 0.050, lens = 15.00 }, -- 20:30-21:00
-        -- NIGHT CORE
-        [43] = { sky = 0.500, leak = 0.050, lens = 15.00 }, -- 21:00-21:30
+        [19] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 09:00-09:30
+        [20] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 09:30-10:00
+        [21] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 10:00-10:30
+        [22] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 10:30-11:00
+        [23] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 11:00-11:30
+        [24] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 11:30-12:00
+        [25] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 12:00-12:30
+        [26] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 12:30-13:00
+        [27] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 13:00-13:30
+        [28] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 13:30-14:00
+        [29] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 14:00-14:30
+        [30] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 14:30-15:00
+        [31] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 15:00-15:30
+        [32] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 15:30-16:00
+        [33] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 16:00-16:30
+        [34] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 16:30-17:00
+        [35] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 17:00-17:30
+        -- DUSK TRANSITION (gain rises day -> night; HIGHER lens = brighter dusk)
+        [36] = { sky = 0.020, leak = 0.050, lens =  0.75 }, -- 17:30-18:00
+        [37] = { sky = 0.030, leak = 0.050, lens =  1.00 }, -- 18:00-18:30
+        [38] = { sky = 0.050, leak = 0.050, lens =  1.50 }, -- 18:30-19:00
+        [39] = { sky = 0.100, leak = 0.050, lens =  2.50 }, -- 19:00-19:30
+        [40] = { sky = 0.250, leak = 0.050, lens =  4.50 }, -- 19:30-20:00
+        [41] = { sky = 0.500, leak = 0.050, lens =  9.00 }, -- 20:00-20:30
+        [42] = { sky = 0.900, leak = 0.050, lens = 24.00 }, -- 20:30-21:00
+        [43] = { sky = 1.000, leak = 0.050, lens = 28.00 }, -- 21:00-21:30
         [44] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 21:30-22:00
         [45] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 22:00-22:30
         [46] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 22:30-23:00
         [47] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 23:00-23:30
+        -- NIGHT CORE
         [48] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 23:30-24:00
     },
 }
@@ -377,10 +378,10 @@ Config.ModuleToggles = {
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 0, Patch = 17,
-    String = "3.0.17",
+    Major = 3, Minor = 0, Patch = 18,
+    String = "3.0.18",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.0.17",
+    FullName = "TXR Weather Mod v3.0.18",
 }
 
 return Config

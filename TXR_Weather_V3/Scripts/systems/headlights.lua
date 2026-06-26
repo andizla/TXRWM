@@ -43,6 +43,14 @@ local headlightsOn = false
 local lastTOD = nil
 local modeChanged = false
 
+-- Course-entry reconcile: on a fresh course the cached on/off state is unknown and
+-- the game's native auto may have enabled a cast-only light. Force ONE assert of the
+-- desired state (ignoring the stale headlightsOn cache) after a short settle so the
+-- exposure lens is available.
+local entryAssertPending = false
+local courseTicks = 0
+local ENTRY_SETTLE_TICKS = 16  -- ~2s at 125ms tick (lets exposure produce a lens)
+
 -- Brightness control state
 local BRIGHTNESS_MULTIPLIERS = {
     0.5,   -- Level 1: Dim
@@ -161,6 +169,25 @@ local function safeCallMethod(obj, methodName, ...)
     return ok
 end
 
+--- Read a light component's owning vehicle `is_light_on` flag. Used to gate the
+--- world-wide cast light + brightness pass so a car's headlights only render when
+--- that car actually has its lights on.
+--- @param comp userdata light component
+--- @return boolean|nil true/false, or nil if it could not be read (caller falls back)
+local function ownerLightsOn(comp)
+    local result = nil
+    pcall(function()
+        if comp.GetOwner then
+            local owner = comp:GetOwner()
+            if owner then
+                local v = owner.is_light_on
+                if type(v) == "boolean" then result = v end
+            end
+        end
+    end)
+    return result
+end
+
 --- Get PlayerController via UEHelpers (V2 pattern)
 --- @return userdata|nil
 local function getPlayerController()
@@ -183,11 +210,12 @@ local function getPlayerPawn()
     return nil
 end
 
---- Set vehicle lights using V2's working method calls.
---- @param obj userdata|nil Vehicle/Pawn (may be nil in the garage; the FindAllOf
----            component methods still drive the displayed car's lights)
+--- Set vehicle lights using V2's working method calls
+--- @param obj userdata Vehicle/Pawn
 --- @param on boolean
 local function setVehicleLights(obj, on)
+    if not isValidActor(obj) then return false end
+
     local want = on
     if Config.Headlights and Config.Headlights.Invert then
         want = not on
@@ -195,9 +223,13 @@ local function setVehicleLights(obj, on)
 
     local success = false
 
-    -- Method 1: V2-style method calls on the pawn (only when we have one).
-    if isValidActor(obj) then
-    success = safeCallMethod(obj, 'SetLightOn', want)
+    -- Set the player's light flag directly. NOT SetLightOn: that is a TOGGLE whose
+    -- argument is the RHL-animation flag, so calling it to "set" a state flips
+    -- is_light_on the wrong way - which, combined with the owner-gated visibility
+    -- below, inverts the lights (off at night, on at dawn). A direct write keeps the
+    -- gate consistent with intent and leaves the pop-ups to the native hi-beam path.
+    pcall(function() obj.is_light_on = want end)
+    success = true
     if want then
         safeCallMethod(obj, 'SetLightSpriteScale', 0)
     end
@@ -215,26 +247,28 @@ local function setVehicleLights(obj, on)
         safeCallMethod(obj, 'SetTailLightsOn', false)
         safeCallMethod(obj, 'SetRearLightsOn', false)
     end
-    end  -- isValidActor(obj)
 
-    -- Method 2: Direct BP_HeadLightComponent control (TXR-specific). Works via
-    -- FindAllOf with no pawn, so it drives the displayed car in the garage too.
+    -- Method 2: Direct BP_HeadLightComponent control (TXR-specific)
     local hlCount = 0
     pcall(function()
         local headlightComps = FindAllOf("BP_HeadLightComponent_C")
         if headlightComps then
             for _, comp in ipairs(headlightComps) do
                 if comp and comp:IsValid() then
+                    -- Only light this car's headlight if its own lights are on
+                    -- (fall back to the requested state if the owner can't be read).
+                    local lit = ownerLightsOn(comp)
+                    if lit == nil then lit = want end
                     -- SetVisibility controls rendering
                     if comp.SetVisibility then
-                        comp:SetVisibility(want, true)  -- propagate to children
+                        comp:SetVisibility(lit, true)  -- propagate to children
                     end
                     -- Also try SetActive for component activation
                     if comp.SetActive then
-                        comp:SetActive(want)
+                        comp:SetActive(lit)
                     end
                     -- Direct intensity control as fallback
-                    if want then
+                    if lit then
                         -- Use normal intensity (could expose hibeam later)
                         local intensity = safeGet(comp, 'Normal_intensity')
                         if intensity and intensity > 0 then
@@ -264,8 +298,11 @@ local function setVehicleLights(obj, on)
                     pcall(function() name = light:GetFullName() or "" end)
                     -- Only affect headlight-named components
                     if name:lower():find("head") or name:lower():find("front") then
+                        -- Cast light follows the owning car's light state.
+                        local lit = ownerLightsOn(light)
+                        if lit == nil then lit = want end
                         if light.SetVisibility then
-                            light:SetVisibility(want, true)
+                            light:SetVisibility(lit, true)
                         end
                         spotCount = spotCount + 1
                         success = true
@@ -387,25 +424,35 @@ function Headlights.Init()
     return true
 end
 
+--- Called on a fresh course load. The cached on/off state is stale and the game's
+--- native auto may have left a cast-only light enabled, so schedule a one-time
+--- reconcile: re-assert force modes and force the next auto tick to drive the lights
+--- to the correct state (after a short settle for the exposure lens).
+function Headlights.OnCourseLoad()
+    headlightsOn = false        -- unknown until we assert
+    lastTOD = nil
+    modeChanged = true          -- re-assert force_on / force_off
+    entryAssertPending = true   -- force one auto assert, ignoring the stale cache
+    courseTicks = 0
+    Log.Info(MODULE, "Course load - will re-assert headlight state")
+end
+
 --- Main tick function
 function Headlights.Tick()
     if not isInitialized then return end
     if Config.Headlights and Config.Headlights.Enabled == false then return end
 
     local actors = getActors()
-    if not actors then return end
-    local onCourse = actors.IsOnCourse()
-    local inGarage = actors.IsInGarage and actors.IsInGarage()
-    -- Run on a course, OR in the garage (manual modes only - see auto skip below).
-    if not onCourse and not inGarage then return end
+    if not actors or not actors.IsOnCourse() then return end
 
     -- Don't run during PA
     if State.IsPAFrozen and State.IsPAFrozen() then return end
 
-    -- Pawn is required on a course; in the garage it may be nil and the FindAllOf
-    -- component path in setVehicleLights still drives the displayed car.
+    -- Get player pawn (vehicle) - required for any light control
     local pawn = getPlayerPawn()
-    if onCourse and not pawn then return end
+    if not pawn then return end  -- No vehicle, skip tick
+
+    courseTicks = courseTicks + 1
 
     -- Force modes don't need time check
     if currentMode == "force_on" then
@@ -428,9 +475,6 @@ function Headlights.Tick()
         return
     end
 
-    -- Auto mode is exposure/time driven and only meaningful on a course.
-    if not onCourse then return end
-
     -- Auto mode: check time
     local tod = getTimeOfDay()
     if not tod then return end
@@ -438,8 +482,9 @@ function Headlights.Tick()
     local currentTOD = tod.GetCurrentTOD()
     if not currentTOD then return end
 
-    -- Only update on significant TOD change or mode change (avoid spam)
-    if not modeChanged and lastTOD and math.abs(currentTOD - lastTOD) < 5 then
+    -- Only update on significant TOD change or mode change (avoid spam). A pending
+    -- entry assert must keep evaluating until it fires, so it bypasses this guard.
+    if not modeChanged and not entryAssertPending and lastTOD and math.abs(currentTOD - lastTOD) < 5 then
         return
     end
     lastTOD = currentTOD
@@ -448,7 +493,16 @@ function Headlights.Tick()
     -- Driven by the exposure brightness (lens) with hysteresis; TOD is the fallback.
     local shouldBeOn = computeAutoDesired(currentTOD)
 
-    if shouldBeOn and not headlightsOn then
+    if entryAssertPending and courseTicks >= ENTRY_SETTLE_TICKS then
+        -- Course-entry reconcile: drive the lights to the desired state unconditionally,
+        -- clearing any cast-only desync the game's native auto left at load.
+        setVehicleLights(pawn, shouldBeOn)
+        headlightsOn = shouldBeOn
+        entryAssertPending = false
+        pendingBrightnessApply = shouldBeOn
+        brightnessRetryCount = 0
+        Log.Info(MODULE, "Auto headlights asserted on entry", {on = shouldBeOn, tod = currentTOD})
+    elseif shouldBeOn and not headlightsOn then
         setVehicleLights(pawn, true)
         headlightsOn = true
         pendingBrightnessApply = true
@@ -495,13 +549,12 @@ function Headlights.CycleMode()
     return currentMode
 end
 
---- Manual on/off toggle (one keybind). Disabled while auto is active: the user
---- must turn auto off first. When in a manual mode, flips the actual light state.
---- Two states, never "auto", so the pop-ups stay in sync.
+--- Manual on/off toggle (one keybind). Flips the manual light state, but is
+--- ignored while the configured mode is "auto" (auto vs manual is config-only).
 --- @return string newMode
 function Headlights.ToggleManual()
     if currentMode == "auto" then
-        Log.Info(MODULE, "Manual toggle ignored - auto is active")
+        Log.Info(MODULE, "Manual toggle ignored - auto is active (set Mode in config)")
         return currentMode
     end
     if headlightsOn then
@@ -574,8 +627,11 @@ applyBrightness = function(multiplier)
         if sprites then
             for _, sprite in ipairs(sprites) do
                 if sprite and sprite:IsValid() and sprite.SetIntensity then
+                    -- Don't brighten a car's sprite glow if its lights are off.
+                    local lit = ownerLightsOn(sprite)
+                    local value = (lit == false) and 0 or multiplier
                     local success = pcall(function()
-                        sprite:SetIntensity(multiplier)
+                        sprite:SetIntensity(value)
                     end)
                     if success then
                         count = count + 1
@@ -592,8 +648,10 @@ applyBrightness = function(multiplier)
             for _, light in ipairs(components) do
                 if light and light:IsValid() then
                     pcall(function()
+                        -- Off cars get zero intensity; on (or unknown) cars get brightened.
+                        local lit = ownerLightsOn(light)
                         local baseNormal = light["Normal_intensity"] or 1000
-                        local newIntensity = baseNormal * multiplier
+                        local newIntensity = (lit == false) and 0 or (baseNormal * multiplier)
                         light.Intensity = newIntensity
                         if light.SetIntensity then
                             light:SetIntensity(newIntensity)
@@ -617,7 +675,8 @@ applyBrightness = function(multiplier)
                 end
                 for _, comp in ipairs(headlightComps) do
                     if comp and comp:IsValid() and comp.SetVisibility then
-                        comp:SetVisibility(true, true)
+                        -- Only re-show cars whose lights are actually on.
+                        comp:SetVisibility(ownerLightsOn(comp) ~= false, true)
                     end
                 end
             end

@@ -194,6 +194,10 @@ function Exposure.OnCourseLoad()
     currentSlot = nil
     lastCheckClock = 0.0
     lastApplied.sky, lastApplied.leak, lastApplied.lens = nil, nil, nil
+    -- Clear the brightness proxy too: a stale night-lens from the previous course
+    -- would otherwise make the headlight auto assert lights ON at a daytime entry
+    -- before the first re-evaluation. nil makes headlights fall back to TOD instead.
+    lastInterpLens = nil
 end
 
 --- Per-tick update. Cheap: only re-evaluates the slot every UPDATE_INTERVAL
