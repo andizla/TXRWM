@@ -378,9 +378,10 @@ local function onToggleHeadlights()
         return
     end
 
-    -- Manual on/off only (force_on <-> force_off). Auto is a separate keybind.
-    local newMode = headlights.ToggleManual()
-    Log.Info(MODULE, "Headlight manual toggled", {mode = newMode})
+    -- Garage-aware: in the garage this toggles the displayed car's lights (pops
+    -- animate); on a course it is the normal manual on/off (no-op while config=auto).
+    local where = headlights.OnManualToggleKey()
+    Log.Info(MODULE, "Headlight manual toggled", {result = where})
 end
 
 local function onBrightnessUp()
@@ -508,6 +509,7 @@ function Keybinds.Init(config)
     if config.CycleHeadlights then
         registerKeybind("CycleHeadlights", config.CycleHeadlights, onToggleHeadlights)
     end
+
     
     -- Register brightness controls
     Log.Debug(MODULE, "Checking brightness keybinds", {

@@ -76,7 +76,7 @@ Config.Scheduler = {
             Partly_Cloudy = 1.0,
             Cloudy        = 1.5,
             Overcast      = 1.5,
-            Foggy         = 1.2,
+            Foggy         = 0.5,
         },
         -- night / dawn / dusk omitted = all multipliers 1.0 (use the base pool).
     },
@@ -162,7 +162,7 @@ Config.Keybinds = {
     DebugForceDry    = { Key = "W", Modifiers = {"Alt", "Shift"} },
     ShadowDistanceUp = { Key = "L", Modifiers = {"Alt"} },
     ShadowDistanceDown = { Key = "L", Modifiers = {"Alt", "Shift"} },
-    CycleHeadlights    = { Key = "Q", Modifiers = {"Alt"} },          -- manual headlights on/off (auto is config-only)
+    CycleHeadlights    = { Key = "Q", Modifiers = {"Alt"} },          -- manual headlights on/off (garage too); auto is config-only
     BrightnessUp     = { Key = "B", Modifiers = {"Alt"} },
     BrightnessDown   = { Key = "B", Modifiers = {"Alt", "Shift"} },
     -- Exposure tuning feedback: press when the picture looks wrong; logs time,
@@ -258,9 +258,9 @@ Config.Headlights = {
     --   "force_on"  = manual, default on  (Alt+Q toggles on/off).
     --   "force_off" = manual, default off (Alt+Q toggles on/off).
     -- The manual on/off state + brightness persist across restarts; "auto" does not
-    -- get overridden by the persisted state. (Headlights are course-only; garage
-    -- lights are left to the game.)
-    Mode = "auto",
+    -- get overridden by the persisted state. In the garage, Alt+Q toggles the
+    -- displayed car's lights (pop-ups animate there too).
+    Mode = "force_on",
 
     -- Auto mode tracks the Exposure module's interpolated brightness (lens proxy:
     -- ~0.78 bright day .. ~30 deep night) instead of a fixed clock, so the lamps
@@ -270,6 +270,14 @@ Config.Headlights = {
     OffLens = 3.5,   -- turn OFF once it falls below this (getting light)
 
     DefaultBrightnessLevel = 3,  -- 1=0.5x 2=1.0x 3=2.0x 4=3.0x 5=5.0x
+
+    -- Light-button gesture (keyboard + controller; reads the hi-beam input state, so
+    -- device-agnostic). Acted on release by how long the light button was held:
+    --   <= GestureTapMaxSeconds   -> headlights ON  (a short press / tap)
+    --   >= GestureOffHoldSeconds  -> headlights OFF (a deliberate hold)
+    -- Manual mode only (auto is untouchable).
+    GestureTapMaxSeconds  = 1.0,
+    GestureOffHoldSeconds = 2.0,
 
     -- Fallback ONLY when the Exposure module is disabled/unavailable (no lens signal).
     OnTOD = 1900,    -- on after 19:00
@@ -284,75 +292,174 @@ Config.Audio = {
 }
 
 -- ============== AUTO-EXPOSURE (TOD -> Lumen/eye-adaptation, ex-VEAO) ==============
--- 48 slots of 30 min across 00:00-24:00 (TOD 0..2400); garage forces night (slot 0).
+-- 144 slots of 10 min across 00:00-24:00 (TOD 0..2400); garage forces night (slot 0).
 -- Requires the exposure cvars in engine.ini (shipped minimal ini / installer).
 Config.Exposure = {
     Enabled = true,
-    SlotCount = 48,
-    SlotSizeTOD = 50.0,           -- 50 TOD units = 30 min
-    UpdateIntervalSeconds = 2.0,  -- slot re-evaluation rate
+    SlotCount = 144,
+    SlotSizeTOD = 2400 / 144,    -- 16.667 TOD units = 10 min
+    UpdateIntervalSeconds = 0.5,  -- slot re-evaluation rate. Kept low so exposure
+                                  -- tracks fast time (Alt+T 320x advances ~18 TOD/2s,
+                                  -- which lagged ~11 game-min per update at the old 2.0).
+                                  -- Flat day/night re-evals are near-free (unchanged
+                                  -- values skip the cvar push); only transitions emit.
 
     -- Per-slot cvars driven by the module
     CvarSky  = "r.SkylightIntensityMultiplier",
     CvarLeak = "r.Lumen.SkylightLeaking.ReflectionAverageAlbedo",
     CvarLens = "r.EyeAdaptation.LensAttenuation",
 
-    -- [1..48] = { sky, leak, lens }. Index 1 = 00:00-00:30.
+    -- [1..144] = { sky, leak, lens }. Index 1 = 00:00-00:10. Curves interpolated
     Slots = {
         -- NIGHT CORE
-        [ 1] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 00:00-00:30
-        [ 2] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 00:30-01:00
-        [ 3] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 01:00-01:30
-        [ 4] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 01:30-02:00
-        [ 5] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 02:00-02:30
-        [ 6] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 02:30-03:00
-        [ 7] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 03:00-03:30
-        [ 8] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 03:30-04:00
-        -- PRE-DAWN
-        [ 9] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 04:00-04:30
-        [10] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 04:30-05:00
-        -- DAWN TRANSITION (gain drops night -> day; LOWER lens = darker dawn)
-        [11] = { sky = 0.900, leak = 0.050, lens = 24.00 }, -- 05:00-05:30
-        [12] = { sky = 0.600, leak = 0.050, lens = 14.00 }, -- 05:30-06:00
-        [13] = { sky = 0.250, leak = 0.050, lens =  5.00 }, -- 06:00-06:30
-        [14] = { sky = 0.120, leak = 0.050, lens =  2.50 }, -- 06:30-07:00
-        [15] = { sky = 0.080, leak = 0.050, lens =  1.80 }, -- 07:00-07:30
-        [16] = { sky = 0.030, leak = 0.050, lens =  1.00 }, -- 07:30-08:00
-        [17] = { sky = 0.010, leak = 0.050, lens =  0.70 }, -- 08:00-08:30
-        [18] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 08:30-09:00
+        [  1] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 00:00-00:10
+        [  2] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 00:10-00:20
+        [  3] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 00:20-00:30
+        [  4] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 00:30-00:40
+        [  5] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 00:40-00:50
+        [  6] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 00:50-01:00
+        [  7] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 01:00-01:10
+        [  8] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 01:10-01:20
+        [  9] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 01:20-01:30
+        [ 10] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 01:30-01:40
+        [ 11] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 01:40-01:50
+        [ 12] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 01:50-02:00
+        [ 13] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 02:00-02:10
+        [ 14] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 02:10-02:20
+        [ 15] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 02:20-02:30
+        [ 16] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 02:30-02:40
+        [ 17] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 02:40-02:50
+        [ 18] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 02:50-03:00
+        [ 19] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 03:00-03:10
+        [ 20] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 03:10-03:20
+        [ 21] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 03:20-03:30
+        [ 22] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 03:30-03:40
+        [ 23] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 03:40-03:50
+        [ 24] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 03:50-04:00
+        [ 25] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 04:00-04:10
+        [ 26] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 04:10-04:20
+        [ 27] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 04:20-04:30
+        [ 28] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 04:30-04:40
+        [ 29] = { sky = 0.9700, leak = 0.050, lens = 28.00 }, -- 04:40-04:50
+        [ 30] = { sky = 0.9350, leak = 0.050, lens = 26.00 }, -- 04:50-05:00
+        -- DAWN TRANSITION (night -> day)
+        [ 31] = { sky = 0.9000, leak = 0.050, lens = 24.00 }, -- 05:00-05:10
+        [ 32] = { sky = 0.8000, leak = 0.050, lens = 20.67 }, -- 05:10-05:20
+        [ 33] = { sky = 0.7000, leak = 0.050, lens = 17.33 }, -- 05:20-05:30
+        [ 34] = { sky = 0.6000, leak = 0.050, lens = 14.00 }, -- 05:30-05:40
+        [ 35] = { sky = 0.4833, leak = 0.050, lens = 11.00 }, -- 05:40-05:50
+        [ 36] = { sky = 0.3667, leak = 0.050, lens =  8.00 }, -- 05:50-06:00
+        [ 37] = { sky = 0.2500, leak = 0.050, lens =  5.00 }, -- 06:00-06:10
+        [ 38] = { sky = 0.2067, leak = 0.050, lens =  4.17 }, -- 06:10-06:20
+        [ 39] = { sky = 0.1633, leak = 0.050, lens =  3.33 }, -- 06:20-06:30
+        [ 40] = { sky = 0.1200, leak = 0.050, lens =  2.50 }, -- 06:30-06:40
+        [ 41] = { sky = 0.1067, leak = 0.050, lens =  2.27 }, -- 06:40-06:50
+        [ 42] = { sky = 0.0933, leak = 0.050, lens =  2.03 }, -- 06:50-07:00
+        [ 43] = { sky = 0.0800, leak = 0.050, lens =  1.80 }, -- 07:00-07:10
+        [ 44] = { sky = 0.0633, leak = 0.050, lens =  1.53 }, -- 07:10-07:20
+        [ 45] = { sky = 0.0467, leak = 0.050, lens =  1.27 }, -- 07:20-07:30
+        [ 46] = { sky = 0.0300, leak = 0.050, lens =  1.00 }, -- 07:30-07:40
+        [ 47] = { sky = 0.0233, leak = 0.050, lens =  0.90 }, -- 07:40-07:50
+        [ 48] = { sky = 0.0167, leak = 0.050, lens =  0.80 }, -- 07:50-08:00
+        [ 49] = { sky = 0.0100, leak = 0.050, lens =  0.70 }, -- 08:00-08:10
+        [ 50] = { sky = 0.0083, leak = 0.050, lens =  0.68 }, -- 08:10-08:20
+        [ 51] = { sky = 0.0067, leak = 0.050, lens =  0.67 }, -- 08:20-08:30
         -- DAY
-        [19] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 09:00-09:30
-        [20] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 09:30-10:00
-        [21] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 10:00-10:30
-        [22] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 10:30-11:00
-        [23] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 11:00-11:30
-        [24] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 11:30-12:00
-        [25] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 12:00-12:30
-        [26] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 12:30-13:00
-        [27] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 13:00-13:30
-        [28] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 13:30-14:00
-        [29] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 14:00-14:30
-        [30] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 14:30-15:00
-        [31] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 15:00-15:30
-        [32] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 15:30-16:00
-        [33] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 16:00-16:30
-        [34] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 16:30-17:00
-        [35] = { sky = 0.005, leak = 0.050, lens =  0.65 }, -- 17:00-17:30
-        -- DUSK TRANSITION (gain rises day -> night; HIGHER lens = brighter dusk)
-        [36] = { sky = 0.020, leak = 0.050, lens =  0.75 }, -- 17:30-18:00
-        [37] = { sky = 0.030, leak = 0.050, lens =  1.00 }, -- 18:00-18:30
-        [38] = { sky = 0.050, leak = 0.050, lens =  1.50 }, -- 18:30-19:00
-        [39] = { sky = 0.100, leak = 0.050, lens =  2.50 }, -- 19:00-19:30
-        [40] = { sky = 0.250, leak = 0.050, lens =  4.50 }, -- 19:30-20:00
-        [41] = { sky = 0.500, leak = 0.050, lens =  9.00 }, -- 20:00-20:30
-        [42] = { sky = 0.900, leak = 0.050, lens = 24.00 }, -- 20:30-21:00
-        [43] = { sky = 1.000, leak = 0.050, lens = 28.00 }, -- 21:00-21:30
-        [44] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 21:30-22:00
-        [45] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 22:00-22:30
-        [46] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 22:30-23:00
-        [47] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 23:00-23:30
+        [ 52] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 08:30-08:40
+        [ 53] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 08:40-08:50
+        [ 54] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 08:50-09:00
+        [ 55] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 09:00-09:10
+        [ 56] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 09:10-09:20
+        [ 57] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 09:20-09:30
+        [ 58] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 09:30-09:40
+        [ 59] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 09:40-09:50
+        [ 60] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 09:50-10:00
+        [ 61] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 10:00-10:10
+        [ 62] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 10:10-10:20
+        [ 63] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 10:20-10:30
+        [ 64] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 10:30-10:40
+        [ 65] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 10:40-10:50
+        [ 66] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 10:50-11:00
+        [ 67] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 11:00-11:10
+        [ 68] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 11:10-11:20
+        [ 69] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 11:20-11:30
+        [ 70] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 11:30-11:40
+        [ 71] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 11:40-11:50
+        [ 72] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 11:50-12:00
+        [ 73] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 12:00-12:10
+        [ 74] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 12:10-12:20
+        [ 75] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 12:20-12:30
+        [ 76] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 12:30-12:40
+        [ 77] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 12:40-12:50
+        [ 78] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 12:50-13:00
+        [ 79] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 13:00-13:10
+        [ 80] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 13:10-13:20
+        [ 81] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 13:20-13:30
+        [ 82] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 13:30-13:40
+        [ 83] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 13:40-13:50
+        [ 84] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 13:50-14:00
+        [ 85] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 14:00-14:10
+        [ 86] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 14:10-14:20
+        [ 87] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 14:20-14:30
+        [ 88] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 14:30-14:40
+        [ 89] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 14:40-14:50
+        [ 90] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 14:50-15:00
+        [ 91] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 15:00-15:10
+        [ 92] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 15:10-15:20
+        [ 93] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 15:20-15:30
+        [ 94] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 15:30-15:40
+        [ 95] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 15:40-15:50
+        [ 96] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 15:50-16:00
+        [ 97] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 16:00-16:10
+        [ 98] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 16:10-16:20
+        [ 99] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 16:20-16:30
+        [100] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 16:30-16:40
+        [101] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 16:40-16:50
+        [102] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 16:50-17:00
+        [103] = { sky = 0.0050, leak = 0.050, lens =  0.65 }, -- 17:00-17:10
+        [104] = { sky = 0.0133, leak = 0.050, lens =  0.73 }, -- 17:10-17:20
+        [105] = { sky = 0.0217, leak = 0.050, lens =  0.82 }, -- 17:20-17:30
+        -- DUSK -> EVENING (brightened; rises earlier after sundown)
+        [106] = { sky = 0.0300, leak = 0.050, lens =  0.90 }, -- 17:30-17:40
+        [107] = { sky = 0.0500, leak = 0.050, lens =  1.60 }, -- 17:40-17:50
+        [108] = { sky = 0.0700, leak = 0.050, lens =  2.30 }, -- 17:50-18:00
+        [109] = { sky = 0.0900, leak = 0.050, lens =  3.00 }, -- 18:00-18:10
+        [110] = { sky = 0.1333, leak = 0.050, lens =  4.50 }, -- 18:10-18:20
+        [111] = { sky = 0.1767, leak = 0.050, lens =  6.00 }, -- 18:20-18:30
+        [112] = { sky = 0.2200, leak = 0.050, lens =  7.50 }, -- 18:30-18:40
+        [113] = { sky = 0.2967, leak = 0.050, lens =  9.67 }, -- 18:40-18:50
+        [114] = { sky = 0.3733, leak = 0.050, lens = 11.83 }, -- 18:50-19:00
+        [115] = { sky = 0.4500, leak = 0.050, lens = 14.00 }, -- 19:00-19:10
+        [116] = { sky = 0.5267, leak = 0.050, lens = 16.00 }, -- 19:10-19:20
+        [117] = { sky = 0.6033, leak = 0.050, lens = 18.00 }, -- 19:20-19:30
+        [118] = { sky = 0.6800, leak = 0.050, lens = 20.00 }, -- 19:30-19:40
+        [119] = { sky = 0.7433, leak = 0.050, lens = 21.67 }, -- 19:40-19:50
+        [120] = { sky = 0.8067, leak = 0.050, lens = 23.33 }, -- 19:50-20:00
+        [121] = { sky = 0.8700, leak = 0.050, lens = 25.00 }, -- 20:00-20:10
+        [122] = { sky = 0.9033, leak = 0.050, lens = 26.00 }, -- 20:10-20:20
+        [123] = { sky = 0.9367, leak = 0.050, lens = 27.00 }, -- 20:20-20:30
+        [124] = { sky = 0.9700, leak = 0.050, lens = 28.00 }, -- 20:30-20:40
+        [125] = { sky = 0.9807, leak = 0.050, lens = 28.50 }, -- 20:40-20:50
+        [126] = { sky = 0.9913, leak = 0.050, lens = 29.00 }, -- 20:50-21:00
+        [127] = { sky = 1.0020, leak = 0.050, lens = 29.50 }, -- 21:00-21:10
+        [128] = { sky = 1.0030, leak = 0.050, lens = 29.67 }, -- 21:10-21:20
+        [129] = { sky = 1.0040, leak = 0.050, lens = 29.83 }, -- 21:20-21:30
         -- NIGHT CORE
-        [48] = { sky = 1.005, leak = 0.050, lens = 30.00 }, -- 23:30-24:00
+        [130] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 21:30-21:40
+        [131] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 21:40-21:50
+        [132] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 21:50-22:00
+        [133] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 22:00-22:10
+        [134] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 22:10-22:20
+        [135] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 22:20-22:30
+        [136] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 22:30-22:40
+        [137] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 22:40-22:50
+        [138] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 22:50-23:00
+        [139] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 23:00-23:10
+        [140] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 23:10-23:20
+        [141] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 23:20-23:30
+        [142] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 23:30-23:40
+        [143] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 23:40-23:50
+        [144] = { sky = 1.0050, leak = 0.050, lens = 30.00 }, -- 23:50-24:00
     },
 }
 
@@ -378,10 +485,10 @@ Config.ModuleToggles = {
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 0, Patch = 18,
-    String = "3.0.18",
+    Major = 3, Minor = 0, Patch = 19,
+    String = "3.0.19",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.0.18",
+    FullName = "TXR Weather Mod v3.0.19",
 }
 
 return Config

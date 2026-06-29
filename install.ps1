@@ -381,7 +381,8 @@ try {
     Say '    or you can control them yourself.'
     Say ''
     Say '      1) Auto    follow the scene brightness, on at dusk / off at dawn   [recommended]' Green
-    Say '      2) Manual  off by default; toggle with Alt+Q (Alt+B sets brightness)'
+    Say '      2) Manual  off by default; Alt+Q, or the in-car light button'
+    Say '                 (short press = on, hold = off; works on a controller)'
     Say ''
     $hl = (Read-Host '    Choice [1-2, Enter = 1]').Trim()
     $hlMode = if($hl -eq '2'){ 'force_off' } else { 'auto' }

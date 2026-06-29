@@ -3,6 +3,36 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.0.19] - 2026-06-30
+
+### Added
+- **Pop-up (retractable) headlights now animate** when the lights switch on/off,
+  using the game's native raise/lower instead of snapping into place.
+- **Garage headlight control.** Alt+Q in the garage toggles the displayed car's
+  lights, and the pop-ups animate there too.
+- **Manual-mode light-button gesture (keyboard + controller).** With headlights set
+  to manual, a short press of the light button turns them on and a ~2-second hold
+  turns them off, so manual lights work on a controller without a keybind.
+
+### Changed
+- **Higher-resolution auto-exposure.** The day/night exposure curve is sampled every
+  10 minutes (144 steps) instead of every 30, for smoother ramps.
+- **Brighter dusk and after sundown.** The evening exposure now comes up earlier so
+  it is no longer too dark once the sun is down.
+- **Auto headlights are fully automatic** (set in config). There is no runtime switch
+  out of auto, so they can't be turned off by accident.
+
+### Fixed
+- **No more night flash when leaving the parking area.** Exiting a PA into a daytime
+  course no longer flickers a frame of full-night exposure before it corrects.
+- **Smoother fast-forwarded time and no dawn/dusk frame hitches.** Auto-exposure
+  re-evaluates more often yet sends far less work to the render thread.
+- **Garage and menus brighten faster on entry** (quicker scene detection).
+
+### Internal
+- Dropped the experimental high-beam latch (it could not be driven reliably from
+  script in this build).
+
 ## [3.0.18] - 2026-06-27
 
 ### Changed

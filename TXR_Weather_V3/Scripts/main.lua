@@ -444,6 +444,11 @@ local function onTick()
             if CloudsFog and CloudsFog.OnCourseUnload then
                 CloudsFog.OnCourseUnload()
             end
+            -- Disarm exposure's course branch so the re-entry transient (unrestored
+            -- UDS reads Time Of Day = 0) can't flash the midnight slot before restore.
+            if Exposure and Exposure.OnCourseUnload then
+                Exposure.OnCourseUnload()
+            end
             initialWeatherApplied = false
             _pendingRestore = true  -- Signal to restore on next actor detection
             Log.Info("Main", "Actors lost - pending restore on next detection")

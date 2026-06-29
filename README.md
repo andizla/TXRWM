@@ -11,7 +11,7 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 - Enhanced volumetric fog
 - Daytime + FOV-scaled shadows (work with photomode zoom)
 - HD real-stars night sky
-- Automatic headlights that track the scene brightness, with adjustable brightness and a manual toggle
+- Headlights with **animated pop-ups** - Auto mode tracks the scene brightness; manual mode works in the garage and on a controller (short-press on / hold off); adjustable brightness
 - Atmospherics - god rays, volumetric cloud light rays, night auroras, cloud shadows, Tokyo city glow (night light pollution)
 - Wind debris in storms, and moon phases / scalable moon
 - Auto-exposure / photomode aperture (ported from VEAO)
@@ -58,9 +58,12 @@ profile, so try Photomode if a lighter profile looks flat.
 | `Alt+P` / `Alt+Shift+P` | Random weather preset / force clear |
 | `Alt+T` | Cycle time speed (normal / fast / pause) |
 | `Alt+R` | Reset weather |
-| `Alt+Q` | Headlights on / off (manual; Auto mode is set in config) |
+| `Alt+Q` | Headlights on / off (manual; also toggles the displayed car in the garage). Auto mode is set in config |
 | `Alt+B` / `Alt+Shift+B` | Headlight brightness (up / down) |
 | `Alt+L` / `Alt+Shift+L` | Re-apply shadow distance |
+
+In **manual** headlight mode you can also use the car's own light button (keyboard or
+controller): a short press turns the headlights on, a ~2-second hold turns them off.
 
 ## Configuration
 All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
@@ -72,8 +75,7 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
   glass-reflection problems are almost always a skipped Engine.ini step or a custom/outdated one,
   not the mod.
 - **High-beam flash resets the headlight brightness** back to default until the next brightness
-  change (the game recomputes intensity on its own hi-beam path). Pop-up headlights are left to the
-  game's native hi-beam path.
+  change (the game recomputes intensity on its own hi-beam path).
 - **Rain in tunnels / odd sun & shadows indoors** - the game's tunnel meshes have no interior
   collision, so weather and lighting can't be occluded there from the mod.
 - **Surface wetness and screen weather effects** - the game's road materials lack Ultra Dynamic

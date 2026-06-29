@@ -37,6 +37,16 @@ local HEADLIGHT_OFF_TOD = 630   -- Turn off after 06:30 (dawn)
 local ON_LENS = 6.0
 local OFF_LENS = 3.5
 
+-- Light-button gesture thresholds (seconds). Acted on RELEASE by how long held:
+--   held <= GESTURE_TAP_MAX_SEC   -> headlights ON  (a short press / tap)
+--   held >= GESTURE_OFF_HOLD_SEC  -> headlights OFF (a deliberate hold)
+--   in between                    -> nothing (dead zone)
+-- (Manual mode only; auto is untouchable.) High-beam latch is a separate key (Alt+H).
+-- Note the 125 ms tick caps timing precision, so the windows are wide and a sub-125 ms
+-- flick may be missed - hence "hold to OFF" (reliable) vs a strict instant tap.
+local GESTURE_TAP_MAX_SEC = 1.0
+local GESTURE_OFF_HOLD_SEC = 2.0
+
 -- ============== STATE ==============
 local isInitialized = false
 local headlightsOn = false
@@ -223,12 +233,25 @@ local function setVehicleLights(obj, on)
 
     local success = false
 
-    -- Set the player's light flag directly. NOT SetLightOn: that is a TOGGLE whose
-    -- argument is the RHL-animation flag, so calling it to "set" a state flips
-    -- is_light_on the wrong way - which, combined with the owner-gated visibility
-    -- below, inverts the lights (off at night, on at dawn). A direct write keeps the
-    -- gate consistent with intent and leaves the pop-ups to the native hi-beam path.
-    pcall(function() obj.is_light_on = want end)
+    -- Drive the player's lights via SetLightOn - the game's input-path TOGGLE whose
+    -- argument IS the RHL-animation flag. SetLightOn(true) flips is_light_on AND plays
+    -- the native pop-up raise/lower animation. This is what 3.0.17 did (pops animated);
+    -- 3.0.18 replaced it with a bare `is_light_on = want` write which is deterministic
+    -- but never animates - the pop-up regression. (Note: the 2-arg SetLIght setter does
+    -- NOT drive the rig - confirmed; SetLightOn is the one that animates.)
+    --   It is a TOGGLE, so we read the ACTUAL current state and only toggle when it
+    --   differs from `want`. That keeps the result deterministic (is_light_on always
+    --   ends at `want`, so the owner-gated visibility below can't invert) while still
+    --   animating on a real transition. Unconditional toggling was the 3.0.18 inversion.
+    local cur = nil
+    pcall(function() local v = obj.is_light_on; if type(v) == "boolean" then cur = v end end)
+    local toggled = false
+    if cur == nil then
+        pcall(function() obj.is_light_on = want end)   -- state unreadable: deterministic write (no anim)
+    elseif cur ~= want then
+        toggled = safeCallMethod(obj, 'SetLightOn', true)  -- toggle cur->want + animate pops
+    end
+    Log.Debug(MODULE, "Player light setter", {on = want, cur = cur, toggled = toggled})
     success = true
     if want then
         safeCallMethod(obj, 'SetLightSpriteScale', 0)
@@ -400,6 +423,12 @@ function Headlights.Init()
         if Config.Headlights.OffLens then
             OFF_LENS = Config.Headlights.OffLens
         end
+        if Config.Headlights.GestureTapMaxSeconds then
+            GESTURE_TAP_MAX_SEC = Config.Headlights.GestureTapMaxSeconds
+        end
+        if Config.Headlights.GestureOffHoldSeconds then
+            GESTURE_OFF_HOLD_SEC = Config.Headlights.GestureOffHoldSeconds
+        end
         if Config.Headlights.DefaultBrightnessLevel then
             local level = Config.Headlights.DefaultBrightnessLevel
             if level >= 1 and level <= #BRIGHTNESS_MULTIPLIERS then
@@ -437,6 +466,53 @@ function Headlights.OnCourseLoad()
     Log.Info(MODULE, "Course load - will re-assert headlight state")
 end
 
+-- ===== Light-button hold-gesture (keyboard + controller) =====
+-- The vanilla light/hi-beam button is momentary: is_hibeam_on is true only while held.
+-- We read that state (it is set the same for keyboard AND controller, so this is
+-- device-agnostic) and act on RELEASE by how long it was held: a short press turns
+-- headlights ON, a long hold turns them OFF (manual mode only). See thresholds above.
+local gHbPrev = nil           -- last is_hibeam_on
+local gHbRise = nil           -- os.clock() at the button-down edge
+
+-- Manual on/off from a gesture. ABSOLUTE (short press = ON, hold = OFF), not a toggle,
+-- so it is deterministic regardless of what we think the current state is. No-op in auto.
+local function gestureSetLights(want)
+    if currentMode == "auto" then return end
+    local target = want and "force_on" or "force_off"
+    if currentMode ~= target then
+        currentMode = target
+        modeChanged = true   -- Tick actuates (SetLightOn -> pops animate)
+        saveState()
+    end
+end
+
+local function handleLightGesture(pawn)
+    local on = nil
+    pcall(function() local v = pawn.is_hibeam_on; if type(v) == "boolean" then on = v end end)
+    if on == nil then return end
+
+    if gHbPrev == nil then gHbPrev = on; return end
+    if on == gHbPrev then return end
+
+    local now = os.clock()
+    if on then
+        gHbRise = now                              -- button down
+    else
+        local held = gHbRise and (now - gHbRise) or nil   -- button up
+        gHbRise = nil
+        if held then
+            if held >= GESTURE_OFF_HOLD_SEC then
+                gestureSetLights(false)
+                Log.Info(MODULE, "Gesture: headlights OFF (hold)", {held = string.format("%.1f", held)})
+            elseif held <= GESTURE_TAP_MAX_SEC then
+                gestureSetLights(true)
+                Log.Info(MODULE, "Gesture: headlights ON (tap)", {held = string.format("%.2f", held)})
+            end
+        end
+    end
+    gHbPrev = on
+end
+
 --- Main tick function
 function Headlights.Tick()
     if not isInitialized then return end
@@ -453,6 +529,8 @@ function Headlights.Tick()
     if not pawn then return end  -- No vehicle, skip tick
 
     courseTicks = courseTicks + 1
+
+    handleLightGesture(pawn)  -- light-button hold gestures (headlights 3s / hi-beam latch 5s)
 
     -- Force modes don't need time check
     if currentMode == "force_on" then
@@ -549,12 +627,15 @@ function Headlights.CycleMode()
     return currentMode
 end
 
---- Manual on/off toggle (one keybind). Flips the manual light state, but is
---- ignored while the configured mode is "auto" (auto vs manual is config-only).
+--- Manual on/off toggle. Flips between force_on / force_off based on the current
+--- light state. Intentionally a NO-OP while config Mode = "auto": auto is full-auto
+--- and untouchable at runtime (there is no on-screen mode indicator, so a hidden
+--- runtime switch out of auto just looks like "auto stopped working"). Manual on/off
+--- belongs to a manual config only.
 --- @return string newMode
 function Headlights.ToggleManual()
     if currentMode == "auto" then
-        Log.Info(MODULE, "Manual toggle ignored - auto is active (set Mode in config)")
+        Log.Info(MODULE, "Manual toggle ignored - auto is full-auto (config-only)")
         return currentMode
     end
     if headlightsOn then
@@ -571,6 +652,62 @@ end
 -- Auto mode is configured in config only (Config.Headlights.Mode = "auto"); there
 -- is intentionally no runtime auto toggle (a second toggle could desync from the
 -- manual on/off state).
+
+--- Toggle the lights on the car displayed in the garage. The player pawn is nil in
+--- the garage, so we get the car from the garage manager via GetDisplayVehicle (NOT
+--- FindAllOf, which would hit every car). Gated on GetIsMovingRHL so we never toggle
+--- while the pop-up rig is mid-move (that is the documented desync cause). SetLightOn
+--- (single-arg RHL-animation toggle) flips is_light_on AND animates the pops - so
+--- pop-ups work in the garage too. All on the game thread (object writes off-thread
+--- during outgame can corrupt reflection). Pattern taken from the reference mod.
+--- @return boolean attempted
+function Headlights.ToggleGarageLights()
+    if not ExecuteInGameThread then return false end
+    ExecuteInGameThread(function()
+        local gm = nil
+        pcall(function() gm = FindFirstOf("BP_OutGameGarageManager_C") end)
+        if not (gm and gm.IsValid and gm:IsValid()) then return end
+
+        local out = {}
+        local got = pcall(function() gm:GetDisplayVehicle(out) end)
+        local veh = got and out.out_vehicle or nil
+        if not (veh and veh.IsValid and veh:IsValid()) then
+            Log.Debug(MODULE, "Garage toggle: no display vehicle")
+            return
+        end
+
+        -- Anti-desync: skip while the retractable-headlight rig is animating.
+        local moving = false
+        pcall(function()
+            if veh.GetIsMovingRHL then
+                local m = {}
+                veh:GetIsMovingRHL(m)
+                moving = m.out_is_moving and true or false
+            end
+        end)
+        if moving then
+            Log.Debug(MODULE, "Garage toggle skipped (RHL moving)")
+            return
+        end
+
+        pcall(function() veh:SetLightOn(true) end)        -- toggle is_light_on + animate pops
+        pcall(function() veh:SetLightSpriteScale(0) end)  -- match the on-course sprite handling
+        Log.Info(MODULE, "Garage lights toggled (display vehicle)")
+    end)
+    return true
+end
+
+--- Entry point for the manual on/off keybind. In the garage it toggles the displayed
+--- car's lights (pops animate); on a course it routes to the normal manual toggle.
+--- @return string where "garage" | the manual mode string
+function Headlights.OnManualToggleKey()
+    local actors = getActors()
+    if actors and actors.IsInGarage and actors.IsInGarage() then
+        Headlights.ToggleGarageLights()
+        return "garage"
+    end
+    return Headlights.ToggleManual()
+end
 
 --- Set headlight mode directly
 --- @param mode string "auto" | "force_on" | "force_off"

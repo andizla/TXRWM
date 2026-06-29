@@ -58,36 +58,54 @@ local function getWorldTagFromActor(actor)
     return "course"
 end
 
--- Garage detection cache
+-- Garage/outgame detection cache. Interval kept short so exposure brightens
+-- quickly on entry (the garage/menu wants the night gain); the previous 5 s let
+-- the scene sit on the stale daytime exposure for several seconds after entry.
 local garageCheckCache = {
     isInGarage = false,
     lastCheck = 0,
-    checkInterval = 5.0  -- seconds
+    checkInterval = 1.5  -- seconds
 }
 
---- Check if we're in garage (cached for performance)
+--- Force the next isInGarage() call to re-probe instead of returning the cache.
+--- Called when cached actors are lost so the first check after a world transition
+--- is fresh (no up-to-interval stale window on garage/course entry).
+local function invalidateGarageCache()
+    garageCheckCache.lastCheck = 0
+end
+
+--- Check if we're in the garage / outgame menus (cached for performance).
+--- Two signals, both outgame-only (destroyed on travel into a course/PA, so neither
+--- can false-positive in-game and re-trigger the night exposure during course entry):
+---   1. BP_OutGameGarageManager_C - the garage manager (garage screen specifically).
+---   2. BP_OutGameMode_C           - the outgame GameMode (distinct from the course's
+---      BP_RaceGameMode_C). Covers car-select/menus too and spawns early in the
+---      outgame level load, so it usually detects sooner than the garage manager.
 --- @return boolean
 local function isInGarage()
     local now = os.clock()
-    
+
     -- Return cached value if checked recently
     if now - garageCheckCache.lastCheck < garageCheckCache.checkInterval then
         return garageCheckCache.isInGarage
     end
-    
+
     garageCheckCache.lastCheck = now
-    
-    local gm = nil
+
+    local matched = nil
     pcall(function()
-        gm = FindFirstOf("BP_OutGameGarageManager_C")
+        local gm = FindFirstOf("BP_OutGameGarageManager_C")
+        if gm and gm.IsValid and gm:IsValid() then matched = "garage_manager" return end
+        local om = FindFirstOf("BP_OutGameMode_C")
+        if om and om.IsValid and om:IsValid() then matched = "outgame_mode" end
     end)
-    
-    garageCheckCache.isInGarage = (gm and gm.IsValid and gm:IsValid()) or false
-    
+
+    garageCheckCache.isInGarage = (matched ~= nil)
+
     if garageCheckCache.isInGarage then
-        Log.Debug(MODULE, "Garage manager detected - in garage")
+        Log.Debug(MODULE, "Outgame detected (garage/menu)", {signal = matched})
     end
-    
+
     return garageCheckCache.isInGarage
 end
 
@@ -158,6 +176,7 @@ local function validateCachedActors()
             udwValid = udwValid
         })
         State.ClearActors()
+        invalidateGarageCache()  -- world is changing: re-probe garage/outgame immediately
         return false
     end
     

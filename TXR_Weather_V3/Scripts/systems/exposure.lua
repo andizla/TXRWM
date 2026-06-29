@@ -2,7 +2,7 @@
 -- systems/exposure.lua
 -- Phase 13: Auto-exposure scheduler (ported from the standalone VEAO mod)
 -- Maps Time Of Day -> per-slot Lumen/eye-adaptation console variables.
--- 48 slots of 30 min each across 00:00-24:00 (TOD units 0..2400). Garage forces
+-- 144 slots of 10 min each across 00:00-24:00 (TOD units 0..2400). Garage forces
 -- the night slot. Unlike the standalone VEAO, this runs on TXR's tick loop and
 -- uses TXR's TimeOfDay / Actors / logging instead of its own hooks and timers.
 
@@ -22,14 +22,14 @@ local MODULE = "Exposure"
 
 -- ============== CONFIG-DERIVED (filled in Init, with safe fallbacks) ==============
 local enabled = true
-local SLOT_COUNT = 48
-local SLOT_SIZE_TOD = 50.0          -- 50 TOD units = 30 minutes
+local SLOT_COUNT = 144
+local SLOT_SIZE_TOD = 2400 / 144    -- 16.667 TOD units = 10 minutes
 local UPDATE_INTERVAL = 2.0         -- seconds between slot re-evaluations
 local CVAR_SKY  = "r.SkylightIntensityMultiplier"
 local CVAR_LEAK = "r.Lumen.SkylightLeaking.ReflectionAverageAlbedo"
 local CVAR_LENS = "r.EyeAdaptation.LensAttenuation"
 
--- Slot table: [1..48] = { sky=<float>, leak=<float>, lens=<float> }
+-- Slot table: [1..144] = { sky=<float>, leak=<float>, lens=<float> }
 -- Populated from Config.Exposure.Slots in Init (falls back to empty -> no-op).
 local slots = {}
 
@@ -39,6 +39,12 @@ local currentSlot = nil             -- last evaluated slot (0-based), nil = none
 local lastCheckClock = 0.0          -- os.clock() of last evaluation (throttle)
 local lastInterpLens = nil          -- last interpolated lens (brightness proxy; see GetBrightnessLens)
 local lastApplied = { sky = nil, leak = nil, lens = nil }  -- last pushed cvar values (skip redundant pushes)
+local armed = false                 -- course-exposure gate. False during a course/PA entry until
+                                    -- the restore has run (OnCourseLoad). A freshly (re)spawned UDS
+                                    -- reports Time Of Day = 0 before restore; without this gate the
+                                    -- course branch reads that 0, picks the midnight slot, and flashes
+                                    -- full-night exposure over a daytime scene for one tick. The garage
+                                    -- branch is intentionally NOT gated by this.
 
 -- ============== INTERNAL FUNCTIONS ==============
 
@@ -71,45 +77,60 @@ local function clamp(x, a, b)
     return x
 end
 
---- Execute a single console command via the Kismet system library.
---- @param cmd string
---- @return boolean success
-local function execConsole(cmd)
-    if not cmd or cmd == "" then return false end
+-- Cached console singletons. The Engine and the KismetSystemLibrary are persistent
+-- singletons, so resolving them ONCE and reusing avoids a FindFirstOf("Engine") (a
+-- UObject-array scan) plus a GetKismetSystemLibrary per cvar per push. At the 0.5 s
+-- re-eval rate that scan ran several times a second on the game thread during
+-- transitions - the dawn/dusk frame hitches. Re-resolved only if they go invalid.
+local cachedEngine = nil
+local cachedKsl = nil
 
-    local UEH = getUEHelpers()
-    if not UEH or not UEH.GetKismetSystemLibrary then
-        return false
-    end
+local function validRef(o)
+    if not o then return false end
+    local ok, v = pcall(function() return o:IsValid() end)
+    return ok and v
+end
 
-    local ksl = nil
-    pcall(function() ksl = UEH.GetKismetSystemLibrary() end)
-    if not (ksl and ksl:IsValid()) then return false end
-
+local function getEngineRef()
+    if validRef(cachedEngine) then return cachedEngine end
     local eng = nil
     pcall(function() eng = FindFirstOf("Engine") end)
-    if not (eng and eng:IsValid()) then return false end
+    if validRef(eng) then cachedEngine = eng; return eng end
+    return nil
+end
 
-    return pcall(function() ksl:ExecuteConsoleCommand(eng, cmd, nil) end)
+local function getKslRef()
+    if validRef(cachedKsl) then return cachedKsl end
+    local UEH = getUEHelpers()
+    if not UEH or not UEH.GetKismetSystemLibrary then return nil end
+    local ksl = nil
+    pcall(function() ksl = UEH.GetKismetSystemLibrary() end)
+    if validRef(ksl) then cachedKsl = ksl; return ksl end
+    return nil
 end
 
 --- Schedule a batch of console commands on the game thread. TXR's module ticks
 --- run on UE4SS's async LoopAsync thread; issuing r.* render CVAR commands off
 --- the game thread races the render thread and crashes (access violation) during
 --- course load, so we marshal onto the game thread (as the standalone VEAO did).
+--- The Engine/Kismet refs are resolved ONCE per batch (cached), not per command.
 --- @param cmds string[]
 --- @return boolean scheduled
 local function scheduleExec(cmds)
     if not cmds or #cmds == 0 then return false end
+    local run = function()
+        local ksl = getKslRef()
+        local eng = getEngineRef()
+        if not ksl or not eng then return end
+        for _, cmd in ipairs(cmds) do
+            pcall(function() ksl:ExecuteConsoleCommand(eng, cmd, nil) end)
+        end
+    end
     if ExecuteInGameThread then
-        return pcall(function()
-            ExecuteInGameThread(function()
-                for _, cmd in ipairs(cmds) do execConsole(cmd) end
-            end)
-        end)
+        return pcall(function() ExecuteInGameThread(run) end)
     end
     -- Fallback (older UE4SS without ExecuteInGameThread): best-effort direct
-    for _, cmd in ipairs(cmds) do execConsole(cmd) end
+    run()
     return true
 end
 
@@ -126,18 +147,23 @@ local function lerp(a, b, t) return a + (b - a) * t end
 --- @return boolean success (commands scheduled, or true if skipped as unchanged)
 local function applyValues(sky, leak, lens, tod, reason)
     local eps = 1e-4
-    if lastApplied.sky
-        and math.abs(sky  - lastApplied.sky)  < eps
-        and math.abs(leak - lastApplied.leak) < eps
-        and math.abs(lens - lastApplied.lens) < eps then
-        return true   -- unchanged: skip redundant push
+    -- Push ONLY the cvars that actually changed. leak is constant across the whole
+    -- table, so after the first push it is never re-emitted - that drops a third of
+    -- the console commands (and a Lumen cvar write) on every transition step. sky and
+    -- lens only emit while they are ramping; the flat day/night cores emit nothing.
+    local cmds = {}
+    if not lastApplied.sky  or math.abs(sky  - lastApplied.sky)  >= eps then
+        cmds[#cmds + 1] = string.format("%s %.6f", CVAR_SKY,  sky)
     end
+    if not lastApplied.leak or math.abs(leak - lastApplied.leak) >= eps then
+        cmds[#cmds + 1] = string.format("%s %.6f", CVAR_LEAK, leak)
+    end
+    if not lastApplied.lens or math.abs(lens - lastApplied.lens) >= eps then
+        cmds[#cmds + 1] = string.format("%s %.6f", CVAR_LENS, lens)
+    end
+    if #cmds == 0 then return true end   -- unchanged: skip redundant push
 
-    local scheduled = scheduleExec({
-        string.format("%s %.6f", CVAR_SKY,  sky),
-        string.format("%s %.6f", CVAR_LEAK, leak),
-        string.format("%s %.6f", CVAR_LENS, lens),
-    })
+    local scheduled = scheduleExec(cmds)
 
     lastApplied.sky, lastApplied.leak, lastApplied.lens = sky, leak, lens
 
@@ -189,7 +215,8 @@ function Exposure.Init()
 end
 
 --- Force the next tick to re-apply the current slot (e.g. after a course load,
---- where a map change may have reset engine CVARs).
+--- where a map change may have reset engine CVARs). Called by main AFTER the state
+--- restore, so this is also where we arm the course branch (see `armed`).
 function Exposure.OnCourseLoad()
     currentSlot = nil
     lastCheckClock = 0.0
@@ -198,6 +225,14 @@ function Exposure.OnCourseLoad()
     -- would otherwise make the headlight auto assert lights ON at a daytime entry
     -- before the first re-evaluation. nil makes headlights fall back to TOD instead.
     lastInterpLens = nil
+    armed = true
+end
+
+--- Disarm the course branch when the course unloads / actors are lost. Until the
+--- next OnCourseLoad (post-restore) the course branch is suppressed, so the
+--- entry-transient TOD=0 read can't flash the midnight slot. Garage is unaffected.
+function Exposure.OnCourseUnload()
+    armed = false
 end
 
 --- Per-tick update. Cheap: only re-evaluates the slot every UPDATE_INTERVAL
@@ -224,6 +259,12 @@ function Exposure.Update()
         return true
     end
 
+    -- Course: skip until the entry restore has armed us. A just-(re)spawned UDS
+    -- reads Time Of Day = 0 before restore; applying that would flash the midnight
+    -- slot (full-night sky/lens) over a daytime scene for one tick on every PA/course
+    -- entry. Armed in OnCourseLoad (post-restore), disarmed in OnCourseUnload.
+    if not armed then return true end
+
     -- Course: interpolate between the current slot and the next so the exposure
     -- ramps continuously instead of snapping at 30-min boundaries (kills the
     -- dawn/dusk cliffs). The interpolated lens is also the brightness signal the
@@ -240,7 +281,7 @@ function Exposure.Update()
 
     local a = slots[slot + 1]
     if not a then return true end
-    local b = slots[(slot + 1) % SLOT_COUNT + 1] or a  -- next slot, wraps 48->1
+    local b = slots[(slot + 1) % SLOT_COUNT + 1] or a  -- next slot, wraps last->1
 
     local sky  = lerp(a.sky,  b.sky,  frac)
     local leak = lerp(a.leak, b.leak, frac)

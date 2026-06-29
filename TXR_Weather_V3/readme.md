@@ -1662,6 +1662,12 @@ EnhancedFog.Apply(5.0)
 
 
 
+\- \*\*v3.0.19\*\* - Pop-up (retractable) headlights now animate on on/off (`SetLightOn` read-then-toggle, not the non-animating direct `is_light_on` write); garage headlight control on Alt+Q (`GetDisplayVehicle` + `GetIsMovingRHL` gate, pops animate in the garage); manual-mode light-button hold gesture (short press = on, hold = off; keyboard + controller via `is_hibeam_on`); auto-exposure resolution 48 -> 144 slots (10 min), brightened dusk/evening, faster re-eval for fast time + cheaper cvar pushes (cached Engine/Kismet refs, push only changed cvars, no more dawn/dusk frame hitches); fixed the PA-exit full-night exposure flash; faster garage/menu scene detection. Removed the experimental high-beam latch (not scriptable in this build).
+
+\- \*\*v3.0.18\*\* - Auto headlights reconcile to the correct state on course load + owner-gated cast/brightness (only lit when a car's own lights are on); reworked dawn/dusk exposure ramp; slower, smoother scheduled weather changes; sharper close-range shadows in the Photomode Engine.ini profile; dead-code cleanup.
+
+\- \*\*v3.0.17\*\* - Exposure-driven auto headlights (lens hysteresis, time-of-day fallback) + persistent Alt+Q manual on/off toggle; smoother weather + exposure ramps (continuous interpolation); Alt+D / Alt+Shift+D exposure feedback keys; garage manual lights.
+
 \- \*\*v3.0.16\*\* - more native UDS/UDW effects: Wind Debris (Niagara debris in wind/storms), Volumetric Cloud Light Rays (god-ray shafts through cloud gaps, natural-gap rays via `Individual Clouds Light Rays`), Moon appearance (phases + over-time + `Moon Scale`). Sun lens flare attempted but it is a post-process material on UDS's PostProcess component (not composited by TXR) - built then orphaned.
 
 \- \*\*v3.0.15\*\* - Phase 11: random weather scheduler (weighted pool + time-of-day weights + precip toggle; Alt+P / Alt+Shift+P); city glow (light pollution + night sky glow, night-ramped); dawn/dusk slow-time is now fraction-based (`Config.Transitions.SlowFactor`); Stars re-enabled and the course-load crash fixed (game-thread `Static Properties - Stars` + settle gate, no off-thread texture write); orphaned the non-working screen-droplets + tunnel-rain experiments
