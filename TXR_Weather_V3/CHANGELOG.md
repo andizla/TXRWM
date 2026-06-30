@@ -3,6 +3,58 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.1.0] - 2026-07-01
+
+### Added
+- **Photo mode camera unlocked.** The Advanced Photo Mode free camera is freed up for
+  proper screenshots: it can pass through geometry and leave the track (no collision),
+  the distance cap is removed so you can pull right back from the car, the orbit camera
+  pans much further, and the zoom range is widened a lot at both ends (much closer macro
+  shots and much wider angles). Free-camera movement is faster, rotation is scaled to the
+  zoom so framing a tight shot is not twitchy, and the photo-mode vignette starts off for
+  a clean image. On by default. `Config.PhotoMode`.
+- **Dynamic wet grip.** Tire grip now drops as the road gets wet and recovers as it dries,
+  scaling with the live rain intensity (rises quickly, dries off slowly). It applies to
+  every car, so the AI rivals get just as loose in the rain as you do, and it works in
+  parking-area battles. Lateral (cornering) grip is hit a little harder than longitudinal,
+  matching how a wet surface actually behaves. Tunable floors and wet/dry timing.
+  On by default. `Config.WetGrip`. The global tire-table grip approach is credited to
+  Chrystales.
+
+## [3.0.20] - 2026-06-30
+
+### Added
+- **Rainbows.** After a careful re-check of the UDS/UDW data, the rainbow turned out
+  to be drawn on a world mesh (not a screen post-process like the screen-droplet
+  family that does not render in TXR), so it works here. Weather decides when it
+  appears: there has to be rain or fog feeding it, the camera has to be in direct
+  sunlight (not under an overcast sky), and the sun has to be low enough. So it
+  shows up naturally as a shower clears toward the sun, rather than in every weather.
+  On by default. `Config.Rainbow`.
+- **Night-sky nebula (Space Layer).** A faint nebula band rendered into the sky the
+  same way as the stars and moon, fading in only at night. It is a stylistic touch (real
+  Tokyo skies are light-polluted) - keep it subtle, or turn it off for a plain night
+  sky. On by default at a modest intensity. `Config.SpaceLayer`.
+- **Hide HUD vignette (opt-in).** Removes the darkened corner vignette the game draws
+  over the screen during normal play (it's a HUD overlay, so Engine.ini can't disable
+  it). Cleaner, more photographic image. Pure HUD toggle, no game files touched. Off by
+  default; set `Config.Vignette.Enabled = true`. `Config.Vignette`.
+
+### Fixed
+- **Day-to-day weather variety now actually re-rolls after the morning.** A config-key
+  typo meant `ResumeRandomizeAfterMorning` never took effect, so the cloud/fog "mood"
+  stayed fixed once a day started. It now re-randomizes after the morning window as
+  intended (set the option false in `Config.CloudsFog` if you preferred it static).
+- **Log files now show the correct mod version** in the session header (was always
+  printing 3.0.0), and the startup "modules loaded" count is now accurate.
+
+### Notes
+- These features are additive, follow the same safe deferred-apply pattern as the
+  stars / moon / wind-debris features, and each has its own `Config` block and module
+  toggle, so any one can be turned off independently.
+- No new game files are added or edited; everything is driven at runtime on the
+  Ultra Dynamic Sky / Weather actors (and TXR's own HUD widget for the vignette).
+
 ## [3.0.19] - 2026-06-30
 
 ### Added

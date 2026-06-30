@@ -414,8 +414,10 @@ function CloudsFog.Tick(dt)
         internalState.morningWasActive = true
     elseif internalState.morningWasActive then
         internalState.morningWasActive = false
-        -- Re-randomize mood after morning ends
-        if Config.CloudsFog.ReRandomizeAfterMorning then
+        -- Re-randomize mood after morning ends. (Config key is
+        -- ResumeRandomizeAfterMorning; the old code read ReRandomizeAfterMorning,
+        -- which never existed, so this re-roll silently never fired.)
+        if Config.CloudsFog.ResumeRandomizeAfterMorning then
             internalState.moodTarget = (math.random() * 2.0 - 1.0)
             Log.Debug(MODULE, "Morning ended, new mood", {mood = internalState.moodTarget})
         end

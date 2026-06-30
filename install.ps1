@@ -29,6 +29,10 @@ $FogCvars = @(
     'r.fog=1',
     'r.Lumen.SampleFog=1'
 )
+# Always applied, regardless of profile - on-by-default visual features need these.
+$AlwaysCvars = @(
+    'r.DBuffer=1'   # DBuffer decals - required for the night-sky nebula (Space Layer)
+)
 $ExpOnCvars = @(
     'r.EyeAdaptation.MethodOverride=3',
     'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=1',
@@ -40,6 +44,7 @@ $ExpOffCvars = @(
 $ManagedKeys = @(
     'r.fog',
     'r.Lumen.SampleFog',
+    'r.DBuffer',
     'r.EyeAdaptation.MethodOverride',
     'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange',
     'r.NGX.DLSS.AutoExposure'
@@ -121,6 +126,7 @@ function Compose-Ini($baseLines, $exposureOn){
     $out.Add('; === TXR Weather Mod - required cvars (managed by installer) ===')
     $out.Add('[ConsoleVariables]')
     foreach($c in $FogCvars){ $out.Add($c) }
+    foreach($c in $AlwaysCvars){ $out.Add($c) }
     $expSet = if($exposureOn){ $ExpOnCvars } else { $ExpOffCvars }
     foreach($c in $expSet){ $out.Add($c) }
     return [string[]]$out
@@ -163,13 +169,31 @@ function Set-HeadlightMode($modDst, $mode){
     Ok "Set Config.Headlights.Mode = `"$mode`" (headlight control)."
 }
 
+# Set Config.<Block>.Enabled = true/false in the installed mod's config.lua (the first
+# Enabled line inside that block - the module's master switch).
+function Set-ConfigEnabled($modDst, $block, $on){
+    $cfg = Join-Path $modDst 'Scripts\config.lua'
+    if(-not (Test-Path $cfg)){ return }
+    $val = if($on){ 'true' } else { 'false' }
+    $lines = @(Get-Content $cfg)
+    $inBlk = $false
+    for($i = 0; $i -lt $lines.Count; $i++){
+        if($lines[$i] -match "^\s*Config\.$block\s*=\s*\{"){ $inBlk = $true; continue }
+        if($inBlk -and $lines[$i] -match '^\s*Enabled\s*='){
+            $lines[$i] = $lines[$i] -replace 'Enabled\s*=\s*(true|false)', "Enabled = $val"
+            break
+        }
+    }
+    WriteLines $cfg $lines
+}
+
 # ----- start -----------------------------------------------------------------
 Say "================================================" White
 Say "  TXR Weather Mod V3 - Installer" White
 Say "  by Ten." White
 Say "================================================" White
 Say ""
-Say "This will set the mod up in 5 steps:" White
+Say "This will set the mod up in a few steps:" White
 Say "  1. Find your Tokyo Xtreme Racer install (auto-detected via Steam)."
 Say "  2. Download + install UE4SS - the script loader the mod runs on."
 Say "     Any mods you already have are left in place."
@@ -177,6 +201,7 @@ Say "  3. Install the weather mod and enable it (mods.txt)."
 Say "  4. Set up Engine.ini - pick a graphics profile (photomode / optimizations / minimal)."
 Say "     Any existing Engine.ini is backed up first."
 Say "  5. Choose headlight behaviour (auto or manual)."
+Say "  6. Choose gameplay options (dynamic wet grip)."
 Say ""
 Say "Nothing on disk is changed until you confirm the location on the next screen." White
 Say ""
@@ -387,6 +412,17 @@ try {
     $hl = (Read-Host '    Choice [1-2, Enter = 1]').Trim()
     $hlMode = if($hl -eq '2'){ 'force_off' } else { 'auto' }
     Set-HeadlightMode $modDst $hlMode
+
+    # 7) Dynamic wet grip (gameplay) ----------------------------------------
+    Step 'Dynamic wet grip'
+    Say '    Tire grip can drop in the rain and recover as it dries. It affects every car,'
+    Say '    including the AI rivals, and works in PA battles. Turn it off for purely'
+    Say '    visual weather with no handling changes.'
+    Say ''
+    $grip = AskYesNo 'Enable dynamic wet grip?' $true
+    Set-ConfigEnabled $modDst 'WetGrip' $grip
+    $gripState = if($grip){ 'enabled' } else { 'disabled' }
+    Ok "Dynamic wet grip $gripState."
 
 } finally {
     if(Test-Path $tmp){ Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }

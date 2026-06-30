@@ -5,7 +5,7 @@
 local Config = {}
 
 -- Set true for distribution builds.
-Config.IS_RELEASE_BUILD = false
+Config.IS_RELEASE_BUILD = true
 
 -- ============== LOGGING ==============
 Config.Logging = {
@@ -92,8 +92,47 @@ Config.TimeOfDay = {
 }
 
 -- ============== WETNESS (WIP) ==============
+-- The experimental DLWE/material road-wetness system (visual). NOT the grip system.
 Config.Wetness = {
     Enabled = false,
+}
+
+-- ============== DYNAMIC WET GRIP (gameplay) ==============
+-- Tire grip drops as the road gets wet (rain/snow) and recovers as it dries. Reads UDW
+-- "Rain" (0-10) and drives it into the GLOBAL tire degradation table
+-- (DT_TireDegradationInfo). Because every car's tire model reads that table, this affects
+-- ALL cars (the player AND the AI rivals) and works in PA rival battles. Grip rates are
+-- scaled from the cached dry baseline, so it never compounds and fully recovers to stock
+-- when it stops raining. Braking is NOT affected (the degradation table has no braking
+-- entry). The global-tire-table grip approach is credited to Chrystales. See
+-- systems/wet_grip.lua.
+Config.WetGrip = {
+    Enabled = true,   -- master switch for the dynamic wet grip effect
+
+    -- Grip multipliers at FULL wetness (heaviest rain). 1.0 = unchanged, lower = less
+    -- grip. Grip interpolates from 1.0 (bone dry) down to these floors. Lateral
+    -- (cornering) grip is usually hit a little harder than longitudinal. Applies to every
+    -- car, so the AI gets just as slippery as you do.
+    MinGripMult     = 0.80,  -- forward traction floor (longitudinal grip rates)
+    MinSideGripMult = 0.72,  -- cornering grip floor (lateral grip rates)
+
+    -- UDW precipitation (0-10) at/above this counts as "fully wet" (max grip loss). TXRWM
+    -- writes Rain=5 (light), 7 (rain), 10 (thunderstorm), so 7.0 = full slick in a normal
+    -- downpour. Lower it to reach full slickness in lighter rain.
+    PrecipForFullWet = 7.0,
+    SnowCounts = false,      -- treat snow as slippery too (uses max of rain and snow)
+    SnowWeight = 1.0,        -- scale snow's contribution (1.0 = same as rain, 0 = ignore)
+
+    -- Wet up fast, dry slowly - the road stays slick a while after the rain stops.
+    -- Rough seconds to reach most of the way to the new wetness target.
+    WetRiseSeconds = 8.0,
+    DrySeconds     = 45.0,
+
+    UpdateMs = 250,    -- how often wet grip recomputes / re-applies
+    -- Diagnostic: logs live precip, wetness and the grip factors written to the table
+    -- (throttled ~2s). Flip true, drive/PA-race in the rain, read the log (grep "WetGrip"),
+    -- then back to false.
+    Debug = false,
 }
 
 -- ============== STARS ==============
@@ -248,6 +287,116 @@ Config.Atmosphere = {
     -- Colors are LinearColor {R,G,B,A}; defaults live in atmosphere.lua. Uncomment to override:
     -- LightPollutionColor = {R = 1.00, G = 0.55, B = 0.25, A = 1.0},
     -- NightSkyGlowColor   = {R = 0.45, G = 0.50, B = 0.65, A = 1.0},
+}
+
+-- ============== RAINBOW ==============
+-- UDW's rainbow. Rendered on a world MESH (not a post-process), so it shows in TXR.
+-- UDW decides WHEN it's visible from the live weather state: there must be rain (or
+-- fog) feeding it, the camera must be in direct sun (not under overcast), and the
+-- sun low enough. So it appears naturally as rain clears toward the sun - you won't
+-- see it in every weather, which is intended. We just enable it; UDW drives strength.
+Config.Rainbow = {
+    Enabled = true,
+    MaxStrength = nil,      -- nil = UDW default cap (0-1). Lower for a subtler arc.
+    MaskAboveClouds = nil,  -- nil = UDW default (visibility above the cloud layer)
+    MaskBelowWater = nil,   -- nil = UDW default
+}
+
+-- ============== SPACE LAYER (nebula in the night sky) ==============
+-- UDS Space Layer: a faint Nebula band rendered INTO the sky material (like the
+-- stars/moon), plus a space-glow control. UDS fades it by day/night itself, so it
+-- only shows at night. It composites via DBuffer decals (the installer's Engine.ini
+-- profile sets r.DBuffer=1; the module also requests it at runtime as a fallback).
+-- Stylistic (real Tokyo skies are light-polluted); keep the intensity modest or set
+-- Enabled=false if you prefer a plain night sky.
+Config.SpaceLayer = {
+    Enabled = true,
+    RenderNebula = true,
+    NebulaIntensity = 1.6,      -- nil = UDS default; modest so it reads as faint depth
+    NebulaNoiseScale = nil,     -- nil = UDS default
+    NebulaColor1 = nil,         -- LinearColor {R,G,B,A}; nil = UDS default
+    NebulaColor2 = nil,
+    NebulaColor3 = nil,
+    BrightnessNight = nil,      -- nil = UDS default (Space Layer Brightness at night)
+    BrightnessDay = nil,        -- nil = UDS default (usually ~0; hidden by day)
+    SpaceGlowBrightness = nil,  -- nil = UDS default
+    SetDBuffer = true,          -- set r.DBuffer 1 at runtime (needed for compositing)
+}
+
+-- ============== VIGNETTE (hide HUD vignette, opt-in) ==============
+-- Hide TXR's in-game HUD vignette (the darkened corner frame) for a cleaner,
+-- photographic look. Pure UI-widget toggle on TXR's own HUD (no game files). Default
+-- OFF - it removes a vanilla HUD element, so it's opt-in.
+Config.Vignette = {
+    Enabled = true,
+    Hide = true,    -- true = hide the vignette (set false to force it visible)
+}
+
+-- ============== PHOTO MODE UNLOCKER ==============
+-- Removes the restrictions on TXR's Advanced Photo Mode free camera (folded in from
+-- the standalone PhotoModeUnlocked mod, which is kept on disk but disabled). Pure
+-- runtime reflection - no game files touched. Only does anything while photo mode is
+-- open. ON by default (it's purely additive and self-gating).
+Config.PhotoMode = {
+    Enabled = true,
+
+    -- Let the camera pass through geometry and leave the track (disables the
+    -- free-camera collision sphere and the spring-arm collision pull-in).
+    DisableCameraCollision = true,
+
+    -- Remove the cap on how far the free camera can fly from the car. MaxDistance is a
+    -- (large) fallback cap still applied in case a code path reads it. Units = cm
+    -- (100 = 1 m); 5,000,000 = 50 km.
+    RemoveDistanceLimit = true,
+    MaxDistance        = 5000000.0,
+    MaxDistanceHeight  = 5000000.0,
+
+    -- Raise the orbit (non-free) photo camera's left/right + up/down pan limits.
+    RaiseOrbitLimits = true,
+    OrbitMaxLeftRight = 1000000.0,
+    OrbitMaxUpDown    = 1000000.0,
+
+    -- FOV / zoom: widen the in-game photo-mode FOV slider so the normal zoom control
+    -- goes further (no keybinds). MoveCapture applies the slider value WITHOUT
+    -- re-clamping, so raising the slider's Min/Max IS the limit removal.
+    WidenFovSlider = true,
+    FovSliderMin = 0.25,   -- new minimum / zoom-in limit (the widget rejects <= 0)
+    FovSliderMax = 140.0,  -- new maximum (zoom OUT / wide angle)
+    FovStep      = 1.0,    -- normal nudge step (FOV at/above FovFineBelow)
+    FovStepFine  = 0.25,   -- finer step when zoomed in (FOV below FovFineBelow)
+    FovFineBelow = 10.0,   -- use the fine step below this FOV (it zooms in exponentially)
+    -- The FOV slider is matched by its internal ListKey "FOV" (the on-screen "Zoom" name
+    -- is localized display text and unreliable to match). DebugSliders logs every slider's
+    -- key + range once, flip true for one confirming test, then back to false.
+    FovSliderMatch = "fov",
+    DebugSliders   = false,
+
+    -- The photo-mode "Vignette" slider ships at 40; force it to a sane default once each
+    -- time the menu opens (you can still raise it again afterward).
+    ResetVignette = true,
+    VignetteValue = 0.01,        -- ~off (0 itself can misbehave; 0.01 is imperceptible)
+    VignetteMatch = "vignette",  -- match the vignette slider by its key/label
+
+    -- Free-camera fly speed (vanilla is very slow). Vanilla is cached once so the
+    -- multiplier never compounds across camera respawns. 1.0 = vanilla.
+    SetMovementSpeed = true,
+    MovementSpeedMult = 2.0,
+
+    -- Camera rotation gets twitchy zoomed in (a tiny FOV magnifies every wobble), so
+    -- scale rotation sensitivity with FOV: full speed at/above RotationRefFov,
+    -- proportionally slower below, with a floor so extreme zoom never fully freezes.
+    ScaleRotationWithFov = true,
+    RotationRefFov = 60.0,
+    RotationMinScale = 0.02,
+
+    ReassertMs = 200,  -- how often the unlocks are re-applied while photo mode is open
+
+    -- Diagnostic for the "long exposure drops some unlocks until you move" case. When
+    -- true, logs (throttled ~2s) whether the re-assert loop keeps firing under the
+    -- slow-mo AND reads back the live collision/distance limits before re-writing them,
+    -- so we can tell if the game is re-enabling them every frame (a race) vs the loop
+    -- stalling. Leave false for normal play; flip true only when reproducing.
+    Debug = false,
 }
 
 -- ============== HEADLIGHTS ==============
@@ -480,15 +629,20 @@ Config.ModuleToggles = {
     WindDebris  = true,
     LightRays   = true,
     Moon        = true,
-    Stars       = true,   -- re-enabled 2026-06-24 with the safe bool+Static-Properties+settle-gate rewrite
+    Stars       = true,
+    Rainbow     = true,   -- mesh-rendered rainbow (UDW drives visibility)
+    SpaceLayer  = true,   -- night-sky nebula
+    Vignette    = true,   -- hide the HUD vignette (see Config.Vignette)
+    PhotoMode   = true,   -- photo mode free-camera unlocks
+    WetGrip     = true,   -- dynamic wet grip
 }
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 0, Patch = 19,
-    String = "3.0.19",
+    Major = 3, Minor = 1, Patch = 0,
+    String = "3.1.0",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.0.19",
+    FullName = "TXR Weather Mod v3.1.0",
 }
 
 return Config

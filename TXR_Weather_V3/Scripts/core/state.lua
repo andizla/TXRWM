@@ -56,27 +56,25 @@ local state = {
         currentSpeed = 1.0,
     },
     
-    -- Module status flags
+    -- Module status flags. Pre-seeded with the modules that report status; any
+    -- other module that calls SetModuleStatus is added on first call (the setter is
+    -- self-registering), so this list does not have to be kept exhaustive.
     modules = {
         logging = false,
+        utils = false,
+        state = false,
         actors = false,
         weather = false,
         timeOfDay = false,
         keybinds = false,
         persistence = false,
         cloudsFog = false,
-        lightning = false,
-        enhancedFog = false,
-        wetness = false,
-        -- Visual modules (all disabled by default per spec)
+        shadows = false,
+        transitions = false,
         atmosphere = false,
-        deepSunset = false,
-        groundFog = false,
-        hudAspect = false,
+        audio = false,
         stars = false,
-        tokyoTint = false,
-        vehicleWet = false,
-        vignette = false,
+        exposure = false,
     },
     
     -- Session info
@@ -361,11 +359,13 @@ end
 
 -- ============== MODULE STATUS ==============
 
---- Set module enabled/initialized status
+--- Set module enabled/initialized status. Self-registering: a module name not in
+--- the pre-seeded list is added rather than silently dropped (the old guard meant
+--- e.g. the exposure module's status never recorded, undercounting "modules loaded").
 --- @param moduleName string
 --- @param enabled boolean
 function State.SetModuleStatus(moduleName, enabled)
-    if state.modules[moduleName] ~= nil then
+    if type(moduleName) == "string" then
         state.modules[moduleName] = enabled
     end
 end

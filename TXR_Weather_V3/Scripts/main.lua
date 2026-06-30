@@ -37,6 +37,7 @@ Log.Init({
     minLevel = Config.Logging.MinLevel,
     logToFile = Config.Logging.EnableFileLogging,
     logToConsole = Config.Logging.EnableConsoleLogging,
+    version = Config.Version and Config.Version.String,
 })
 
 Log.Info("Main", "==============================================")
@@ -94,6 +95,11 @@ local Exposure = nil
 local WindDebris = nil
 local LightRays = nil
 local Moon = nil
+local Rainbow = nil
+local SpaceLayer = nil
+local Vignette = nil
+local PhotoMode = nil
+local WetGrip = nil
 
 -- Attempt to load system modules (may not exist yet)
 local function loadSystemModules()
@@ -265,6 +271,51 @@ local function loadSystemModules()
         Log.Debug("Main", "Moon module not loaded")
     end
 
+    -- Rainbow (UDW mesh-rendered rainbow; UDW drives visibility from weather)
+    Rainbow = safeRequire("systems.rainbow", "Rainbow")
+    if Rainbow then
+        Log.Info("Main", "System module loaded: Rainbow")
+        if Rainbow.Init then Rainbow.Init() end
+    else
+        Log.Debug("Main", "Rainbow module not loaded")
+    end
+
+    -- Space Layer (night-sky nebula rendered into the sky material)
+    SpaceLayer = safeRequire("systems.space_layer", "SpaceLayer")
+    if SpaceLayer then
+        Log.Info("Main", "System module loaded: SpaceLayer")
+        if SpaceLayer.Init then SpaceLayer.Init() end
+    else
+        Log.Debug("Main", "SpaceLayer module not loaded")
+    end
+
+    -- Vignette (hide HUD vignette; opt-in UI toggle)
+    Vignette = safeRequire("systems.vignette", "Vignette")
+    if Vignette then
+        Log.Info("Main", "System module loaded: Vignette")
+        if Vignette.Init then Vignette.Init() end
+    else
+        Log.Debug("Main", "Vignette module not loaded")
+    end
+
+    -- Photo mode unlocker (free-cam collision/distance/FOV/speed; self-gating)
+    PhotoMode = safeRequire("systems.photomode", "PhotoMode")
+    if PhotoMode then
+        Log.Info("Main", "System module loaded: PhotoMode")
+        if PhotoMode.Init then PhotoMode.Init() end
+    else
+        Log.Debug("Main", "PhotoMode module not loaded")
+    end
+
+    -- Dynamic wet grip (player tire grip scales with UDW precipitation)
+    WetGrip = safeRequire("systems.wet_grip", "WetGrip")
+    if WetGrip then
+        Log.Info("Main", "System module loaded: WetGrip")
+        if WetGrip.Init then WetGrip.Init() end
+    else
+        Log.Debug("Main", "WetGrip module not loaded")
+    end
+
     -- Phase 11: Random weather preset scheduler
     Scheduler = safeRequire("systems.scheduler", "Scheduler")
     if Scheduler then
@@ -430,6 +481,11 @@ local function onTick()
                     Headlights.OnCourseLoad()
                 end
 
+                -- Re-baseline wet grip for the fresh car (incl. a race started from PA).
+                if WetGrip and WetGrip.OnCourseLoad then
+                    WetGrip.OnCourseLoad()
+                end
+
                 initialWeatherApplied = true
             end
         end
@@ -473,6 +529,15 @@ local function onTick()
         if Wetness and Wetness.Tick and not State.IsPAFrozen() then
             Wetness.Tick()
         end
+
+        -- Dynamic wet grip (global tire degradation table vs precipitation; self-throttled,
+        -- re-applies only on change). Intentionally NOT PA-frozen-gated: a race initiated
+        -- from PA is the case we most need it in, and the global table edit is what makes
+        -- PA + AI work. It only scales tire grip rates (never the PA-persisted weather
+        -- state), so running through the PA transition is safe.
+        if WetGrip and WetGrip.Tick then
+            WetGrip.Tick()
+        end
         
         -- Shadow distance scaling (updates based on FOV)
         if Shadows and Shadows.Update then
@@ -514,11 +579,31 @@ local function onTick()
             Moon.Tick()
         end
 
+        -- Rainbow (settle-gated one-shot enable; UDW drives visibility)
+        if Rainbow and Rainbow.Tick and not State.IsPAFrozen() then
+            Rainbow.Tick()
+        end
+
+        -- Space Layer nebula (settle-gated one-shot apply)
+        if SpaceLayer and SpaceLayer.Tick and not State.IsPAFrozen() then
+            SpaceLayer.Tick()
+        end
+
+        -- Vignette HUD toggle (throttled re-assert; runs in/out of course like the
+        -- HUD itself, so intentionally not gated by the PA-frozen check)
+        if Vignette and Vignette.Tick then
+            Vignette.Tick()
+        end
+
         -- Auto-exposure scheduler (self-throttled; also runs in garage/menu,
         -- so it is intentionally NOT gated by the PA-frozen check)
         if Exposure and Exposure.Tick then
             Exposure.Tick()
         end
+
+        -- NOTE: PhotoMode is intentionally NOT ticked here. It runs its own dedicated
+        -- LoopAsync (started in PhotoMode.Init) so its re-assert can't be stalled or
+        -- skipped by anything else in this shared tick.
     end)
     
     if not success then
@@ -647,7 +732,7 @@ local function initialize()
     -- Load system modules
     loadSystemModules()
 
-    -- ===== BISECTION HARNESS (debug; remove once the course-load crash is found) =====
+    -- ===== PER-MODULE TOGGLES =====
     -- Setting a Config.ModuleToggles.X to false nil-s that module's handle, so every
     -- `if X and X.Tick`/`X.Setup` guard in the loop skips it entirely - disabling the
     -- module's runtime without touching call sites. All true = normal operation.
@@ -667,8 +752,13 @@ local function initialize()
         if tg.LightRays   == false then LightRays = nil end
         if tg.Moon        == false then Moon = nil end
         if tg.Stars       == false then Stars = nil end
+        if tg.Rainbow     == false then Rainbow = nil end
+        if tg.SpaceLayer  == false then SpaceLayer = nil end
+        if tg.Vignette    == false then Vignette = nil end
+        if tg.PhotoMode   == false then PhotoMode = nil end
+        if tg.WetGrip     == false then WetGrip = nil end
         if tg.Persistence == false then Persistence = nil end
-        Log.Info("Main", "BISECT module toggles applied", {
+        Log.Info("Main", "Module toggles applied", {
             Weather = Weather ~= nil, TimeOfDay = TimeOfDay ~= nil,
             CloudsFog = CloudsFog ~= nil, Shadows = Shadows ~= nil,
             Transitions = Transitions ~= nil, Atmosphere = Atmosphere ~= nil,
@@ -995,4 +1085,9 @@ return {
     Audio = Audio,
     Stars = Stars,
     Exposure = Exposure,
+    Rainbow = Rainbow,
+    SpaceLayer = SpaceLayer,
+    Vignette = Vignette,
+    PhotoMode = PhotoMode,
+    WetGrip = WetGrip,
 }

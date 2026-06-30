@@ -284,6 +284,64 @@ function Utils.DawnDuskFactor(tod, dawnStart, dawnEnd, duskStart, duskEnd)
     return 0
 end
 
+-- ============== CONSOLE COMMANDS (game-thread safe) ==============
+
+-- Cached console singletons (Engine + KismetSystemLibrary). Resolved once and
+-- reused so each console push doesn't re-scan the UObject array. Re-resolved if
+-- they ever go invalid. Mirrors the proven pattern in systems/exposure.lua.
+local _cachedEngine = nil
+local _cachedKsl = nil
+local _UEH = nil
+
+local function _validRef(o)
+    if not o then return false end
+    local ok, v = pcall(function() return o:IsValid() end)
+    return ok and v
+end
+
+local function _getEngine()
+    if _validRef(_cachedEngine) then return _cachedEngine end
+    local eng = nil
+    pcall(function() if FindFirstOf then eng = FindFirstOf("Engine") end end)
+    if _validRef(eng) then _cachedEngine = eng; return eng end
+    return nil
+end
+
+local function _getKsl()
+    if _validRef(_cachedKsl) then return _cachedKsl end
+    if not _UEH then pcall(function() _UEH = require("UEHelpers") end) end
+    if not _UEH or not _UEH.GetKismetSystemLibrary then return nil end
+    local ksl = nil
+    pcall(function() ksl = _UEH.GetKismetSystemLibrary() end)
+    if _validRef(ksl) then _cachedKsl = ksl; return ksl end
+    return nil
+end
+
+--- Run one or more console commands on the GAME THREAD. Module ticks run on
+--- UE4SS's async LoopAsync thread; issuing r.* render CVAR commands off the game
+--- thread races the render thread and can crash on course load, so this marshals
+--- onto the game thread (the same mechanism the exposure module uses for its
+--- exposure cvars). Safe to call from any module tick.
+--- @param cmds string[] array of console command strings
+--- @return boolean scheduled
+function Utils.ExecConsoleCommands(cmds)
+    if not cmds or #cmds == 0 then return false end
+    local run = function()
+        local ksl = _getKsl()
+        local eng = _getEngine()
+        if not ksl or not eng then return end
+        for _, cmd in ipairs(cmds) do
+            pcall(function() ksl:ExecuteConsoleCommand(eng, cmd, nil) end)
+        end
+    end
+    if ExecuteInGameThread then
+        return pcall(function() ExecuteInGameThread(run) end)
+    end
+    -- Fallback (older UE4SS without ExecuteInGameThread): best-effort direct.
+    run()
+    return true
+end
+
 -- ============== RANDOM SELECTION ==============
 
 --- Weighted random selection from a pool

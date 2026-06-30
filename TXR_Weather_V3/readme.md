@@ -1,1699 +1,244 @@
-\# Ultradynamic-TXR Devbuild
-
-
-
-Check config and keybinds for info
-
-
-
-\# TXR Weather Mod V3 Developer Reference
-
-\## Modular Rewrite of Ultradynamic TXR V1.34 Weather System
-
-
-
-\*\*Last Updated:\*\* December 20, 2025
-
-
-
-\---
-
-
-
-\## Table of Contents
-
-1\. \[Current Status](#1-current-status)
-
-2\. \[Stable Systems - Do Not Modify](#2-stable-systems--do-not-modify)
-
-3\. \[Known Issues](#3-known-issues)
-
-4\. \[Feature Status](#4-feature-status)
-
-5\. \[Keybinds](#5-keybinds)
-
-6\. \[Phase Plan](#6-phase-plan)
-
-7\. \[File Structure](#7-file-structure)
-
-8\. \[Actor Discovery](#8-actor-discovery)
-
-9\. \[Weather Control API](#9-weather-control-api)
-
-10\. \[Time Control API](#10-time-control-api)
-
-11\. \[Wetness \& Puddles System](#11-wetness--puddles-system)
-
-12\. \[Lightning System](#12-lightning-system)
-
-13\. \[Enhanced Fog System](#13-enhanced-fog-system)
-
-14\. \[Shadow System](#14-shadow-system)
-
-14.5. \[Headlights System](#145-headlights-system)
-
-15\. \[Atmospheric Properties](#15-atmospheric-properties)
-
-16\. \[Weather Presets Reference](#16-weather-presets-reference)
-
-17\. \[Sound System](#17-sound-system)
-
-18\. \[Event Dispatchers](#18-event-dispatchers)
-
-19\. \[Persistence System](#19-persistence-system)
-
-20\. \[Lua Integration Patterns](#20-lua-integration-patterns)
-
-21\. \[Phase Details](#21-phase-details)
-
-22\. \[Excluded Features](#22-excluded-features)
-
-
-
-\---
-
-
-
-\## 1. Current Status
-
-
-
-| Metric | V1.34 | V3 Current |
-
-|--------|-------|------------|
-
-| Total Lines | 6,771 | \~3,800 |
-
-| Files | 9 | 22 |
-
-| Core Features | 30+ | \~28 implemented |
-
-| Completion | 100% | \~85% |
-
-
-
-\---
-
-
-
-\## 2. Stable Systems - Do Not Modify
-
-
-
-⚠️ These systems required extensive debugging and are now working correctly. \*\*Do not touch this code:\*\*
-
-
-
-| System | Location | Notes |
-
-|--------|----------|-------|
-
-| Rain Particles | `weather.lua` | 6-day debug effort, works flawlessly |
-
-| Dry Enforcement | `weather.lua` | Integrated dry watchdog/hard kill |
-
-| Hard Kill Precip | `weather.lua` | Stops particles on dry presets |
-
-| Niagara Activation | `weather.lua` | Direct component manipulation via FindAllOf |
-
-| PA Persistence | `persistence.lua` | File-based state restore (Fix7) |
-
-| Shadow FOV Scaling | `shadows.lua` | Lookup table from extensive testing |
-
-
-
-\---
-
-
-
-\## 3. Known Issues
-
-> **Pick an Engine.ini profile in the installer** (Photomode / Optimizations only / Minimal, each
-> with or without exposure). Every profile includes the cvars the mod relies on. Brightness, shadow
-> resolution/distance, and glass-reflection problems are almost always a skipped Engine.ini step or
-> a custom/outdated file, **not** the mod.
->
-> Current major issues: **screen-space / material weather effects** (screen droplets, frost,
-> wetness/puddles) do not render in TXR (the game doesn't composite UDW's post-process and the road
-> materials lack UDW's functions) and are not Lua-fixable; **tunnel rain** can't be occluded from Lua
-> (tunnels have no overhead collision to trace); **high-beam flash** resets the headlight brightness
-> to default until the next brightness change (the game recomputes intensity on its own hi-beam path).
-> (Auto headlights now track scene brightness; Stars: fixed and re-enabled in 3.0.15.)
-
-
-
-\### 3.1 Rain Particles After PA Exit
-
-\- Rain particles don't appear until manual weather cycle
-
-\- UDW doesn't create Niagara components immediately after map load
-
-\- Retry mechanism exists (50 attempts) but components don't exist yet
-
-\- This is a UDW timing limitation, not easily fixable
-
-\- Weather preset and all other settings restore correctly
-
-\- \*\*DO NOT MODIFY\*\* rain particle code - it works during normal gameplay
-
-
-
-\### \~\~3.2 Fog Too Weak\~\~ ✅ FIXED (Phase 7)
-
-\- \*\*Fixed:\*\* `enhanced\_fog.lua` now adjusts `Scale Fog Density` on UDS
-
-\- Volumetric fog enabled for all profiles (required for weather system)
-
-
-
-\### 3.3 Shadow Disappearance at Low FOV
-
-\- CSM frustum culling causes shadows to disappear at low FOV (photo mode zoom)
-
-\- Also affected by sun angle and camera direction relative to sun
-
-\- \*\*Workaround:\*\* `shadows.lua` dynamically scales shadow distance based on FOV
-
-\- Lookup table derived from extensive testing (FOV 10-120)
-
-\- Not a perfect fix but maintains shadows at all FOV levels
-
-
-
-\### 3.4 Wetness/Puddles Not Visible (Phase 6 WIP)
-
-\- Wetness simulation logic works correctly
-
-\- Puddle coverage values write to UDW successfully
-
-\- Visual puddles don't appear in-game
-
-\- Module disabled by default (`Config.Wetness.Enabled = false`)
-
-\- Requires further investigation of UDW's internal accumulation system
-
-
-
-\---
-
-
-
-\## 4. Feature Status
-
-
-
-\### 4.1 Implemented (from V1.34)
-
-
-
-| Feature | Status | Location |
-
-|---------|--------|----------|
-
-| Rain/Particle System | ✅ STABLE | `weather.lua` |
-
-| Config System | ✅ Done | `config.lua` |
-
-| Morning Mood System | ✅ Done | `clouds\_fog.lua` |
-
-| PA Freeze | ✅ Done | `main.lua`, `persistence.lua` |
-
-| Persistence (save/load) | ✅ Done | `persistence.lua` |
-
-| Weather Presets (13) | ✅ Done | `presets.lua` |
-
-| Keybinds | ✅ Done | `keybinds.lua` |
-
-| Dry Watchdog / Hard Kill / Rainfix | ✅ STABLE | `weather.lua` |
-
-| Lightning System | ✅ Done | `lightning.lua` |
-
-| Enhanced Fog | ✅ Done | `enhanced\_fog.lua` |
-
-| Shadow FOV Scaling | ✅ Done | `shadows.lua` |
-
-| Dawn/Dusk Transitions | ✅ Done | `transitions.lua` |
-
-| Atmospheric Enhancements | ✅ Done | `atmosphere.lua` |
-
-| Headlight System | ✅ Done | `headlights.lua` |
-
-| Weather Audio | ✅ Done | `audio.lua` |
-
-| HD Stars (night sky) | ✅ Done | `stars.lua` |
-
-
-
-\### 4.2 In Progress
-
-
-
-| Feature | Status | Location |
-
-|---------|--------|----------|
-
-| Wetness/Puddles | ⚠️ WIP (disabled) | `wetness.lua` |
-
-
-
-\### 4.3 Missing from V1.34
-
-
-
-| Feature | Priority | Phase |
-
-|---------|----------|-------|
-
-| Tokyo Morning Preset Injection | Low | 11 |
-
-| Console Commands (dn.\*) | Low | 12 |
-
-
-
-\---
-
-
-
-\## 5. Keybinds
-
-
-
-\### 5.1 Working
-
-
-
-| Keybind | Function |
-
-|---------|----------|
-
-| Alt+S | Cycle weather preset (next) |
-
-| Alt+Shift+S | Cycle weather preset (previous) |
-
-| Alt+P | Random weather preset now (scheduler) |
-
-| Alt+Shift+P | Force clear weather |
-
-| Alt+T | Cycle time speed |
-
-| Alt+R | Reset weather |
-
-| Alt+L | Raise flat shadow distance (calibration, logs FOV+distance) |
-
-| Alt+Q | Headlights on/off (manual; Auto mode is set in config) |
-
-| Alt+B | Cycle headlight brightness up (0.5x → 1x → 2x → 3x → 5x) |
-
-| Alt+Shift+B | Cycle headlight brightness down |
-
-| Alt+Shift+L | Lower flat shadow distance (calibration, logs FOV+distance) |
-
-| Alt+W | Force wetness (if wetness module enabled) |
-
-| Alt+Shift+W | Force dry (if wetness module enabled) |
-
-
-
-\### 5.2 Missing
-
-
-
-| Keybind | Function | Phase |
-
-|---------|----------|-------|
-
-| Alt+D | Previous preset (alternate) | 12 |
-
-| Alt+V | Toggle VEAO Photomode | 14 |
-
-
-
-\---
-
-
-
-\## 6. Phase Plan
-
-
-
-\### 6.1 Complete
-
-
-
-| Phase | Name | Features |
-
-|-------|------|----------|
-
-| 1 | Foundation | Logging, utils, state, config |
-
-| 2 | Actor Discovery | UDS/UDW finding, world tag detection, lifecycle hooks |
-
-| 3 | Weather Control | 13 presets, Change Weather API, Niagara particles |
-
-| 4 | Time Control | Normal/Fast/Paused, baseline enforcement |
-
-| 5 | Persistence \& Clouds | File save/load, cloud coverage, fog density, morning mood, PA persistence |
-
-| 7 | Lightning \& Fog Fix | Lightning enable via UDW manager, enhanced fog via UDS Scale Fog Density |
-
-| 6.5 | Shadow System | FOV-based shadow distance scaling, auto-update on tick |
-
-| 8 | Dawn/Dusk Transitions | Slow time windows (500-700, 1730-1930), Tokyo tint colors |
-
-| 9 | Atmospheric Enhancements | God rays, aurora at night, cloud shadows, second cloud layer |
-
-| 10 | Headlights \& Audio | Auto headlights (time-based), brightness control (BP\_CarLightSpriteComponent), weather audio (UDW) |
-
-
-
-\### 6.2 In Progress
-
-
-
-| Phase | Name | Status | Notes |
-
-|-------|------|--------|-------|
-
-| 6 | Wetness System | ⚠️ WIP | Logic works, visuals don't appear. Disabled by default. |
-
-
-
-\### 6.3 Planned
-
-
-
-| Phase | Name | Features | New Keybinds |
-
-|-------|------|----------|--------------|
-
-| 11 | Mood \& Randomization | Day mood variation, random preset scheduler, tokyo morning injection | Alt+P, Alt+Shift+P |
-
-| 12 | Polish \& Debug | Console commands (dn.\*), remaining keybinds, HD stars | Alt+D, Alt+B |
-
-| 13 | VEAO Integration | Autoexposure based on time/available light | - |
-
-| 14 | VEAO engine.ini Port | Graphical enhancements with separate photomode toggle | Alt+V |
-
-
-
-\---
-
-
-
-\## 7. File Structure
-
-
-
+# TXR Weather Mod V3 - Reference
+
+A modular UE4SS Lua mod for **Tokyo Xtreme Racer** that drives **Ultra Dynamic Sky / Weather
+(UDS/UDW)**: time of day, weather, lighting, atmosphere, and exposure. This document is the
+full feature + configuration + developer reference. For install and a short feature list, see the
+landing `README.md`. For per-version changes, see `CHANGELOG.md`.
+
+**Current version: 3.1.0**
+
+---
+
+## 1. What this is, and how it differs from Ultra Dynamic TXR 1.34
+
+TXR Weather Mod V3 is a **ground-up rewrite** of the older Ultra Dynamic TXR 1.34 weather system.
+Same goal - drive UDS/UDW inside TXR - but **none of the 1.34 code**.
+
+| | Ultra Dynamic TXR 1.34 | TXR Weather Mod V3 |
+|---|---|---|
+| Structure | One ~6,700-line `main.lua` monolith + loose helper scripts | Small bootstrap + one focused module per feature under `Scripts/systems/`, single `config.lua` |
+| Config | Scattered constants | One `config.lua` tuning surface + per-module `Config.ModuleToggles` |
+| Stability | Recurring "stuck rain on preset change", PA state issues | Rain/dry + PA persistence rebuilt and hardened; new visuals use a deferred game-thread "settle gate" so they can't corrupt actors at level load |
+| New visual features apply via | Ad-hoc property pokes | UDS/UDW's own `Static Properties - X` functions on the game thread |
+
+**New in V3 that 1.34 did not have:** auto-exposure (ex-VEAO) on a 144-step day/night curve;
+exposure-driven auto headlights with animated pop-ups and a controller light-button gesture; a
+weighted, time-of-day-aware random weather scheduler; dawn/dusk slow-time + Tokyo tint; Tokyo city
+glow (light pollution + night sky glow); volumetric cloud light rays; wind debris; moon phases and a
+scalable moon; rainbows; a night-sky nebula; and an installer with Engine.ini graphics profiles.
+
+**Intentionally dropped from 1.34:** surface/vehicle wetness and screen-space weather effects
+(rain-on-lens, frost, heat distortion). They rely on material/post-process paths TXR does not
+composite, so they never rendered reliably. See section 6.
+
+---
+
+## 2. Install and Engine.ini (summary)
+
+Run `install.bat`. It auto-detects the Steam install, downloads UE4SS, installs the mod, registers
+it in `mods.txt`, and writes `Engine.ini` from a graphics profile you pick (backing up any existing
+file). Pick a profile - every profile ships the cvars the mod relies on (exposure + fog):
+
+- **Photomode (+/- exposure)** - highest fidelity, heavier.
+- **Optimizations only (+/- exposure)** - lighter, good for midrange / non-DLSS rigs.
+- **Minimal** - only what the mod needs.
+
+"Exposure" means the mod drives manual exposure (correct brightness + working photomode aperture);
+"no exposure" leaves the game's vanilla auto-exposure. If the game looks too bright / washed out,
+you most likely skipped the Engine.ini step - re-run the installer and pick a profile.
+
+The base profile inis live in `engines/` (`photomode_engine.ini`, `optimization_only_engine.ini`).
+The runtime copy excludes that folder; the installer composes the live `Engine.ini` from the chosen
+base.
+
+---
+
+## 3. Keybinds
+
+| Key | Action |
+|-----|--------|
+| `Alt+S` / `Alt+Shift+S` | Cycle weather preset next / previous |
+| `Alt+P` / `Alt+Shift+P` | Random weather preset now / force Clear Skies |
+| `Alt+T` | Cycle time speed (normal / fast / pause) |
+| `Alt+R` | Reset weather to default |
+| `Alt+Q` | Headlights on/off (manual). In the garage, toggles the displayed car (pop-ups animate). Auto mode is config-only and ignores this. |
+| `Alt+B` / `Alt+Shift+B` | Headlight brightness up / down (0.5x / 1x / 2x / 3x / 5x) |
+| `Alt+L` / `Alt+Shift+L` | Re-apply shadow distance |
+| `Alt+D` / `Alt+Shift+D` | Exposure feedback: flag the picture as too dark / too bright (logs time + weather + applied exposure under tag `ExposureTune` for tuning) |
+| `Alt+W` / `Alt+Shift+W` | Force wetness / force dry (only if the WIP wetness module is enabled) |
+
+In **manual** headlight mode you can also use the car's own light button (keyboard or controller):
+a short press turns headlights on, a ~2-second hold turns them off.
+
+---
+
+## 4. Features (current)
+
+### Time and weather
+- **Time of day** with adjustable speed, pause, and persistence across sessions (`time_of_day.lua`).
+- **13 weather presets** (`presets.lua` / `weather.lua`): Clear_Skies, Partly_Cloudy, Cloudy,
+  Overcast, Foggy, Rain_Light, Rain, Rain_Thunderstorm, Snow_Light, Snow, Snow_Blizzard,
+  Sand_Dust_Calm, Sand_Dust_Storm. Rain/dry enforcement here is **stable - do not modify**.
+- **Random weather scheduler** (`scheduler.lua`): weighted pool with time-of-day multipliers and an
+  `AllowPrecipitation` switch. A manual change re-arms the timer so it never overrides your pick.
+- **Clouds and fog** (`clouds_fog.lua`): drift/jitter, day "mood", morning profiles, smooth
+  preset ramps. **Enhanced fog** (`enhanced_fog.lua`) drives UDS `Scale Fog Density`.
+- **Lightning** (`lightning.lua`): flashes for thunderstorm presets.
+- **Dawn/dusk transitions** (`transitions.lua`): slow-time windows + a Tokyo tint.
+- **Weather audio** (`audio.lua`): rain / wind / thunder.
+- **Persistence** (`persistence.lua`): saves and restores the exact sky/weather snapshot, including
+  across the parking area (PA). **Stable - do not modify.**
+
+### Sky and atmosphere
+- **Stars** (`stars.lua`): UDS real-stars night sky (safe bool + `Static Properties - Stars` on the
+  game thread, settle-gated).
+- **Moon** (`moon.lua`): realistic phases, optional phase-over-time, and a `Scale` knob.
+- **Atmosphere** (`atmosphere.lua`): god rays (sun light shafts, faded by cloud cover), night
+  auroras, cloud shadows, a second cloud layer, and **Tokyo city glow** (light pollution lighting the
+  cloud bases + a night sky glow), ramped in at night.
+- **Volumetric cloud light rays** (`volumetric_light_rays.lua`): god-ray shafts through natural
+  cloud gaps (Niagara ray cards).
+- **Wind debris** (`wind_debris.lua`): leaves/dust blowing through the air, scaled by wind intensity.
+- **Rainbow** (`rainbow.lua`) - *new in 3.0.20.* UDW's rainbow, drawn on a world mesh (not a screen
+  post-process), so it renders in TXR. UDW decides when it shows from the weather state: rain or fog
+  feeding it, the camera in direct sun (not under overcast), and the sun low enough. On by default.
+- **Night-sky nebula / Space Layer** (`space_layer.lua`) - *new in 3.0.20.* A faint nebula band
+  rendered into the sky like the stars/moon, fading in at night. Stylistic - on at a modest
+  intensity, easy to disable.
+
+### Lighting and exposure
+- **Auto-exposure** (`exposure.lua`): a 144-slot (10-min) time-of-day curve pushing
+  `r.SkylightIntensityMultiplier`, `r.EyeAdaptation.LensAttenuation`, and the Lumen skylight-leak
+  cvar, interpolated continuously and marshalled to the game thread. Garage forces the night slot.
+- **Headlights** (`headlights.lua`): Auto mode follows the exposure brightness (with hysteresis) so
+  the lamps track available light; manual mode (`Alt+Q`, the garage, and the light-button gesture);
+  adjustable brightness; animated pop-ups via the game's native raise/lower.
+- **Shadows** (`shadows.lua`): adaptive FOV-to-distance table so shadows survive photo-mode zoom.
+
+### Driving
+- **Dynamic wet grip** (`wet_grip.lua`) - *new in 3.1.0.* Tire grip drops as the road gets wet and
+  recovers as it dries, scaling with the live rain intensity (wets up fast, dries off slowly). It is
+  driven into the global tire model, so it applies to every car including the AI rivals and works in
+  parking-area battles. Cornering grip is hit a little harder than longitudinal. Tunable floors and
+  wet/dry timing in `Config.WetGrip`. On by default. Grip approach credited to Chrystales.
+
+### Photo mode and quality-of-life
+- **Photo mode camera unlock** (`photomode.lua`) - *new in 3.1.0.* Frees the Advanced Photo Mode free
+  camera: no collision (fly through geometry and off the track), no distance cap, a much wider orbit
+  pan, and a much wider zoom range at both ends (closer macro, wider angle). Free-camera movement is
+  faster, rotation scales with the zoom so tight framing isn't twitchy, and the photo-mode vignette
+  starts off. On by default; `Config.PhotoMode`.
+- **Hide HUD vignette** (`vignette.lua`) - *new in 3.0.20, OFF by default.* Removes the darkened
+  corner vignette the game draws during normal play (`WBP_Com_Vignette_Frame` on the in-game HUD).
+  It's a HUD overlay, not a render setting, so Engine.ini can't touch it - this can. Pure HUD-widget
+  toggle, no game files touched.
+
+---
+
+## 5. Configuration
+
+All settings live in `Scripts/config.lua`. Each feature has its own `Config.X` block (commented in
+place). General highlights:
+
+- `Config.Weather.Enabled = false` - time-of-day + visuals only, no weather (presets/rain/cycling off).
+- `Config.ModuleToggles` - hard on/off per module (the handle is nil-ed in `main.lua`, so the module's
+  tick/setup never runs). Core modules (Actors/Presets/Keybinds) are not toggleable.
+- `Config.Exposure.Slots` - the 144-row day/night exposure curve. `sky` is the brightness lever;
+  `lens` tracks with it (both higher = brighter). Use the `Alt+D` / `Alt+Shift+D` feedback keys, then
+  grep the log for `ExposureTune` to see which slot to nudge.
+- `Config.Headlights.Mode` - `"auto"` (exposure-driven, untouchable at runtime), `"force_on"`, or
+  `"force_off"` (manual; `Alt+Q` toggles). Manual on/off + brightness persist across restarts.
+
+Feature blocks of note:
+- `Config.PhotoMode` - camera collision/distance/orbit unlocks, the zoom-range floor/ceiling and step,
+  free-cam movement and rotation scaling, and the photo-mode vignette default.
+- `Config.WetGrip` - `MinGripMult` / `MinSideGripMult` (grip floors at full wet), `PrecipForFullWet`,
+  snow handling, and the `WetRiseSeconds` / `DrySeconds` wet/dry timing.
+- `Config.Rainbow` - `MaxStrength` / mask caps (nil = UDW defaults).
+- `Config.SpaceLayer` - `NebulaIntensity`, colors, brightness, `SetDBuffer`.
+- `Config.Vignette` - `Enabled` (default false), `Hide`.
+
+---
+
+## 6. What does NOT render in TXR, and why
+
+These are confirmed dead-ends - do not re-attempt without cooked content. TXR renders UDS/UDW
+effects that come from **scene components** (Niagara particles, lights, exponential height fog, the
+sky/atmosphere/stars/moon, and mesh-drawn effects), but does **not** composite either actor's
+`PostProcess` component, and the game's own materials don't include UDW's material functions.
+
+- **Screen-space post-process effects** - Screen Droplets (rain-on-lens), Screen Frost, Heat
+  Distortion, Post Process Wind Fog, and the UDS Sun Lens Flare. These are weighted blendables on a
+  `PostProcess` component TXR doesn't run. Screening rule: a feature with a `... MID` **and** a
+  `... WB` (weighted blendable) is post-process = dead in TXR.
+- **Material-function effects** - surface wetness, puddles, glass rain drips, DLWE, foliage wind,
+  water rain ripples. The game's road/ground materials don't sample UDW's parameters, and material
+  graph nodes can't be added from Lua. (`wetness.lua` exists but is disabled - logic runs, nothing
+  draws.)
+- **Tunnel rain** - tunnels have no overhead query collision on any channel, so UDW can't occlude
+  rain inside them. Not fixable from Lua.
+
+**Rainbow is NOT in this list** (3.0.20): it has a `Rainbow MID` but no weighted blendable - it's
+drawn on `Rainbow Mesh` with `Rainbow Material 2D` / `Rainbow Material Volumetric`, i.e. scene-
+rendered, so it works.
+
+---
+
+## 7. Architecture notes (for developers)
+
+- **Entry / loop.** `main.lua` loads `config` + core (`logging`, `utils`, `state`), then the system
+  modules, and runs an 8 Hz (`Config.MainLoop.TickIntervalMs = 125`) `LoopAsync` loop calling each
+  module's `Tick`. All tick logic is wrapped in `pcall` so a module error never crashes the game.
+- **Off-thread footgun.** TXR calls the tick inside its `LoopAsync` callback with no
+  `ExecuteInGameThread`, so module ticks run on UE4SS's **async thread**. Primitive reads/writes on
+  UDS/UDW are tolerated, but: (1) `r.*` render cvar console commands **must** be marshalled to the
+  game thread (`Utils.ExecConsoleCommands` does this), and (2) object-typed writes / asset loads
+  during `BeginPlay` can corrupt reflection and hard-crash.
+- **Proven safe pattern for new native visuals** (stars / moon / wind debris / light rays / rainbow /
+  space layer): set the primitive bools/scalars, then call the feature's own
+  `Static Properties - <feature>` function **on the game thread**, **deferred** past BeginPlay by a
+  ~32-tick settle gate (`SETTLE_TICKS`). The one-shot modules reset their gate when off-course.
+- **Do-not-touch zones:** the rain particles + dry enforcement in `weather.lua`, and the PA
+  persistence in `persistence.lua`. Both took long debugging and are stable.
+- **Actor access.** `systems/actors.lua` owns discovery and caching: `Actors.GetUDS()`,
+  `Actors.GetUDW()`, `Actors.IsOnCourse()`, `Actors.IsInGarage()`, plus safe property/function
+  helpers. UDS is `Ultra_Dynamic_Sky_C`; UDW is the UDS actor's `"Ultra Dynamic Weather"` property.
+- **Adding a module.** Create `systems/<name>.lua` returning a table with `Init`/`Tick`; in
+  `main.lua` add a `safeRequire` + `Init` in `loadSystemModules`, a `Tick` call in `onTick`, a
+  `ModuleToggles` line, and a return-table entry; add a `Config.<Name>` block.
+
+### Key property/function names (verified in the v1.5 dump)
+```
+-- Time / weather
+UDS["Time Of Day"]                 -- 0-2400
+UDS["Simulation Speed"]            -- 0 = pause
+UDW["Change Weather"](preset, seconds)
+UDW["Cloud Coverage"], ["Rain"], ["Fog"], ["Thunder/Lightning"], ["Wind Intensity"]  -- 0-10
+-- Visuals
+UDW["Enable Rainbow"]; UDW["Static Properties - Rainbow"]
+UDS["Render Nebula"], ["Space Glow Brightness"]; UDS["Static Properties - Space Layer"]   -- needs r.DBuffer 1
+-- Dynamic wet grip (global tire model)
+DT "/Game/ITSB/Core/Quest/DT_TireDegradationInfo" -> rows' Max/Cliff/Min(Side)GripRate
+-- Photo mode
+BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 ```
 
-TXR\_Weather\_V3/
-
-├── Scripts/
-
-│   ├── main.lua              -- Core loop, hooks, PA handling
-
-│   ├── config.lua            -- User settings
-
-│   ├── core/
-
-│   │   ├── logging.lua       -- Log system
-
-│   │   ├── state.lua         -- Global state management
-
-│   │   └── utils.lua         -- Helpers
-
-│   ├── systems/
-
-│   │   ├── actors.lua        -- UDS/UDW discovery and access
-
-│   │   ├── weather.lua       -- Weather control (STABLE - DO NOT MODIFY)
-
-│   │   ├── presets.lua       -- Preset definitions and values
-
-│   │   ├── time\_of\_day.lua   -- Time control
-
-│   │   ├── clouds\_fog.lua    -- Cloud/fog dynamics, morning mood
-
-│   │   ├── persistence.lua   -- Save/load state
-
-│   │   ├── keybinds.lua      -- Input handling
-
-│   │   ├── lightning.lua     -- Lightning control (Phase 7)
-
-│   │   ├── enhanced\_fog.lua  -- Enhanced fog density (Phase 7)
-
-│   │   ├── shadows.lua       -- Shadow distance: flat or FOV-adaptive (Phase 6.5)
-
-│   │   ├── transitions.lua   -- Dawn/Dusk slow time \& tint (Phase 8)
-
-│   │   ├── atmosphere.lua    -- God rays, aurora, cloud shadows (Phase 9)
-
-│   │   ├── headlights.lua    -- Auto headlight control (Phase 10)
-
-│   │   ├── audio.lua         -- Weather audio control (Phase 10)
-
-│   │   ├── stars.lua         -- HD real-stars night sky (Phase 12)
-
-│   │   └── wetness.lua       -- Wetness/puddles (Phase 6 - WIP, disabled)
-
-│   └── visuals/
-
-│       └── (future modules)
-
-├── Logs/                     -- Auto-created
-
-├── last\_state.txt            -- Auto-created persistence file
-
-├── DEV\_REFERENCE.md          -- This file
-
-└── enabled.txt               -- Required for UE4SS
-
-```
-
-
-
-\### Files to Create (Future Phases)
-
-
-
-```
-
-├── systems/
-
-│   ├── scheduler.lua      # Phase 11 (NEW)
-
-│   └── console.lua        # Phase 12 (NEW)
-
-```
-
-
-
-\---
-
-
-
-\## 8. Actor Discovery
-
-
-
-\### Primary Actors
-
-```lua
-
-\-- Ultra Dynamic Sky (UDS) - Time, sun, moon, clouds, atmosphere
-
-local UDS = FindFirstOf("Ultra\_Dynamic\_Sky\_C")
-
-
-
-\-- Ultra Dynamic Weather (UDW) - Rain, snow, fog, wetness, lightning
-
-local UDW = FindFirstOf("Ultra\_Dynamic\_Weather\_C")
-
-```
-
-
-
-\### Actor Class Paths (from dump lines 1574, 10326)
-
-```
-
-/Game/UltraDynamicSky/Blueprints/Ultra\_Dynamic\_Sky.Ultra\_Dynamic\_Sky\_C
-
-/Game/UltraDynamicSky/Blueprints/Ultra\_Dynamic\_Weather.Ultra\_Dynamic\_Weather\_C
-
-```
-
-
-
-\### TXR-Specific Sky Actor
-
-```lua
-
-\-- TXR wraps UDS in a course-specific blueprint
-
-local TXRSky = FindFirstOf("BP\_Course\_UltraDynamicSky\_C")
-
-
-
-\-- Get UDW component from sky actor
-
-local UDW = TXRSky\["Ultra Dynamic Weather"]
-
-```
-
-
-
-\---
-
-
-
-\## 9. Weather Control API
-
-
-
-\### Primary Function: Change Weather (dump line 14446-14448)
-
-```lua
-
-\-- Function signature:
-
-\-- Change Weather(New Weather Type, Time To Transition To New Weather (Seconds))
-
-\--   New Weather Type: ObjectProperty (UDS\_Weather\_Settings\_C reference)
-
-\--   Time To Transition: DoubleProperty (seconds)
-
-
-
-\-- Load preset asset
-
-local presetPath = "/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Rain.Rain"
-
-local preset = StaticFindObject(presetPath)
-
-
-
-\-- Call Change Weather
-
-local changeWeatherFunc = UDW\["Change Weather"]
-
-changeWeatherFunc(preset, 5.0)  -- 5 second transition
-
-```
-
-
-
-\### Weather State Query Functions (dump lines 13495-13500)
-
-```lua
-
-\-- Currently Raining (returns bool via "Yes" output parameter)
-
-local isRaining = UDW\["Currently Raining"](UDW)
-
-
-
-\-- Currently Snowing (returns bool via "Yes" output parameter)  
-
-local isSnowing = UDW\["Currently Snowing"](UDW)
-
-
-
-\-- Get Display Name for Current Weather (dump line 13095)
-
-\-- Returns: As String (StrProperty), As Enumerator (ByteProperty)
-
-local weatherName = UDW\["Get Display Name for Current Weather"](UDW)
-
-```
-
-
-
-\### Direct Weather Properties (UDW)
-
-
-
-| Property | Type | Range | Dump Line |
-
-|----------|------|-------|-----------|
-
-| `Cloud Coverage` | Double | 0-10 | 10404 |
-
-| `Rain` | Double | 0-10 | 10406 |
-
-| `Snow` | Double | 0-10 | 10412 |
-
-| `Thunder/Lightning` | Double | 0-10 | 10410 |
-
-| `Wind Intensity` | Double | 0-10 | 10414 |
-
-| `Fog` | Double | 0-10 | 10408 |
-
-| `Dust` | Double | 0-10 | 10416 |
-
-| `Weather Speed` | Double | 0.1-10 | 10401 |
-
-
-
-\### Manual Override Flags (UDW)
-
-Each weather property has a manual override flag:
-
-```lua
-
-UDW\["Cloud Coverage - Manual Override"] = true  -- line 10405
-
-UDW\["Rain - Manual Override"] = true            -- line 10407
-
-UDW\["Thunder/Lightning - Manual Override"] = true -- line 10411
-
-\-- etc.
-
-```
-
-
-
-\---
-
-
-
-\## 10. Time Control API
-
-
-
-\### Primary Time Property (UDS, dump line 1582)
-
-```lua
-
-\-- EXACT NAME: "Time of Day" (lowercase "of")
-
-\-- Range: 0-2400 (0=midnight, 600=6AM, 1200=noon, 1800=6PM)
-
-local currentTOD = UDS\["Time of Day"]
-
-UDS\["Time of Day"] = 1200  -- Set to noon
-
-```
-
-
-
-\### Time Speed Control (UDS)
-
-```lua
-
-\-- Simulation Speed (dump line 1855)
-
-\-- 1.0 = real-time base, higher = faster, 0 = paused
-
-UDS\["Simulation Speed"] = 1.6667  -- Normal game speed
-
-UDS\["Simulation Speed"] = 0.0     -- Pause time
-
-UDS\["Simulation Speed"] = 0.6667  -- Slow (for transitions)
-
-
-
-\-- Night speed multiplier (dump line 1859)
-
-UDS\["Simulation Speed Night Multiplier"] = 1.0
-
-```
-
-
-
-\### Time Window Properties (UDS)
-
-| Property | Type | Default | Dump Line |
-
-|----------|------|---------|-----------|
-
-| `Dawn Time` | Double | 600.0 | 1652 |
-
-| `Dusk Time` | Double | 1800.0 | 1653 |
-
-| `Day Length` | Double | 30.0 | - |
-
-| `Night Length` | Double | 15.0 | - |
-
-
-
-\---
-
-
-
-\## 11. Wetness \& Puddles System
-
-
-
-> ⚠️ \*\*Phase 6 WIP\*\* - Module exists but disabled by default (`Config.Wetness.Enabled = false`)
-
-> 
-
-> \*\*Status:\*\* Simulation logic works correctly, values write to UDW, but visual puddles don't appear in-game. Requires investigation of UDW's internal accumulation triggers.
-
-
-
-\### Wetness Properties (UDW)
-
-
-
-| Property | Type | Range | Default | Dump Line |
-
-|----------|------|-------|---------|-----------|
-
-| `Material Wetness` | Double | 0-1 | 0 | 10418 |
-
-| `Max Material Wetness` | Double | 0-1 | 1.0 | 10499 |
-
-| `Wetness Coverage Duration` | Double | seconds | 30.0 | 10508 |
-
-| `Wetness Dry Duration` | Double | seconds | 90.0 | 10509 |
-
-
-
-\### Puddle Properties (UDW)
-
-
-
-| Property | Type | Range | Default | Dump Line |
-
-|----------|------|-------|---------|-----------|
-
-| `Puddle Coverage` | Double | 0-1 | 0.26 | 10597 |
-
-| `Puddle Sharpness` | Double | 0-100 | 40 | 10602 |
-
-
-
-\### Water Level (UDS, dump line 2140)
-
-```lua
-
-UDS\["Water Level"] = 0.0  -- Global water height offset
-
-```
-
-
-
-\### Enable Wetness Module
-
-```lua
-
-\-- In config.lua
-
-Config.Wetness = {
-
-&#x20;   Enabled = true,  -- Set to true to enable
-
-}
-
-```
-
-
-
-\---
-
-
-
-\## 12. Lightning System
-
-
-
-> ✅ \*\*Phase 7 Complete\*\* - Implemented in `systems/lightning.lua`
-
-
-
-\### Enable/Disable (UDW)
-
-
-
-| Property | Type | Dump Line |
-
-|----------|------|-----------|
-
-| `Spawn Lightning Flashes` | Bool | 10469 |
-
-| `Enable Obscured Lightning` | Bool | 10488 |
-
-
-
-\### Intensity Controls (UDW)
-
-
-
-| Property | Type | Default | Dump Line |
-
-|----------|------|---------|-----------|
-
-| `Thunder/Lightning` | Double | 0-10 | 10410 |
-
-| `Thunder/Lightning - Manual Override` | Bool | - | 10411 |
-
-| `Lightning Flash Frequency` | Double | 14.0 | 10470 |
-
-
-
-\### Implementation (lightning.lua)
-
-```lua
-
-\-- Enable lightning for thunderstorm preset
-
-Lightning.SetIntensity(10.0)  -- Sets Thunder/Lightning and enables flashes
-
-
-
-\-- Or via preset
-
-Lightning.EnableFromPreset(presetData)  -- Reads thunderIntensity from preset
-
-```
-
-
-
-\---
-
-
-
-\## 13. Enhanced Fog System
-
-
-
-> ✅ \*\*Phase 7 Complete\*\* - Implemented in `systems/enhanced\_fog.lua`
-
-
-
-\### The Problem
-
-The `Fog` property on UDW (0-10) only sets a weather state target. The actual fog density is computed by UDS using multipliers that weren't being adjusted.
-
-
-
-\### The Solution
-
-`enhanced\_fog.lua` adjusts UDS rendering properties based on fog intensity profiles. \*\*Volumetric fog must be enabled for the weather system to function properly.\*\*
-
-
-
-\### UDS Properties (Rendering Control)
-
-
-
-| Property | Type | Notes |
-
-|----------|------|-------|
-
-| `Scale Fog Density` | Double | \*\*THE KEY MULTIPLIER\*\* |
-
-| `Base Fog Density` | Double | Baseline density |
-
-| `Use Volumetric Fog` | Bool | \*\*REQUIRED\*\* for weather system |
-
-
-
-\### Implementation (enhanced\_fog.lua)
-
-```lua
-
-\-- Apply fog from preset
-
-EnhancedFog.ApplyFromPreset(presetData)  -- Reads fog value and selects profile
-
-
-
-\-- Or set directly
-
-EnhancedFog.Apply(5.0)  -- Applies "heavy" profile
-
-```
-
-
-
-\---
-
-
-
-\## 14. Shadow System
-
-
-
-> ✅ \*\*Phase 6.5 Complete\*\* - Implemented in `systems/shadows.lua`
-
-
-
-\### The Problem
-
-Cascaded Shadow Map (CSM) frustum culling causes shadows to disappear at low FOV values (photo mode zoom). The required shadow distance depends on:
-
-1\. Current FOV
-
-2\. Sun elevation angle  
-
-3\. Camera direction relative to sun
-
-
-
-No single CVAR or function parameter was found to directly fix the frustum alignment issue.
-
-
-
-\### The Solution
-
-> **Note (v3.0.13):** The 3.0.12 flat/adaptive rework was **reverted**. Its
-> version-robust `applyDistance` scanned and wrote *every* `DirectionalLightComponent`
-> via `FindAllOf`, which crashes the game on v1.5. The active implementation is the
-> original **adaptive FOV → distance lookup table** below. `Config.Shadows` is
-> currently inert (the restored module does not read it). The flat-mode / calibration
-> details below are kept as historical reference for a future re-attempt.
-
-`shadows.lua` applies a shadow distance from the FOV → distance lookup table below
-(derived from extensive testing on game **v1.1**), auto-updated every tick. It writes
-the sun light found via `UDS.Sun_LightComponent`. On newer game versions the table
-may drift; recalibration is a future task.
-
-
-
-\### FOV-Distance Lookup Table
-
-Tested values with \~5000 headroom:
-
-
-
-| FOV | Distance | FOV | Distance | FOV | Distance |
-
-|-----|----------|-----|----------|-----|----------|
-
-| 10 | 152000 | 50 | 126000 | 90 | 81000 |
-
-| 20 | 149000 | 60 | 116000 | 100 | 69000 |
-
-| 30 | 143000 | 70 | 104000 | 110 | 58000 |
-
-| 40 | 135000 | 80 | 93000 | 120 | 45000 |
-
-
-
-\### DirectionalLightComponent Functions Used
-
-
-
-| Function | Purpose |
-
-|----------|---------|
-
-| `SetDynamicShadowDistanceMovableLight` | Sets shadow distance for movable lights |
-
-| `SetDynamicShadowDistanceStationaryLight` | Sets shadow distance for stationary lights |
-
-| `SetCascadeDistributionExponent` | Set to 3.0 for more near-camera resolution |
-
-
-
-\### Functions Tested But Not Used
-
-These were tested but either made values worse or had no effect:
-
-\- `SetShadowDistanceFadeoutFraction`
-
-\- `SetShadowSourceAngleFactor`
-
-\- `SetShadowAmount`
-
-\- `SetShadowCascadeBiasDistribution`
-
-\- `SetCascadeTransitionFraction`
-
-\- `SetDynamicShadowCascades`
-
-\- Various `r.Shadow.\*` CVARs
-
-
-
-\### Implementation (shadows.lua)
-
-```lua
-
-\-- Auto-updates every tick based on current FOV
-
-Shadows.Update()
-
-
-
-\-- Force apply (called by keybind)
-
-Shadows.Apply()
-
-
-
-\-- Get current state
-
-local status = Shadows.GetStatus()
-
-\-- Returns: {distance, fov, initialized}
-
-```
-
-
-
-\### Keybinds
-
-\- \*\*Alt+L\*\* - Raise flat shadow distance by `Config.Shadows.CalibrationStep` (logs FOV + distance)
-
-\- \*\*Alt+Shift+L\*\* - Lower flat shadow distance (logs FOV + distance)
-
-
-
-Note: The flat-mode rework was reverted; the active shadow system is the original adaptive FOV table. Alt+L / Alt+Shift+L now force a re-apply of the shadow distance (via `Shadows.Apply`) - handy if shadows look off after a transition. (They previously drove a calibration nudge that no longer exists.)
-
-
-
-\---
-
-
-
-\## 14.5. Headlights System
-
-
-
-> ✅ \*\*Phase 10 Complete\*\* - Implemented in `systems/headlights.lua`
-
-
-
-\### Features
-
-\- \*\*Auto Mode\*\*: Headlights turn on/off based on time of day (default: on at TOD < 500 or > 1800)
-
-\- \*\*Force Modes\*\*: Override to always-on or always-off via Alt+Q cycling
-
-\- \*\*Brightness Control\*\*: Adjustable brightness multiplier via BP\_CarLightSpriteComponent
-
-
-
-\### Brightness Levels
-
-| Level | Multiplier | Description |
-
-|-------|------------|-------------|
-
-| 1 | 0.5x | Dim |
-
-| 2 | 1.0x | Default game |
-
-| 3 | 2.0x | Bright |
-
-| 4 | 3.0x | Very Bright (mod default) |
-
-| 5 | 5.0x | Max |
-
-
-
-\### Key Components
-
-| Component | Purpose |
-
-|-----------|---------|
-
-| `BP\_HeadLightComponent\_C` | SpotLight component with Normal\_intensity/hibeam\_intensity blueprint vars |
-
-| `BP\_CarLightSpriteComponent\_C` | Controls visual glow/bloom via SetIntensity() material parameter |
-
-
-
-\### Implementation Notes
-
-\- Brightness uses `BP\_CarLightSpriteComponent\_C:SetIntensity(multiplier)` which sets a material scalar parameter
-
-\- Components not available immediately at map load - uses deferred retry (up to 50 ticks)
-
-\- Toggle visibility off/on after SetIntensity to force refresh
-
-\- Default brightness 3.0x applies automatically when headlights first turn on
-
-
-
-\### Keybinds
-
-\- \*\*Alt+Q\*\* - Cycle headlight mode (auto → force\_on → force\_off → auto)
-
-\- \*\*Alt+B\*\* - Cycle brightness up
-
-\- \*\*Alt+Shift+B\*\* - Cycle brightness down
-
-
-
-\### API
-
-```lua
-
-Headlights.CycleMode()           -- Returns new mode string
-
-Headlights.SetMode(mode)         -- "auto", "force\_on", "force\_off"
-
-Headlights.GetMode()             -- Returns current mode
-
-Headlights.AreHeadlightsOn()     -- Returns boolean
-
-Headlights.CycleBrightnessUp()   -- Returns level, multiplier
-
-Headlights.CycleBrightnessDown() -- Returns level, multiplier
-
-Headlights.GetStatus()           -- Returns full status table
-
-```
-
-
-
-\---
-
-
-
-\## 15. Atmospheric Properties
-
-
-
-\### Aurora System (UDS)
-
-
-
-| Property | Type | Default | Dump Line |
-
-|----------|------|---------|-----------|
-
-| `Use Auroras` | Bool | false | 1639 |
-
-| `Aurora Intensity` | Double | - | 1640 |
-
-| `Aurora Speed` | Double | 0.15 | 1641 |
-
-
-
-\### Cloud Shadows (UDS)
-
-
-
-| Property | Type | Default | Dump Line |
-
-|----------|------|---------|-----------|
-
-| `Use Cloud Shadows` | Bool | true | 1632 |
-
-| `Cloud Shadows Intensity When Sunny` | Double | 0.7 | 1633 |
-
-
-
-\### Stars System (UDS)
-
-
-
-| Property | Type | Dump Line |
-
-|----------|------|-----------|
-
-| `Stars Intensity` | Double | 1628 |
-
-| `Simulate Real Stars` | Bool | 1846 |
-
-
-
-\---
-
-
-
-\## 16. Weather Presets Reference
-
-
-
-\### Available Presets
-
-
-
-| Preset Name | Full Asset Path |
-
-|-------------|-----------------|
-
-| `Clear\_Skies` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Clear\_Skies.Clear\_Skies` |
-
-| `Partly\_Cloudy` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Partly\_Cloudy.Partly\_Cloudy` |
-
-| `Cloudy` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Cloudy.Cloudy` |
-
-| `Overcast` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Overcast.Overcast` |
-
-| `Foggy` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Foggy.Foggy` |
-
-| `Rain\_Light` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Rain\_Light.Rain\_Light` |
-
-| `Rain` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Rain.Rain` |
-
-| `Rain\_Thunderstorm` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Rain\_Thunderstorm.Rain\_Thunderstorm` |
-
-| `Snow\_Light` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Snow\_Light.Snow\_Light` |
-
-| `Snow` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Snow.Snow` |
-
-| `Snow\_Blizzard` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Snow\_Blizzard.Snow\_Blizzard` |
-
-| `Sand\_Dust\_Calm` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Sand\_Dust\_Calm.Sand\_Dust\_Calm` |
-
-| `Sand\_Dust\_Storm` | `/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/Sand\_Dust\_Storm.Sand\_Dust\_Storm` |
-
-
-
-\---
-
-
-
-\## 17. Sound System
-
-
-
-\### Sound Control Properties (UDW)
-
-
-
-| Property | Type | Default | Dump Line |
-
-|----------|------|---------|-----------|
-
-| `Enable Weather Sound Effects` | Bool | true | 10550 |
-
-| `Rain Volume` | Double | 1.0 | 10551 |
-
-| `Wind Volume` | Double | 1.0 | 10555 |
-
-
-
-\---
-
-
-
-\## 18. Event Dispatchers
-
-
-
-\### Weather State Events (UDW)
-
-
-
-| Dispatcher | Fires When | Dump Line |
-
-|------------|------------|-----------|
-
-| `Started Raining` | Rain begins | 10665 |
-
-| `Started Snowing` | Snow begins | 10666 |
-
-| `Finished Raining` | Rain stops | 10667 |
-
-| `Finished Snowing` | Snow stops | 10668 |
-
-
-
-\---
-
-
-
-\## 19. Persistence System
-
-
-
-\### File Format
-
-
-
-File: `last\_state.txt`
-
-
-
-```
-
-tod=1234.56
-
-cloud=5.00
-
-fog=1.50
-
-preset=Rain
-
-speed=53.333
-
-```
-
-
-
-\### Key Functions
-
-
-
-```lua
-
-Persistence.Save(reason)     -- Save current state
-
-Persistence.LoadRaw()        -- Load from file (fresh read)
-
-Persistence.Restore()        -- Apply loaded state
-
-```
-
-
-
-\---
-
-
-
-\## 20. Lua Integration Patterns
-
-
-
-\### Safe Property Access
-
-```lua
-
-local function SafeGet(actor, prop, default)
-
-&#x20;   if not actor then return default end
-
-&#x20;   local valid = false
-
-&#x20;   pcall(function() valid = actor:IsValid() end)
-
-&#x20;   if not valid then return default end
-
-&#x20;   
-
-&#x20;   local success, value = pcall(function() return actor\[prop] end)
-
-&#x20;   return success and value or default
-
-end
-
-
-
-local function SafeSet(actor, prop, value)
-
-&#x20;   if not actor then return false end
-
-&#x20;   local valid = false
-
-&#x20;   pcall(function() valid = actor:IsValid() end)
-
-&#x20;   if not valid then return false end
-
-&#x20;   
-
-&#x20;   local success = pcall(function() actor\[prop] = value end)
-
-&#x20;   return success
-
-end
-
-```
-
-
-
-\### Weather Change Pattern
-
-```lua
-
-local function ChangeWeather(udwActor, presetName, transitionSeconds)
-
-&#x20;   transitionSeconds = transitionSeconds or 3.0
-
-&#x20;   
-
-&#x20;   local path = string.format(
-
-&#x20;       "/Game/UltraDynamicSky/Blueprints/Weather\_Effects/Weather\_Presets/%s.%s",
-
-&#x20;       presetName, presetName
-
-&#x20;   )
-
-&#x20;   
-
-&#x20;   local preset = nil
-
-&#x20;   pcall(function() preset = StaticFindObject(path) end)
-
-&#x20;   
-
-&#x20;   if not preset then return false end
-
-&#x20;   
-
-&#x20;   local changeFunc = udwActor\["Change Weather"]
-
-&#x20;   if not changeFunc then return false end
-
-&#x20;   
-
-&#x20;   local ok = pcall(function()
-
-&#x20;       changeFunc(preset, transitionSeconds)
-
-&#x20;   end)
-
-&#x20;   
-
-&#x20;   return ok
-
-end
-
-```
-
-
-
-\---
-
-
-
-\## 21. Phase Details
-
-
-
-\### 21.1 Phase 6: Wetness System (WIP)
-
-
-
-Status: Logic implemented, visuals not working. Disabled by default.
-
-
-
-```lua
-
-\-- Enable in config.lua
-
-Config.Wetness = {
-
-&#x20;   Enabled = true,
-
-}
-
-```
-
-
-
-\### 21.2 Phase 6.5: Shadow System ✅ COMPLETE
-
-
-
-Implemented in `systems/shadows.lua`. FOV-based shadow distance scaling with lookup table.
-
-
-
-\### 21.3 Phase 7: Lightning \& Fog ✅ COMPLETE
-
-
-
-Implemented in `systems/lightning.lua` and `systems/enhanced\_fog.lua`.
-
-
-
-\### 21.4 Phase 8: Dawn/Dusk Transitions (Planned)
-
-
-
-Target: \~400 lines | New file: `systems/transitions.lua`
-
-
-
-```lua
-
-SlowWindowDawnStart = 500   -- 05:00
-
-SlowWindowDawnEnd   = 700   -- 07:00
-
-SlowWindowDuskStart = 1730  -- 17:30
-
-SlowWindowDuskEnd   = 1930  -- 19:30
-
-
-
-OVERRIDE\_SLOW\_SPEED = 0.6667  -- UDS/s during transitions
-
-```
-
-
-
-\---
-
-
-
-\## 22. Excluded Features
-
-
-
-| Feature | Reason |
-
-|---------|--------|
-
-| Additional dry watchdogs | Rain system stable, would break it |
-
-| Rain attach mode changes | World-space particles work correctly |
-
-| Rainfix enhancements | Current implementation is solid |
-
-
-
-\---
-
-
-
-\## Quick Reference Card
-
-
-
-\### Most Used Properties
-
-
-
-```lua
-
-\-- TIME (UDS)
-
-UDS\["Time of Day"]           -- 0-2400
-
-UDS\["Simulation Speed"]      -- 0+ (0=pause, 1=normal)
-
-
-
-\-- WEATHER (UDW)  
-
-UDW\["Cloud Coverage"]        -- 0-10
-
-UDW\["Rain"]                  -- 0-10
-
-UDW\["Thunder/Lightning"]     -- 0-10
-
-UDW\["Fog"]                   -- 0-10
-
-
-
-\-- FOG (UDS)
-
-UDS\["Scale Fog Density"]     -- THE KEY MULTIPLIER
-
-UDS\["Use Volumetric Fog"]    -- REQUIRED for weather system
-
-
-
-\-- SHADOW (DirectionalLightComponent via UDS.Sun\_LightComponent)
-
-sunLight:SetDynamicShadowDistanceMovableLight(distance)
-
-sunLight:SetCascadeDistributionExponent(3.0)
-
-
-
-\-- LIGHTNING (UDW)
-
-UDW\["Spawn Lightning Flashes"]    -- true/false
-
-```
-
-
-
-\### Key Functions
-
-
-
-```lua
-
-\-- Change weather preset
-
-UDW\["Change Weather"](preset, transitionSeconds)
-
-
-
-\-- Shadow system
-
-Shadows.Update()   -- Auto-called on tick
-
-Shadows.Apply()    -- Manual refresh
-
-
-
-\-- Lightning
-
-Lightning.SetIntensity(10.0)
-
-
-
-\-- Enhanced fog
-
-EnhancedFog.Apply(5.0)
-
-```
-
-
-
-\---
-
-
-
-\## Development Notes
-
-
-
-1\. \*\*DO NOT TOUCH\*\* rain particle/dry enforcement systems - they are stable after 6-day debug
-
-2\. \*\*DO NOT TOUCH\*\* shadow FOV lookup table - derived from extensive testing
-
-3\. Use `Change Weather` API function for preset changes (not direct property writes)
-
-4\. Always set Manual Override flags before writing weather properties
-
-5\. Lightning system is built into UDW - enabled via `lightning.lua`
-
-6\. \*\*Volumetric fog must be enabled\*\* for the weather system to function properly
-
-7\. Shadow system auto-updates on tick - no manual intervention needed during gameplay
-
-8\. Wetness module disabled by default due to visual issues
-
-
-
-\---
-
-
-
-\## Version History
-
-
-
-\- \*\*v3.0.19\*\* - Pop-up (retractable) headlights now animate on on/off (`SetLightOn` read-then-toggle, not the non-animating direct `is_light_on` write); garage headlight control on Alt+Q (`GetDisplayVehicle` + `GetIsMovingRHL` gate, pops animate in the garage); manual-mode light-button hold gesture (short press = on, hold = off; keyboard + controller via `is_hibeam_on`); auto-exposure resolution 48 -> 144 slots (10 min), brightened dusk/evening, faster re-eval for fast time + cheaper cvar pushes (cached Engine/Kismet refs, push only changed cvars, no more dawn/dusk frame hitches); fixed the PA-exit full-night exposure flash; faster garage/menu scene detection. Removed the experimental high-beam latch (not scriptable in this build).
-
-\- \*\*v3.0.18\*\* - Auto headlights reconcile to the correct state on course load + owner-gated cast/brightness (only lit when a car's own lights are on); reworked dawn/dusk exposure ramp; slower, smoother scheduled weather changes; sharper close-range shadows in the Photomode Engine.ini profile; dead-code cleanup.
-
-\- \*\*v3.0.17\*\* - Exposure-driven auto headlights (lens hysteresis, time-of-day fallback) + persistent Alt+Q manual on/off toggle; smoother weather + exposure ramps (continuous interpolation); Alt+D / Alt+Shift+D exposure feedback keys; garage manual lights.
-
-\- \*\*v3.0.16\*\* - more native UDS/UDW effects: Wind Debris (Niagara debris in wind/storms), Volumetric Cloud Light Rays (god-ray shafts through cloud gaps, natural-gap rays via `Individual Clouds Light Rays`), Moon appearance (phases + over-time + `Moon Scale`). Sun lens flare attempted but it is a post-process material on UDS's PostProcess component (not composited by TXR) - built then orphaned.
-
-\- \*\*v3.0.15\*\* - Phase 11: random weather scheduler (weighted pool + time-of-day weights + precip toggle; Alt+P / Alt+Shift+P); city glow (light pollution + night sky glow, night-ramped); dawn/dusk slow-time is now fraction-based (`Config.Transitions.SlowFactor`); Stars re-enabled and the course-load crash fixed (game-thread `Static Properties - Stars` + settle gate, no off-thread texture write); orphaned the non-working screen-droplets + tunnel-rain experiments
-
-\- \*\*v3.0.14\*\* - `Config.Weather.Enabled` master switch; installer + Engine.ini profile selector; config slimmed; removed runtime CVAR migration (cvars ship in Engine.ini)
-
-\- \*\*v3.0.13\*\* - Phase 13: Exposure module (VEAO port) + `Config.Exposure`; fixed course-load crash by disabling the Stars module (off-thread asset load + object-property write corrupted UE4SS reflection); reverted the 3.0.12 shadow rework to the original adaptive table (the `FindAllOf` blanket apply crashed on v1.5); added `core/cvars.lua` and per-module `Config.ModuleToggles`
-\- \*\*v3.0.12\*\* - Phase 12: HD Stars module; shadow system rework (flat/adaptive modes, v1.5-robust apply, invalid-FOV guard, live Alt+L calibration); performance pass (throttled log flush, console-log flag honored, cached camera/module lookups, fewer redundant per-tick writes)
-
-\- \*\*v3.0.11\*\* - Phase 9 \& 10: Atmospheric Enhancements, Auto Headlights and brightness control
-
-\- \*\*v3.0.10\*\* - Phase 8: Dawn/Dusk transitions (slow time, Tokyo tint)
-
-\- \*\*v3.0.9\*\* - Phase 6.5: Shadow FOV scaling system with lookup table
-
-\- \*\*v3.0.8\*\* - Phase 7: Lightning \& Enhanced Fog systems
-
-\- \*\*v3.0.7\*\* - PA persistence fixes (Fix7), fresh file reads, invalid TOD validation
-
-\- \*\*v3.0.0\*\* - Initial modular rewrite
-
-
-
-\---
-
-
-
-\*\*END OF DEVELOPER REFERENCE\*\*
-
+---
+
+## 8. Version history
+
+See `CHANGELOG.md` for the full list. Most recent:
+
+- **3.1.0** - Photo mode camera unlocked (no collision/distance cap, much wider zoom, faster
+  free-cam, vignette off); dynamic wet grip (grip drops in the rain for every car incl. AI, works
+  in PA).
+- **3.0.20** - Rainbows (reclassified as mesh-rendered, now enabled); night-sky nebula (Space Layer);
+  optional hide-HUD-vignette.
+- **3.0.19** - Animated pop-up headlights; garage headlight control on `Alt+Q`; manual light-button
+  gesture; 144-slot exposure + brightened dusk; PA-exit flash fix; faster garage detection.
+- **3.0.18** - Auto headlights reconcile on load + owner-gated cast/brightness; reworked dawn/dusk
+  exposure ramp; smoother scheduled changes; sharper close shadows; cleanup.
+- **3.0.17** - Exposure-driven auto headlights; persistent manual toggle; continuous exposure/weather
+  interpolation; exposure feedback keys.
+- **3.0.16** - Wind debris, volumetric cloud light rays, moon appearance.
+- **3.0.15** - Random scheduler; Tokyo city glow; stars crash-fixed + re-enabled.

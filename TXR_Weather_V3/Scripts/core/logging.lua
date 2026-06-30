@@ -26,7 +26,7 @@ local minLevel = LOG_LEVELS.DEBUG
 local logToConsole = true       -- honored from config (was previously ignored)
 local isInitialized = false
 local sessionStartTime = nil
-local MOD_VERSION = "3.0.0"
+local MOD_VERSION = "3.0.0"  -- overwritten from config.version in Init (Config.Version.String)
 
 -- Flush throttling: avoid a synchronous disk flush on every log line.
 -- INFO/DEBUG flushes are batched; WARN/ERROR flush immediately so crash
@@ -115,6 +115,9 @@ function Logging.Init(config)
 
     -- Honor console logging flag (default on)
     logToConsole = (config.logToConsole ~= false)
+
+    -- Stamp the real mod version into the session header (was hardcoded "3.0.0").
+    if config.version then MOD_VERSION = tostring(config.version) end
 
     -- Initialize file logging
     if config.logToFile ~= false then
