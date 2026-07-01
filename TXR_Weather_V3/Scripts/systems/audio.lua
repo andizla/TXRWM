@@ -1,6 +1,22 @@
 -- TXR Weather Mod v3.0
 -- systems/audio.lua
--- Phase 10: Weather audio control (rain, wind, thunder)
+-- Phase 10: Weather audio (rain, wind, thunder). WORKING since 3.2.0 via the
+-- direct-spawn engine: the UDS sound assets are loaded and played through
+-- GameplayStatics:SpawnSound2D (UEHelpers) on the game thread, with volumes
+-- scaled from UDW's live Rain / Wind Intensity, and thunder one-shots on a
+-- randomized timer while Thunder/Lightning is high. Loops are respawned if a
+-- level change (or a non-looping wave) stops them; everything fades out on
+-- course unload.
+--
+-- UDW's own sound system produces NO audio in TXR (verified: enable + volumes +
+-- its apply functions all execute and read back correctly, but Sound_Global
+-- never plays, even with a direct FadeIn kick). HOWEVER its apply functions are
+-- LOAD-BEARING: calling "Static Properties - Sound Effects" / "Instant Sound
+-- Update" makes UDW async-load its soft-referenced sound assets into memory,
+-- and that is what makes our StaticFindObject/StaticLoadObject on those assets
+-- succeed (StaticLoadObject alone fails for them in TXR - removing the native
+-- kick in the 3.2.0 cleanup silenced everything). So the native apply stays as
+-- the ASSET LOADER, one-shot per course, and the audible path is the spawns.
 
 local Audio = {}
 
@@ -11,6 +27,7 @@ local Config = require("config")
 
 -- Lazy-load to avoid circular dependencies
 local Actors = nil
+local UEH = nil
 
 local MODULE = "Audio"
 
@@ -24,16 +41,43 @@ local RAIN_VOLUME_SCALE = 1.0
 local WIND_VOLUME_SCALE = 0.8
 local THUNDER_VOLUME_SCALE = 1.0
 
--- ============== UDW AUDIO PROPERTIES ==============
-local PROP_WEATHER_SOUNDS_VOLUME = "Weather Sounds Volume"
-local PROP_RAIN_SOUNDS_VOLUME = "Rain Sounds Volume"
-local PROP_WIND_SOUNDS_VOLUME = "Wind Sounds Volume"
-local PROP_THUNDER_SOUNDS_VOLUME = "Thunder Sounds Volume"
-local PROP_USE_WEATHER_SOUNDS = "Use Weather Sounds"
+-- ============== UDW NATIVE SOUND PROPERTIES / FUNCTIONS (v1.5 names) ==============
+-- Used only as the asset-loading kick (see header); they make no sound themselves.
+local PROP_ENABLE_SOUNDS = "Enable Weather Sound Effects"
+local PROP_RAIN_VOLUME = "Rain Volume"
+local PROP_WIND_VOLUME = "Wind Volume"
+local FN_STATIC = "Static Properties - Sound Effects"
+local FN_APPLY_VOLUMES = "Apply Sound Effects Volume Levels"
+local FN_INSTANT_UPDATE = "Instant Sound Update"
+
+-- ============== DIRECT-SPAWN SOUND ASSETS ==============
+-- MetaSound loops (UDW's own weather loops) + plain-wave thunder one-shots.
+local ASSET_RAIN_LOOP = "/Game/UltraDynamicSky/Sound/MetaSounds/UDS_Rain_Loop.UDS_Rain_Loop"
+local ASSET_WIND_FALLBACK = "/Game/UltraDynamicSky/Sound/Wind/BrownianNoise_1.BrownianNoise_1"
+local ASSET_DISTANT_THUNDER = "/Game/UltraDynamicSky/Sound/Distant_Thunder/DistantThunder_%d.DistantThunder_%d"
+local ASSET_CLOSE_THUNDER = "/Game/UltraDynamicSky/Sound/Close_Thunder/CloseThunder_%d.CloseThunder_%d"
+local DISTANT_THUNDER_COUNT = 11
+local CLOSE_THUNDER_COUNT = 6
+
+local SETTLE_TICKS = 32          -- ~4s at 8 Hz past BeginPlay before applying
+local UPDATE_INTERVAL_TICKS = 8  -- ~1s between direct-spawn volume updates
+local THUNDER_GAP_MIN = 7.0      -- seconds between thunder one-shots
+local THUNDER_GAP_MAX = 20.0
 
 -- ============== STATE ==============
 local isInitialized = false
 local audioEnabled = true
+local settleTicks = 0
+local appliedThisCourse = false
+local applied = false
+local updateCounter = 0
+local pendingUpdate = false  -- a game-thread sound update is queued
+
+-- Direct-spawn state (only touched on the game thread after the first spawn)
+local rainAC = nil
+local windAC = nil
+local nextThunderAt = 0
+local warnedOnce = {}  -- one-time warnings per asset/subsystem
 
 -- ============== INTERNAL FUNCTIONS ==============
 
@@ -45,33 +89,175 @@ local function getActors()
     return Actors
 end
 
---- Write UDW property
-local function writeUDW(propName, value)
-    local actors = getActors()
-    if not actors then return false end
-    
-    local udw = actors.GetUDW()
-    if not udw then return false end
-    
-    local ok = pcall(function()
-        udw[propName] = value
-    end)
-    return ok
+local function warnOnce(key, msg, ctx)
+    if warnedOnce[key] then return end
+    warnedOnce[key] = true
+    Log.Warn(MODULE, msg, ctx)
 end
 
---- Read UDW property
-local function readUDW(propName)
+-- ---------- game-thread-only helpers (call only from ExecuteInGameThread) ----------
+
+local function loadSoundGT(path)
+    local obj = nil
+    pcall(function() obj = StaticFindObject(path) end)
+    if obj and obj.IsValid and obj:IsValid() then return obj end
+    local ok, loaded = pcall(function() return StaticLoadObject(nil, nil, path) end)
+    if ok and loaded and loaded.IsValid and loaded:IsValid() then return loaded end
+    return nil
+end
+
+local function getWorldGT()
     local actors = getActors()
     if not actors then return nil end
-    
+    local uds = actors.GetUDS()
+    if not uds then return nil end
+    local w = nil
+    pcall(function() w = uds:GetWorld() end)
+    if w and w.IsValid and w:IsValid() then return w end
+    return nil
+end
+
+local function getGameplayStaticsGT()
+    if not UEH then pcall(function() UEH = require("UEHelpers") end) end
+    if not UEH then
+        warnOnce("UEHelpers", "UEHelpers not available - direct sound spawning disabled")
+        return nil
+    end
+    local gs = nil
+    pcall(function() gs = UEH.GetGameplayStatics() end)
+    if gs and gs.IsValid and gs:IsValid() then return gs end
+    warnOnce("GameplayStatics", "GameplayStatics not available - direct sound spawning disabled")
+    return nil
+end
+
+--- Spawn a 2D sound. Returns the audio component or nil (each failure logged).
+local function spawn2DGT(path, vol, label)
+    local gs = getGameplayStaticsGT()
+    if not gs then return nil end
+    local w = getWorldGT()
+    if not w then return nil end
+    local snd = loadSoundGT(path)
+    if not snd then
+        warnOnce(path, "Sound asset not found (not cooked into TXR?)", {asset = path})
+        return nil
+    end
+    local ac = nil
+    -- (WorldContext, Sound, Volume, Pitch, StartTime, Concurrency, bPersistAcrossLevelTransition, bAutoDestroy)
+    pcall(function() ac = gs:SpawnSound2D(w, snd, vol, 1.0, 0.0, nil, false, true) end)
+    if ac and ac.IsValid and ac:IsValid() then
+        Log.Debug(MODULE, "Spawned 2D sound", {label = label, vol = vol})
+        return ac
+    end
+    warnOnce("spawn_" .. label, "SpawnSound2D returned no component", {label = label, asset = path})
+    return nil
+end
+
+local function fadeKillGT(ac)
+    if ac and ac.IsValid and ac:IsValid() then
+        pcall(function() ac:FadeOut(0.6, 0.0) end)
+    end
+end
+
+--- Keep one looping/ambient slot alive at the given volume; nil vol kills it.
+local function updateLoopGT(ac, path, vol, label)
+    if not vol then
+        if ac then fadeKillGT(ac) end
+        return nil
+    end
+    local alive = false
+    if ac and ac.IsValid and ac:IsValid() then
+        pcall(function() alive = ac:IsPlaying() end)
+    end
+    if alive then
+        pcall(function() ac:SetVolumeMultiplier(vol) end)
+        return ac
+    end
+    -- Not spawned yet, invalidated by a level change, or a non-looping wave that
+    -- finished - (re)spawn it
+    return spawn2DGT(path, vol, label)
+end
+
+--- Full direct-spawn update for one snapshot of the weather state (game thread)
+local function updateSoundsGT(rainVol, windVol, thunderOn)
+    rainAC = updateLoopGT(rainAC, ASSET_RAIN_LOOP, rainVol, "rain_loop")
+    windAC = updateLoopGT(windAC, ASSET_WIND_FALLBACK, windVol, "wind_loop")
+
+    if thunderOn and ENABLE_THUNDER_AUDIO then
+        local now = os.clock()
+        if now >= (nextThunderAt or 0) then
+            local distant = (math.random() < 0.7)
+            local path, vol
+            if distant then
+                local i = math.random(1, DISTANT_THUNDER_COUNT)
+                path = string.format(ASSET_DISTANT_THUNDER, i, i)
+                vol = 0.6 * THUNDER_VOLUME_SCALE
+            else
+                local i = math.random(1, CLOSE_THUNDER_COUNT)
+                path = string.format(ASSET_CLOSE_THUNDER, i, i)
+                vol = 0.85 * THUNDER_VOLUME_SCALE
+            end
+            spawn2DGT(path, vol, distant and "thunder_distant" or "thunder_close")
+            nextThunderAt = now + THUNDER_GAP_MIN + math.random() * (THUNDER_GAP_MAX - THUNDER_GAP_MIN)
+        end
+    else
+        nextThunderAt = 0
+    end
+end
+
+local function killAllSoundsGT()
+    fadeKillGT(rainAC); rainAC = nil
+    fadeKillGT(windAC); windAC = nil
+    nextThunderAt = 0
+end
+
+--- The asset-loading kick: push enable + volumes to UDW and run its own sound
+--- apply functions. Produces no audio itself, but causes UDW to async-load the
+--- soft-referenced sound assets our spawns need. Game thread only.
+local function nativeLoadKickGT()
+    local actors = getActors()
+    if not actors then return end
     local udw = actors.GetUDW()
-    if not udw then return nil end
-    
-    local value = nil
-    pcall(function()
-        value = udw[propName]
+    if not udw then return end
+
+    pcall(function() udw[PROP_ENABLE_SOUNDS] = true end)
+    pcall(function() udw[PROP_RAIN_VOLUME] = RAIN_VOLUME_SCALE end)
+    pcall(function() udw[PROP_WIND_VOLUME] = WIND_VOLUME_SCALE end)
+
+    for _, fnName in ipairs({FN_STATIC, FN_APPLY_VOLUMES, FN_INSTANT_UPDATE}) do
+        local fn = nil
+        pcall(function() fn = udw[fnName] end)
+        if fn then pcall(function() fn(udw) end) end
+    end
+    Log.Info(MODULE, "Native sound kick applied (loads the sound assets)")
+end
+
+-- ---------- scheduling ----------
+
+--- Queue one guarded game-thread job; drops the request if one is already
+--- queued, and always clears the pending flag even if the job errors
+local function scheduleGuarded(fn)
+    if pendingUpdate then return end
+    pendingUpdate = true
+    local scheduled = false
+    if ExecuteInGameThread then
+        scheduled = pcall(function()
+            ExecuteInGameThread(function()
+                pcall(fn)
+                pendingUpdate = false
+            end)
+        end)
+    end
+    if not scheduled then
+        pcall(fn)
+        pendingUpdate = false
+    end
+end
+
+--- Queue one direct-spawn update
+local function scheduleSoundUpdate(rainVol, windVol, thunderOn)
+    scheduleGuarded(function()
+        updateSoundsGT(rainVol, windVol, thunderOn)
     end)
-    return value
 end
 
 -- ============== PUBLIC API ==============
@@ -83,9 +269,9 @@ function Audio.Init()
         Log.Warn(MODULE, "Already initialized")
         return true
     end
-    
+
     Log.Info(MODULE, "Initializing audio module")
-    
+
     -- Read config
     if Config.Audio then
         if Config.Audio.EnableRain ~= nil then
@@ -111,96 +297,100 @@ function Audio.Init()
             audioEnabled = false
         end
     end
-    
+
     isInitialized = true
     State.SetModuleStatus("audio", true)
-    
+
     return true
 end
 
---- Setup audio (call once when actors ready)
+--- Re-arm the per-course apply (called from main.lua on course load; the actual
+--- apply happens in Tick once the settle gate clears)
 function Audio.Setup()
+    settleTicks = 0
+    appliedThisCourse = false
+end
+
+--- Per-tick: after the settle gate, run the direct-spawn volume update every ~1s
+function Audio.Tick()
+    if not isInitialized then return end
+
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then return end
-    
-    if not audioEnabled then
-        -- Disable all weather sounds
-        writeUDW(PROP_USE_WEATHER_SOUNDS, false)
-        Log.Info(MODULE, "Weather sounds disabled")
+    if not actors or not actors.IsOnCourse() then
+        -- Course unloaded: re-arm and fade out anything still playing
+        settleTicks = 0
+        appliedThisCourse = false
+        if rainAC or windAC then
+            scheduleGuarded(killAllSoundsGT)
+        end
         return
     end
-    
-    -- Enable weather sounds
-    writeUDW(PROP_USE_WEATHER_SOUNDS, true)
-    
-    -- Set volume levels
-    writeUDW(PROP_WEATHER_SOUNDS_VOLUME, 1.0)
-    
-    if ENABLE_RAIN_AUDIO then
-        writeUDW(PROP_RAIN_SOUNDS_VOLUME, RAIN_VOLUME_SCALE)
-    else
-        writeUDW(PROP_RAIN_SOUNDS_VOLUME, 0.0)
+
+    settleTicks = settleTicks + 1
+    if settleTicks < SETTLE_TICKS then return end
+
+    if not appliedThisCourse then
+        appliedThisCourse = true
+        applied = true
+        scheduleGuarded(nativeLoadKickGT)
     end
-    
-    if ENABLE_WIND_AUDIO then
-        writeUDW(PROP_WIND_SOUNDS_VOLUME, WIND_VOLUME_SCALE)
-    else
-        writeUDW(PROP_WIND_SOUNDS_VOLUME, 0.0)
+
+    if not audioEnabled then return end
+
+    updateCounter = updateCounter + 1
+    if updateCounter < UPDATE_INTERVAL_TICKS then return end
+    updateCounter = 0
+
+    -- Live weather state (primitive reads, async-tolerated like the rest of the mod)
+    local udw = actors.GetUDW()
+    if not udw then return end
+    local rain, wind, thunder = 0.0, 0.0, 0.0
+    pcall(function() rain = tonumber(udw["Rain"]) or 0.0 end)
+    pcall(function() wind = tonumber(udw["Wind Intensity"]) or 0.0 end)
+    pcall(function() thunder = tonumber(udw["Thunder/Lightning"]) or 0.0 end)
+
+    -- 0-10 -> 0-1, monolith-style volume curves, user scales on top; nil = kill
+    local rain01 = rain / 10.0
+    local wind01 = wind / 10.0
+    local rainVol = nil
+    if ENABLE_RAIN_AUDIO and rain01 > 0.05 then
+        rainVol = math.min(1.0, 0.35 + rain01 * 0.6) * RAIN_VOLUME_SCALE
     end
-    
-    if ENABLE_THUNDER_AUDIO then
-        writeUDW(PROP_THUNDER_SOUNDS_VOLUME, THUNDER_VOLUME_SCALE)
-    else
-        writeUDW(PROP_THUNDER_SOUNDS_VOLUME, 0.0)
+    local windVol = nil
+    if ENABLE_WIND_AUDIO and wind01 > 0.05 then
+        windVol = math.min(1.0, 0.30 + wind01 * 0.5) * WIND_VOLUME_SCALE
     end
-    
-    Log.Info(MODULE, "Audio setup complete", {
-        rain = ENABLE_RAIN_AUDIO and RAIN_VOLUME_SCALE or 0,
-        wind = ENABLE_WIND_AUDIO and WIND_VOLUME_SCALE or 0,
-        thunder = ENABLE_THUNDER_AUDIO and THUNDER_VOLUME_SCALE or 0,
-    })
+
+    scheduleSoundUpdate(rainVol, windVol, thunder > 0.5)
 end
 
 --- Toggle all weather audio
 --- @return boolean newState
 function Audio.Toggle()
     audioEnabled = not audioEnabled
-    
-    if audioEnabled then
-        Audio.Setup()
-    else
-        writeUDW(PROP_USE_WEATHER_SOUNDS, false)
+    if not audioEnabled then
+        scheduleGuarded(killAllSoundsGT)
     end
-    
     Log.Info(MODULE, "Audio toggled", {enabled = audioEnabled})
     return audioEnabled
 end
 
---- Set rain volume
+--- Set rain volume (picked up by the next ~1s update)
 --- @param volume number 0.0-1.0
 function Audio.SetRainVolume(volume)
     RAIN_VOLUME_SCALE = math.max(0.0, math.min(1.0, volume))
-    if audioEnabled and ENABLE_RAIN_AUDIO then
-        writeUDW(PROP_RAIN_SOUNDS_VOLUME, RAIN_VOLUME_SCALE)
-    end
 end
 
 --- Set wind volume
 --- @param volume number 0.0-1.0
 function Audio.SetWindVolume(volume)
     WIND_VOLUME_SCALE = math.max(0.0, math.min(1.0, volume))
-    if audioEnabled and ENABLE_WIND_AUDIO then
-        writeUDW(PROP_WIND_SOUNDS_VOLUME, WIND_VOLUME_SCALE)
-    end
 end
 
 --- Set thunder volume
 --- @param volume number 0.0-1.0
 function Audio.SetThunderVolume(volume)
     THUNDER_VOLUME_SCALE = math.max(0.0, math.min(1.0, volume))
-    if audioEnabled and ENABLE_THUNDER_AUDIO then
-        writeUDW(PROP_THUNDER_SOUNDS_VOLUME, THUNDER_VOLUME_SCALE)
-    end
 end
 
 --- Check if audio is enabled
@@ -215,6 +405,10 @@ function Audio.GetStatus()
     return {
         initialized = isInitialized,
         enabled = audioEnabled,
+        applied = applied,
+        appliedThisCourse = appliedThisCourse,
+        rainLoop = rainAC ~= nil,
+        windLoop = windAC ~= nil,
         rainEnabled = ENABLE_RAIN_AUDIO,
         windEnabled = ENABLE_WIND_AUDIO,
         thunderEnabled = ENABLE_THUNDER_AUDIO,

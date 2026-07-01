@@ -12,8 +12,10 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 - Daytime + FOV-scaled shadows (work with photomode zoom)
 - HD real-stars night sky
 - Headlights with **animated pop-ups** - Auto mode tracks the scene brightness; manual mode works in the garage and on a controller (short-press on / hold off); adjustable brightness
-- Atmospherics - god rays, volumetric cloud light rays, night auroras, cloud shadows, Tokyo city glow (night light pollution)
+- Atmospherics - god rays, volumetric cloud light rays, cloud shadows, Tokyo city glow (night light pollution)
 - Wind debris in storms, and moon phases / scalable moon
+- **Weather sounds** - rain and wind loops that follow the weather, thunder cracks in storms
+- **Wider garage alignment sliders** - camber, toe, ride height, wheel offset and tire width run to 3x their stock range, and out-of-range setups persist and apply on spawn (nothing is unlocked)
 - **Rainbows** after rain when the sun comes through (drawn on a world mesh, so it renders in TXR)
 - **Night-sky nebula** - a faint nebula band that fades in at night (optional, stylistic)
 - **Dynamic wet grip** - tire grip drops in the rain and recovers as it dries, for every car including the AI rivals, and it works in PA battles
@@ -32,14 +34,14 @@ shares the same goal (driving Ultra Dynamic Sky/Weather inside TXR) but **none o
 - **Stability.** The rain/dry-enforcement and parking-area persistence paths were rebuilt and hardened
   (the long-standing "stuck rain on preset change" and PA state issues). New visual features use a
   deferred, game-thread "settle gate" apply so they can't corrupt actors during level load.
-- **What's the same idea, done cleaner.** Weather presets, time-of-day, lightning, fog, sounds, stars,
+- **What's the same idea, done cleaner.** Weather presets, time-of-day, lightning, fog, stars,
   and vehicle-aware headlights all exist in both - V3 reimplements them and tends to drive them through
   Ultra Dynamic Sky/Weather's own functions rather than ad-hoc property pokes.
 - **What's new in V3 (not in 1.34).** Auto-exposure (ex-VEAO) on a 144-step day/night curve,
   exposure-driven auto headlights with animated pop-ups + a controller light-button gesture, a weighted
   time-of-day-aware random weather scheduler, dawn/dusk slow-time, Tokyo city glow, volumetric cloud
-  light rays, wind debris, moon phases, rainbows, a night-sky nebula, and an installer with Engine.ini
-  graphics profiles.
+  light rays, wind debris, moon phases, rainbows, a night-sky nebula, audible weather sounds, wider
+  garage alignment sliders, and an installer with Engine.ini graphics profiles.
 - **What 1.34 had that V3 deliberately leaves out.** Surface/vehicle wetness and screen-space weather
   effects (rain-on-lens, frost) - they rely on material/post-process paths the game doesn't composite,
   so they never rendered reliably; V3 focuses on the effects that actually show in TXR.
@@ -99,6 +101,8 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
 - `Config.Rainbow` / `Config.SpaceLayer` - rainbows and the night-sky nebula (both on; tune or disable).
 - `Config.WetGrip` - dynamic wet grip: grip floors, the full-wet rain threshold, and wet/dry timing (on by default).
 - `Config.PhotoMode` - photo mode camera unlocks: collision, distance, zoom range, and speed (on by default).
+- `Config.Audio` - weather sound volumes and per-sound toggles (on by default).
+- `Config.Tuning` - alignment slider widening factor and spawn re-apply (on by default).
 - `Config.Vignette.Enabled = true` - hide the in-game HUD vignette for a cleaner photo look.
 
 ## Known issues
@@ -114,7 +118,7 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
   frost, etc.), so those don't render. Not fixable from the mod; would need cooked content.
 - **Transitions might be rough** i am working on ingame time of day/weather/brightness value GUI to easily report these events when noticed
 ## Credits
-Inspired by **Silent**'s original Dynamic Day/Night Cycle. **EDGERUNN3R** took it further and made Ultra Dynamic TXR. This project was started together with **EDGERUNN3R**, who shared his early source and helped get it set up and understand UDS and UE4SS. TXR Weather Mod V3 is a full rewrite by **Ten** (andizla) and uses none of the original Ultra Dynamic TXR 1.34 code. The dynamic wet grip's global tire-table approach is credited to **Chrystales**.
+Inspired by **Silent**'s original Dynamic Day/Night Cycle. **EDGERUNN3R** took it further and made Ultra Dynamic TXR. This project was started together with **EDGERUNN3R**, who shared his early source and helped get it set up and understand UDS and UE4SS. TXR Weather Mod V3 is a full rewrite by **Ten** (andizla) and uses none of the original Ultra Dynamic TXR 1.34 code. The dynamic wet grip's global tire-table approach is credited to **Chrystales**. The alignment slider-widening approach is credited to **NadzW** and **FenderBender** (WheelOffsetUnlocker).
 
 ## License
 [GPLv3](LICENSE). The mod drives Ultra Dynamic Sky/Weather; UDS content is not included.

@@ -501,12 +501,13 @@ local function handleLightGesture(pawn)
         local held = gHbRise and (now - gHbRise) or nil   -- button up
         gHbRise = nil
         if held then
+            local ignored = (currentMode == "auto") and " (ignored - mode is auto)" or ""
             if held >= GESTURE_OFF_HOLD_SEC then
                 gestureSetLights(false)
-                Log.Info(MODULE, "Gesture: headlights OFF (hold)", {held = string.format("%.1f", held)})
+                Log.Info(MODULE, "Gesture: headlights OFF (hold)" .. ignored, {held = string.format("%.1f", held)})
             elseif held <= GESTURE_TAP_MAX_SEC then
                 gestureSetLights(true)
-                Log.Info(MODULE, "Gesture: headlights ON (tap)", {held = string.format("%.2f", held)})
+                Log.Info(MODULE, "Gesture: headlights ON (tap)" .. ignored, {held = string.format("%.2f", held)})
             end
         end
     end

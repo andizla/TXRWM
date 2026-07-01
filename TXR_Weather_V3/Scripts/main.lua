@@ -100,6 +100,7 @@ local SpaceLayer = nil
 local Vignette = nil
 local PhotoMode = nil
 local WetGrip = nil
+local Tuning = nil
 
 -- Attempt to load system modules (may not exist yet)
 local function loadSystemModules()
@@ -314,6 +315,15 @@ local function loadSystemModules()
         if WetGrip.Init then WetGrip.Init() end
     else
         Log.Debug("Main", "WetGrip module not loaded")
+    end
+
+    -- Alignment slider-range widening (garage tuning menu)
+    Tuning = safeRequire("systems.tuning", "Tuning")
+    if Tuning then
+        Log.Info("Main", "System module loaded: Tuning")
+        if Tuning.Init then Tuning.Init() end
+    else
+        Log.Debug("Main", "Tuning module not loaded")
     end
 
     -- Phase 11: Random weather preset scheduler
@@ -589,6 +599,11 @@ local function onTick()
             SpaceLayer.Tick()
         end
 
+        -- Weather audio (settle-gated one-shot apply of UDW's native sounds)
+        if Audio and Audio.Tick and not State.IsPAFrozen() then
+            Audio.Tick()
+        end
+
         -- Vignette HUD toggle (throttled re-assert; runs in/out of course like the
         -- HUD itself, so intentionally not gated by the PA-frozen check)
         if Vignette and Vignette.Tick then
@@ -599,6 +614,12 @@ local function onTick()
         -- so it is intentionally NOT gated by the PA-frozen check)
         if Exposure and Exposure.Tick then
             Exposure.Tick()
+        end
+
+        -- Tuning slider widening (the alignment menu lives in the garage, so
+        -- like Exposure/Vignette it is NOT course- or PA-gated)
+        if Tuning and Tuning.Tick then
+            Tuning.Tick()
         end
 
         -- NOTE: PhotoMode is intentionally NOT ticked here. It runs its own dedicated
@@ -757,6 +778,7 @@ local function initialize()
         if tg.Vignette    == false then Vignette = nil end
         if tg.PhotoMode   == false then PhotoMode = nil end
         if tg.WetGrip     == false then WetGrip = nil end
+        if tg.Tuning      == false then Tuning = nil end
         if tg.Persistence == false then Persistence = nil end
         Log.Info("Main", "Module toggles applied", {
             Weather = Weather ~= nil, TimeOfDay = TimeOfDay ~= nil,
@@ -1090,4 +1112,5 @@ return {
     Vignette = Vignette,
     PhotoMode = PhotoMode,
     WetGrip = WetGrip,
+    Tuning = Tuning,
 }

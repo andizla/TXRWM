@@ -5,7 +5,7 @@ A modular UE4SS Lua mod for **Tokyo Xtreme Racer** that drives **Ultra Dynamic S
 full feature + configuration + developer reference. For install and a short feature list, see the
 landing `README.md`. For per-version changes, see `CHANGELOG.md`.
 
-**Current version: 3.1.0**
+**Current version: 3.2.0**
 
 ---
 
@@ -85,7 +85,10 @@ a short press turns headlights on, a ~2-second hold turns them off.
   preset ramps. **Enhanced fog** (`enhanced_fog.lua`) drives UDS `Scale Fog Density`.
 - **Lightning** (`lightning.lua`): flashes for thunderstorm presets.
 - **Dawn/dusk transitions** (`transitions.lua`): slow-time windows + a Tokyo tint.
-- **Weather audio** (`audio.lua`): rain / wind / thunder.
+- **Weather sounds** (`audio.lua`) - *working since 3.2.0.* Rain and wind loops that follow the live
+  weather intensity, plus distant/close thunder cracks on a randomized timer during thunderstorms.
+  Played directly from the UDS sound assets (the weather system's own sound path is inert in TXR).
+  Volumes and per-sound toggles in `Config.Audio`.
 - **Persistence** (`persistence.lua`): saves and restores the exact sky/weather snapshot, including
   across the parking area (PA). **Stable - do not modify.**
 
@@ -93,9 +96,10 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Stars** (`stars.lua`): UDS real-stars night sky (safe bool + `Static Properties - Stars` on the
   game thread, settle-gated).
 - **Moon** (`moon.lua`): realistic phases, optional phase-over-time, and a `Scale` knob.
-- **Atmosphere** (`atmosphere.lua`): god rays (sun light shafts, faded by cloud cover), night
-  auroras, cloud shadows, a second cloud layer, and **Tokyo city glow** (light pollution lighting the
-  cloud bases + a night sky glow), ramped in at night.
+- **Atmosphere** (`atmosphere.lua`): god rays (sun light shafts, faded by cloud cover), cloud
+  shadows, a second cloud layer, and **Tokyo city glow** (light pollution lighting the cloud bases +
+  a night sky glow), ramped in at night. (Auroras are off: TXR's content can't render them, see
+  section 6.)
 - **Volumetric cloud light rays** (`volumetric_light_rays.lua`): god-ray shafts through natural
   cloud gaps (Niagara ray cards).
 - **Wind debris** (`wind_debris.lua`): leaves/dust blowing through the air, scaled by wind intensity.
@@ -121,6 +125,12 @@ a short press turns headlights on, a ~2-second hold turns them off.
   driven into the global tire model, so it applies to every car including the AI rivals and works in
   parking-area battles. Cornering grip is hit a little harder than longitudinal. Tunable floors and
   wet/dry timing in `Config.WetGrip`. On by default. Grip approach credited to Chrystales.
+- **Wider alignment sliders** (`tuning.lua`) - *new in 3.2.0.* The garage alignment sliders (camber,
+  toe, ride height, wheel offset, tire width) run to `RangeMultiplier` x their stock range (default
+  3x), the displayed car previews values beyond stock live, and out-of-range values are re-applied
+  to the car on spawn (the game saves them but does not apply extremes on load by itself). Locked
+  settings stay locked - nothing is unlocked. `Config.Tuning`. Approach credited to NadzW and
+  FenderBender (WheelOffsetUnlocker).
 
 ### Photo mode and quality-of-life
 - **Photo mode camera unlock** (`photomode.lua`) - *new in 3.1.0.* Frees the Advanced Photo Mode free
@@ -157,6 +167,8 @@ Feature blocks of note:
 - `Config.Rainbow` - `MaxStrength` / mask caps (nil = UDW defaults).
 - `Config.SpaceLayer` - `NebulaIntensity`, colors, brightness, `SetDBuffer`.
 - `Config.Vignette` - `Enabled` (default false), `Hide`.
+- `Config.Audio` - per-sound enables + `RainVolume` / `WindVolume` / `ThunderVolume`.
+- `Config.Tuning` - `RangeMultiplier` (slider widening factor), `ReapplyOnLoad`, `SkipLockedRows`.
 
 ---
 
@@ -177,6 +189,13 @@ sky/atmosphere/stars/moon, and mesh-drawn effects), but does **not** composite e
   draws.)
 - **Tunnel rain** - tunnels have no overhead query collision on any channel, so UDW can't occlude
   rain inside them. Not fixable from Lua.
+- **Auroras** - the 2D aurora is a sky-material shader that samples UDS's `Aurora_Clouds` texture,
+  and that texture is not in TXR's cooked content (a runtime load fails). UDS happily computes the
+  aurora as active, but the shader has nothing to draw. Would need cooked content (pak) to revive;
+  the module machinery is kept behind `Config.Atmosphere.EnableAurora = false`.
+- **UDW's own weather sounds** - the native sound path (enable + volumes + its apply functions) runs
+  but never plays in TXR. Weather audio works via directly spawned 2D sounds instead (see
+  `audio.lua`).
 
 **Rainbow is NOT in this list** (3.0.20): it has a `Rainbow MID` but no weighted blendable - it's
 drawn on `Rainbow Mesh` with `Rainbow Material 2D` / `Rainbow Material Volumetric`, i.e. scene-
@@ -229,6 +248,9 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 
 See `CHANGELOG.md` for the full list. Most recent:
 
+- **3.2.0** - Weather sounds (rain/wind/thunder, audible for the first time); wider garage alignment
+  sliders with persistence (camber/toe/ride height/offset/tire width, 3x stock range); auroras
+  retired as unrenderable in TXR; quieter release logging.
 - **3.1.0** - Photo mode camera unlocked (no collision/distance cap, much wider zoom, faster
   free-cam, vignette off); dynamic wet grip (grip drops in the rain for every car incl. AI, works
   in PA).

@@ -4,13 +4,13 @@
 
 local Config = {}
 
--- Set true for distribution builds.
+-- Set true for distribution builds (caps log verbosity at INFO).
 Config.IS_RELEASE_BUILD = true
 
 -- ============== LOGGING ==============
 Config.Logging = {
     EnableFileLogging = true,
-    MinLevel = "DEBUG",           -- DEBUG | INFO | WARN | ERROR
+    MinLevel = Config.IS_RELEASE_BUILD and "INFO" or "DEBUG",  -- DEBUG | INFO | WARN | ERROR
     EnableConsoleLogging = true,  -- also log to the UE4SS console
     HeartbeatInterval = 30,       -- seconds; 0 to disable
 }
@@ -107,7 +107,7 @@ Config.Wetness = {
 -- entry). The global-tire-table grip approach is credited to Chrystales. See
 -- systems/wet_grip.lua.
 Config.WetGrip = {
-    Enabled = true,   -- master switch for the dynamic wet grip effect
+    Enabled = false,   -- master switch for the dynamic wet grip effect
 
     -- Grip multipliers at FULL wetness (heaviest rain). 1.0 = unchanged, lower = less
     -- grip. Grip interpolates from 1.0 (bone dry) down to these floors. Lateral
@@ -275,7 +275,10 @@ Config.Atmosphere = {
     Enabled = true,
     EnableCloudShadows = true,
     EnableGodRays = true,
-    EnableAurora = true,
+    -- Auroras CANNOT render in TXR: the 2D aurora texture (Aurora_Clouds) was
+    -- stripped from the game's cooked content (runtime-verified 2026-07-02).
+    -- The machinery is kept for a future content-pipeline route; leave false.
+    EnableAurora = false,
     EnableSecondCloudLayer = true,
 
     -- City glow (Tokyo night ambiance): light pollution + night sky glow, ramped
@@ -409,7 +412,7 @@ Config.Headlights = {
     -- The manual on/off state + brightness persist across restarts; "auto" does not
     -- get overridden by the persisted state. In the garage, Alt+Q toggles the
     -- displayed car's lights (pop-ups animate there too).
-    Mode = "force_on",
+    Mode = "auto",
 
     -- Auto mode tracks the Exposure module's interpolated brightness (lens proxy:
     -- ~0.78 bright day .. ~30 deep night) instead of a fixed clock, so the lamps
@@ -438,6 +441,19 @@ Config.Audio = {
     Enabled = true,
     EnableRain = true, EnableWind = true, EnableThunder = true,
     RainVolume = 1.0, WindVolume = 0.8, ThunderVolume = 1.0,
+}
+
+-- ============== TUNING SLIDER RANGE (garage alignment tab) ==============
+-- Widens the alignment sliders (camber/toe/ride height/wheel offset) to
+-- RangeMultiplier x their stock range, and re-asserts saved out-of-range values
+-- on car spawn (the game stores them but won't apply extremes on load itself).
+-- Locked rows are skipped - this does NOT unlock parts/settings.
+Config.Tuning = {
+    Enabled = true,
+    RangeMultiplier = 3.0,  -- 3x stock range each way; 1.0 = stock (inactive)
+    SkipLockedRows = true,
+    ReapplyOnLoad = true,   -- re-assert saved alignment on course load + garage display
+    Debug = false,          -- log alignment rows, slider probes + widened ranges
 }
 
 -- ============== AUTO-EXPOSURE (TOD -> Lumen/eye-adaptation, ex-VEAO) ==============
@@ -635,14 +651,15 @@ Config.ModuleToggles = {
     Vignette    = true,   -- hide the HUD vignette (see Config.Vignette)
     PhotoMode   = true,   -- photo mode free-camera unlocks
     WetGrip     = true,   -- dynamic wet grip
+    Tuning      = true,   -- alignment slider-range widening (see Config.Tuning)
 }
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 1, Patch = 0,
-    String = "3.1.0",
+    Major = 3, Minor = 2, Patch = 0,
+    String = "3.2.0",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.1.0",
+    FullName = "TXR Weather Mod v3.2.0",
 }
 
 return Config

@@ -3,6 +3,37 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.2.0] - 2026-07-02
+
+### Added
+- **Weather sounds.** Rain, wind, and thunder are audible for the first time: a rain
+  loop that follows the rain intensity, a wind bed that follows the wind, and distant/
+  close thunder cracks rolling on their own timer during thunderstorms. The mod plays
+  the weather system's own sound assets directly (its built-in sound path does not
+  function in TXR). Per-sound toggles and volumes in `Config.Audio`.
+- **Wider garage alignment sliders.** Camber, toe, ride height, wheel offset, and tire
+  width now run to 3x their stock range (configurable via `Config.Tuning.RangeMultiplier`),
+  the garage car previews out-of-range values live, and saved extremes are re-applied to
+  the car on spawn, so the stance you set is the stance you drive. Locked settings stay
+  locked - nothing is unlocked by this. Slider-widening approach credited to NadzW and
+  FenderBender (WheelOffsetUnlocker).
+
+### Fixed
+- The weather audio module addressed the weather system with property names that do
+  not exist in this game version, so it had always been silent - rewritten (see Added).
+- The headlight light-button gesture log now says when a press is ignored because
+  headlights are in auto mode (auto remains deliberately config-only).
+
+### Removed
+- **Auroras retired.** The aurora texture is not part of TXR's cooked game content, so
+  the sky shader has nothing to draw - auroras cannot render in this game. The option
+  remains in config (`Config.Atmosphere.EnableAurora`, off) in case a future content
+  route makes the texture loadable.
+
+### Internal
+- Release builds now cap log verbosity at INFO (`Config.IS_RELEASE_BUILD`).
+- Full code review pass across all modules; the tuning menu scan pauses while driving.
+
 ## [3.1.0] - 2026-07-01
 
 ### Added

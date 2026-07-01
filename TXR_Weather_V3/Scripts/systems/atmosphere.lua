@@ -19,7 +19,11 @@ local MODULE = "Atmosphere"
 -- Feature toggles (can be overridden in Config.Atmosphere)
 local ENABLE_CLOUD_SHADOWS = true
 local ENABLE_GOD_RAYS = true
-local ENABLE_AURORA = true
+-- Auroras are a confirmed dead end in TXR: the Aurora_Clouds texture is not in
+-- the game's cook (runtime StaticLoadObject fails), so the 2D aurora shader has
+-- nothing to sample - UDS computes intensity happily but nothing renders. The
+-- machinery below is kept for a future content-pipeline route. Default OFF.
+local ENABLE_AURORA = false
 local ENABLE_SECOND_CLOUD_LAYER = true
 
 -- Aurora timing (TOD values)
@@ -51,6 +55,9 @@ local SMOOTHING_SPEED = 0.1  -- How fast to interpolate (0-1 per tick)
 local PROP_USE_AURORAS = "Use Auroras"
 local PROP_AURORA_INTENSITY = "Aurora Intensity"
 local PROP_AURORA_SPEED = "Aurora Speed"
+local PROP_USING_VOLUMETRIC_AURORA = "Using Volumetric Aurora"
+local FN_STATIC_AURORA = "Static Properties - Aurora"
+local AURORA_SETTLE_TICKS = 32  -- ~4s at 8 Hz past BeginPlay before constructing
 
 -- Cloud Shadows
 local PROP_USE_CLOUD_SHADOWS = "Use Cloud Shadows"
@@ -83,6 +90,22 @@ local targetGodRayIntensity = 0.0
 local auroraOn = false
 local lastGodRayWritten = nil
 local lastAuroraWritten = nil
+
+-- Aurora construction gate: the 2D aurora only renders after UDS's
+-- "Static Properties - Aurora" has baked it into the sky material. Just flipping
+-- "Use Auroras" (what this module did originally) never constructs it, which is
+-- why auroras silently failed to show. Constructed once per course, deferred
+-- past BeginPlay like the stars/nebula/rainbow modules.
+local auroraStaticApplied = false
+local auroraSettleTicks = 0
+
+-- In-game verify 2026-07-01: construct + night_on both succeeded but nothing
+-- rendered. Two suspects: (a) the sky material bakes "Aurora Intensity" at
+-- static-apply time (the night_on call fired at ~0.02, i.e. invisible), so we
+-- now re-bake as the ramp climbs; (b) the aurora texture / sky mode - the
+-- diagnostics readback below settles that from the log.
+local lastStaticIntensity = 0.0
+local auroraDiagTicks = 0
 
 -- City glow ramp state
 local currentCityGlow = 0.0
@@ -134,6 +157,123 @@ local function writeUDS(propName, value)
         uds[propName] = value
     end)
     return ok
+end
+
+--- Push the aurora state and run UDS's own static init for it, on the game thread.
+--- Uses the 2D aurora (sky-material shader, same rendering family as the stars,
+--- so it composites in TXR) rather than the volumetric one (a whole sky mode).
+--- @param reason string logged so the construct / night transitions are traceable
+local auroraTexPreloaded = false
+
+local function applyAuroraStatic(reason)
+    lastStaticIntensity = currentAuroraIntensity
+    local function doApply()
+        local actors = getActors()
+        if not actors then return end
+        local uds = actors.GetUDS()
+        if not uds then return end
+
+        -- Make sure the 2D aurora texture is in memory before UDS's static
+        -- apply tries to resolve its soft-ref (defined below, near the
+        -- diagnostics that test whether it is cooked at all)
+        if not auroraTexPreloaded then
+            auroraTexPreloaded = true
+            pcall(function() StaticLoadObject(nil, nil, "/Game/UltraDynamicSky/Textures/Clouds/Aurora_Clouds.Aurora_Clouds") end)
+        end
+
+        pcall(function() uds[PROP_USING_VOLUMETRIC_AURORA] = false end)
+        pcall(function() uds[PROP_USE_AURORAS] = true end)
+        pcall(function() uds[PROP_AURORA_SPEED] = 0.15 end)
+        pcall(function() uds[PROP_AURORA_INTENSITY] = currentAuroraIntensity end)
+
+        local fn = nil
+        pcall(function() fn = uds[FN_STATIC_AURORA] end)
+        if fn then
+            local ok, err = pcall(function() fn(uds) end)
+            if ok then
+                Log.Info(MODULE, "Static Properties - Aurora called", {reason = reason})
+            else
+                Log.Warn(MODULE, "Static Properties - Aurora failed", {error = tostring(err)})
+            end
+        else
+            Log.Warn(MODULE, "Static Properties - Aurora function not found")
+        end
+    end
+
+    if ExecuteInGameThread then
+        pcall(function() ExecuteInGameThread(doApply) end)
+    else
+        doApply()
+    end
+end
+
+-- Default 2D aurora texture in the UDS 9.5 distribution. The 2D aurora shader
+-- samples this via the "Aurora Texture" soft-ref; if TXR's cook stripped it
+-- (the cook does strip some UDS assets), the aurora draws nothing.
+local AURORA_TEXTURE_PATH = "/Game/UltraDynamicSky/Textures/Clouds/Aurora_Clouds.Aurora_Clouds"
+
+--- One-shot readback of everything that could gate the aurora, for the log
+--- (2026-07-01 run: writes land, UDS computes 0.89, skyMode 0, still invisible).
+--- Now also force-loads the aurora texture: if the load succeeds, re-apply the
+--- static properties with the texture guaranteed in memory - if UDS's own
+--- soft-ref resolve was failing quietly, this IS the fix, not just a probe.
+local function logAuroraDiagnostics()
+    local function doDiag()
+        local actors = getActors()
+        if not actors then return end
+        local uds = actors.GetUDS()
+        if not uds then return end
+
+        local useAur, usingVol, intens, curIntens
+        pcall(function() useAur = uds[PROP_USE_AURORAS] end)
+        pcall(function() usingVol = uds[PROP_USING_VOLUMETRIC_AURORA] end)
+        pcall(function() intens = uds[PROP_AURORA_INTENSITY] end)
+        pcall(function()
+            local fn = uds["Current Aurora Intensity"]
+            if fn then curIntens = fn(uds) end
+        end)
+
+        -- Texture cook test: find-in-memory first, then force a sync load
+        local texWasLoaded, texLoads = false, false
+        pcall(function()
+            local t = StaticFindObject(AURORA_TEXTURE_PATH)
+            texWasLoaded = (t ~= nil) and t.IsValid and t:IsValid()
+        end)
+        if not texWasLoaded then
+            pcall(function()
+                local t = StaticLoadObject(nil, nil, AURORA_TEXTURE_PATH)
+                texLoads = (t ~= nil) and t.IsValid and t:IsValid()
+            end)
+        end
+
+        Log.Info(MODULE, "Aurora diagnostics", {
+            useAuroras = tostring(useAur),
+            usingVolumetric = tostring(usingVol),
+            intensityProp = tostring(intens),
+            currentIntensityFn = tostring(curIntens),
+            texAlreadyLoaded = tostring(texWasLoaded),
+            texForcedLoadOk = tostring(texLoads),
+        })
+
+        -- Texture is (now) in memory: re-run UDS's static apply so its
+        -- SoftObjectToObject resolve can pick it up this time
+        if texWasLoaded or texLoads then
+            local fn = nil
+            pcall(function() fn = uds[FN_STATIC_AURORA] end)
+            if fn then
+                pcall(function() fn(uds) end)
+                Log.Info(MODULE, "Static Properties - Aurora re-applied after texture preload")
+            end
+        else
+            Log.Warn(MODULE, "Aurora texture NOT in TXR's cook - 2D aurora cannot render", {asset = AURORA_TEXTURE_PATH})
+        end
+    end
+
+    if ExecuteInGameThread then
+        pcall(function() ExecuteInGameThread(doDiag) end)
+    else
+        doDiag()
+    end
 end
 
 --- Check if TOD is in night window for aurora
@@ -273,12 +413,13 @@ function Atmosphere.Setup()
         Log.Debug(MODULE, "God rays enabled")
     end
     
-    -- Aurora starts disabled, will be controlled by time
+    -- Aurora is constructed after the settle gate in Tick (see applyAuroraStatic);
+    -- re-arm the gate here so a fresh course gets a fresh construct.
     if ENABLE_AURORA then
-        writeUDS(PROP_USE_AURORAS, false)
-        writeUDS(PROP_AURORA_SPEED, 0.15)
+        auroraStaticApplied = false
+        auroraSettleTicks = 0
         auroraOn = false
-        Log.Debug(MODULE, "Aurora system ready")
+        Log.Debug(MODULE, "Aurora system ready (constructs after settle)")
     end
 
     -- City glow: set colors once; intensities ramp with night in Tick
@@ -303,8 +444,16 @@ function Atmosphere.Tick()
     if Config.Atmosphere and Config.Atmosphere.Enabled == false then return end
     
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then return end
-    
+    if not actors or not actors.IsOnCourse() then
+        -- Course unloaded: re-arm the aurora construct for the next course
+        -- (the PA-exit path skips Setup, so the reset has to live here too)
+        auroraStaticApplied = false
+        auroraSettleTicks = 0
+        auroraOn = false
+        lastAuroraWritten = nil
+        return
+    end
+
     -- Don't run during PA
     if State.IsPAFrozen and State.IsPAFrozen() then return end
     
@@ -328,11 +477,19 @@ function Atmosphere.Tick()
         targetAuroraIntensity = calculateAuroraIntensity(currentTOD)
         currentAuroraIntensity = smoothStep(currentAuroraIntensity, targetAuroraIntensity, SMOOTHING_SPEED)
 
-        if currentAuroraIntensity > 0.01 then
+        if not auroraStaticApplied then
+            -- One-shot construct per course, deferred past the BeginPlay window
+            auroraSettleTicks = auroraSettleTicks + 1
+            if auroraSettleTicks >= AURORA_SETTLE_TICKS then
+                auroraStaticApplied = true
+                applyAuroraStatic("construct")
+            end
+        elseif currentAuroraIntensity > 0.01 then
             -- Use our cached on/off state instead of reading the property back each tick
             if not auroraOn then
-                writeUDS(PROP_USE_AURORAS, true)
                 auroraOn = true
+                auroraDiagTicks = 64  -- readback diagnostics ~8s after the transition
+                applyAuroraStatic("night_on")
                 Log.Info(MODULE, "Aurora enabled", {tod = currentTOD})
             end
             -- Only write intensity when it actually moved
@@ -340,11 +497,24 @@ function Atmosphere.Tick()
                 writeUDS(PROP_AURORA_INTENSITY, currentAuroraIntensity)
                 lastAuroraWritten = currentAuroraIntensity
             end
+            -- If the material bakes intensity at static-apply time, the night_on
+            -- call happened at ~0.02 (invisible). Re-bake as the ramp climbs
+            -- (a couple of extra calls per transition at most).
+            if math.abs(currentAuroraIntensity - lastStaticIntensity) > 0.5 then
+                applyAuroraStatic("ramp")
+            end
+            if auroraDiagTicks > 0 then
+                auroraDiagTicks = auroraDiagTicks - 1
+                if auroraDiagTicks == 0 then
+                    logAuroraDiagnostics()
+                end
+            end
         else
             if auroraOn then
-                writeUDS(PROP_USE_AURORAS, false)
                 auroraOn = false
                 lastAuroraWritten = nil
+                writeUDS(PROP_AURORA_INTENSITY, 0.0)
+                applyAuroraStatic("night_off")
                 Log.Info(MODULE, "Aurora disabled", {tod = currentTOD})
             end
         end
@@ -406,6 +576,7 @@ function Atmosphere.GetStatus()
         initialized = isInitialized,
         auroraIntensity = currentAuroraIntensity,
         auroraTarget = targetAuroraIntensity,
+        auroraConstructed = auroraStaticApplied,
         godRayIntensity = currentGodRayIntensity,
         godRayTarget = targetGodRayIntensity,
         cloudShadowsEnabled = ENABLE_CLOUD_SHADOWS,
