@@ -37,6 +37,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   if both are enabled.
 
 ### Changed
+- **Engine.ini profiles reworked.** The Photomode profile ships a full rendering overhaul:
+  sky and clouds reflect in car paint again (the game's stale reflection probes are bypassed
+  in favor of live Lumen), TSR anti-ghosting is restored plus a fix for the static pattern
+  on bright lights, GI blotch/shimmer fixes, photographic night highlights (reflected light
+  sources no longer clamp to dull blobs), crisper shadows, and anti-flicker temporal tuning
+  for reflections and GI. The Optimizations-only profile was cleaned out: debug and logging
+  switches removed, inert settings dropped (over a third of the old file sat in config
+  sections the engine never reads), and it picks up the car-paint reflection fix too.
+  **Re-run the installer and pick a profile to get the update** - Engine.ini is only
+  written at install time.
 - **God rays now actually work.** The module had been writing sun light-shaft property
   names that do not exist in this game version, so god rays were silently doing nothing.
   It now drives the real controls: the sun's screen-space light-shaft bloom, brightened

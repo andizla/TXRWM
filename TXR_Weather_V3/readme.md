@@ -282,7 +282,8 @@ See `CHANGELOG.md` for the full list. Most recent:
   grade, golden hour); god rays fixed (first time actually working); per-weather exposure
   compensation; skylight tuning keybinds; exposure/skylight baseline retune (paint keeps sky
   reflections in shade, earlier and brighter dusk ramp); 2x faster fast-forward;
-  garage-transition crash fixed.
+  garage-transition crash fixed; Engine.ini profiles reworked (car-paint reflections, TSR
+  ghosting/pattern fixes, GI shimmer fixes, cleaned optimization profile - re-run the installer).
 - **3.2.0** - Weather sounds (rain/wind/thunder, audible for the first time); wider garage alignment
   sliders with persistence (camber/toe/ride height/offset/tire width, 3x stock range); auroras
   retired as unrenderable in TXR; quieter release logging.
