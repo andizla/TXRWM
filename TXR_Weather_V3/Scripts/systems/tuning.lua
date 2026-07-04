@@ -116,6 +116,10 @@ local valueHooksRegistered = false
 local garageHooksRegistered = false
 local widened = {}     -- slider address -> {min, max} we last applied
 local probedRows = {}  -- element address -> true (debug row logging, once each)
+local skipLogged = {}  -- one skip/probe/hook-fail log per address (Debug)
+                       -- (declared BEFORE registerValueHooksGT: it used to be
+                       -- declared lower, so that function captured a nil GLOBAL
+                       -- and the hook-retry path errored out of the whole scan)
 
 -- ============== INTERNAL ==============
 
@@ -285,8 +289,6 @@ local function textOf(widget)
     return s or "?"
 end
 
-local skipLogged = {}  -- one skip-reason log per slider/content address (Debug)
-
 local function logSkipOnce(addr, rowName, side, reason)
     if not debugRows or not addr or skipLogged[addr] then return end
     skipLogged[addr] = true
@@ -369,6 +371,13 @@ end
 --- Scan the alignment tab (if open): register hooks, widen unlocked rows.
 --- Game thread.
 local function scanAndWidenGT()
+    -- The scan was scheduled from the async tick; if a map teardown started in
+    -- the meantime, do not walk the object array (dying widgets = read AV).
+    local actors = getActors()
+    if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
+        return
+    end
+
     -- Lazy hook registration: garage manager exists in the whole OutGame world
     if not garageHooksRegistered and reapplyOnLoad then
         local gm = FindFirstOf(GARAGE_MANAGER_CLASS)
@@ -529,8 +538,19 @@ function Tuning.Tick()
     end
 
     -- Menu scan (~1s): widen sliders, lazily register hooks. The tuning menu
-    -- only exists in the garage/outgame, so skip the object scans while driving.
+    -- only exists in the garage/outgame. The old gate was just "not on course",
+    -- which ALSO matched map transitions (IsOnCourse flips false the moment a
+    -- course starts unloading) and PA - so the FindAllOf/GetFullName scans ran
+    -- on the game thread while the world was being torn down, walking dying
+    -- widget objects: the garage-transition crash. Scan only when the
+    -- garage/outgame is POSITIVELY detected and no teardown is in progress.
     if onCourse then return end
+    if not actors then return end
+    if actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
+        scanCounter = 0
+        return
+    end
+    if not (actors.IsInGarage and actors.IsInGarage()) then return end
     scanCounter = scanCounter + 1
     if scanCounter >= SCAN_INTERVAL then
         scanCounter = 0

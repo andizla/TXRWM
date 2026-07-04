@@ -3,6 +3,74 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.3.0] - 2026-07-04
+
+### Added
+- **Night-only mode.** The time cycle runs dusk, night, dawn, then jumps straight back to
+  dusk - the day is skipped entirely, and dawn plays out in full before the jump. For
+  night drivers who still want the golden-hour bookends. Off by default
+  (`Config.TimeOfDay.NightOnly`), and offered as an installer option.
+- **Cinematic sky.** A new daytime look pass (`cinematic_sky.lua` / `Config.CinematicSky`):
+  denser, darker cloud cores; a stronger silver-lining glow when the sun is behind cloud;
+  crisper cloud edge detail; visible high cirrus streaks that catch fire near a low sun;
+  richer overall sky color; overcast days that stay luminous instead of going gray mush;
+  stronger sunset and sunrise colors; a slower, statelier cloud drift; and clouds that
+  stay coherent during `Alt+T` time-lapses. Knobs with undocumented internal ranges are
+  applied as multipliers on the sky's own stock values (re-read fresh every course, so
+  nothing compounds), and every apply logs the stock and tuned value pairs
+  (grep `CinematicSky`) so retuning is data-driven.
+- **Skylight tuning keybinds.** Live-tune the skylight look while driving:
+  `Alt+Z` / `Alt+X` / `Alt+C` raise skylight leak albedo / leak roughness / intensity
+  (`Alt+Shift` lowers), `Alt+V` logs a datapoint (time, weather, values - grep
+  `SkylightTune`), `Alt+Shift+V` resets to the exposure curve.
+- **Per-weather exposure compensation.** The exposure curve is tuned for clear skies;
+  overcast, rain, fog and snow scenes now get a brightness boost on top of it, smoothed so
+  weather changes never pop the exposure. Two tables: `Config.Exposure.WeatherSkyMult`
+  (skylight intensity - the effective brightness lever, since heavy cloud is exactly what
+  takes that light away) and `WeatherLensMult` (a secondary eye-adaptation shaping lever). The `Alt+D`
+  feedback log records the active multiplier, so curve feedback and weather feedback stay
+  separable. Headlight auto mode inherits it - lamps come on earlier under gloomy skies.
+- **Debug short time cycle** (`Config.TimeOfDay.DebugShortCycle`, off by default). Dawn
+  and dusk play at full length, but the flat midday and deep-night stretches are cut to
+  about an hour each - a complete lighting cycle in minutes, for exposure tuning or for
+  anyone who mostly wants the golden-hour bookends. Takes precedence over night-only mode
+  if both are enabled.
+
+### Changed
+- **God rays now actually work.** The module had been writing sun light-shaft property
+  names that do not exist in this game version, so god rays were silently doing nothing.
+  It now drives the real controls: the sun's screen-space light-shaft bloom, brightened
+  from stock and warm-tinted.
+- **Softer cloud shadows** - dappled light rolling over the track instead of hard-edged
+  blotches (`Config.Atmosphere.CloudShadowSoftnessMult`).
+- **Bigger daytime skies.** The automatic cloud-coverage ceiling was raised (3.0 to 4.5 of
+  10) so real cumulus fields can build instead of the near-clear bias.
+- **Exposure and skylight baseline retune.** Car paint keeps a live sky reflection in
+  shade and tunnels (the skylight intensity now has a floor, and the skylight-leaking
+  baseline was raised); the daytime exposure is re-anchored; the dusk ramp starts earlier
+  (16:50) and runs about twice as bright through the evening; the dawn descent was
+  lifted. All values retuned from in-game feedback datapoints.
+- **Faster fast-forward.** `Alt+T` fast mode is twice as fast - a full day in roughly two
+  minutes.
+
+### Fixed
+- **The garage-transition crash.** The alignment-slider module's menu scans could run
+  during map transitions (and in parking areas), walking UI widgets on the game thread
+  while the old world was being destroyed - an intermittent access-violation crash, most
+  often when entering the garage from a course. Scans now run only while the garage is
+  positively detected and never during a map transition. The same hardening pass also
+  made the whole mod quieter during transitions: the sky-actor search fully pauses while
+  a world is tearing down, and the per-actor lifecycle hooks do far less work in that
+  window.
+- **Second cloud layer.** The toggle had been writing a property that does not exist in
+  this game version, so it never did anything. It now enables the real second layer (high
+  cirrus above the cumulus), but ships **off**: it raises cloud rendering cost
+  significantly and is under stability observation (`Config.Atmosphere.EnableSecondCloudLayer`).
+- The skylight tuning keys no longer emit no-op console pushes when held at their limit.
+- Cloud render-quality sample scales exist in `Config.CinematicSky` but ship at stock
+  (1.0) pending GPU-stability testing - raise `ViewSampleQualityMult` deliberately if you
+  want cleaner clouds up close in photo mode.
+
 ## [3.2.0] - 2026-07-02
 
 ### Added

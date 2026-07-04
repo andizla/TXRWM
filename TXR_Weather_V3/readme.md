@@ -65,6 +65,10 @@ base.
 | `Alt+B` / `Alt+Shift+B` | Headlight brightness up / down (0.5x / 1x / 2x / 3x / 5x) |
 | `Alt+L` / `Alt+Shift+L` | Re-apply shadow distance |
 | `Alt+D` / `Alt+Shift+D` | Exposure feedback: flag the picture as too dark / too bright (logs time + weather + applied exposure under tag `ExposureTune` for tuning) |
+| `Alt+Z` / `Alt+Shift+Z` | Skylight tuning: raise / lower the skylight leak albedo |
+| `Alt+X` / `Alt+Shift+X` | Skylight tuning: raise / lower the skylight leak roughness |
+| `Alt+C` / `Alt+Shift+C` | Skylight tuning: raise / lower the skylight intensity |
+| `Alt+V` / `Alt+Shift+V` | Skylight tuning: log a datapoint (tag `SkylightTune`) / reset overrides back to the exposure curve |
 | `Alt+W` / `Alt+Shift+W` | Force wetness / force dry (only if the WIP wetness module is enabled) |
 
 In **manual** headlight mode you can also use the car's own light button (keyboard or controller):
@@ -76,6 +80,12 @@ a short press turns headlights on, a ~2-second hold turns them off.
 
 ### Time and weather
 - **Time of day** with adjustable speed, pause, and persistence across sessions (`time_of_day.lua`).
+- **Night-only mode** - *new in 3.3.0, off by default.* The cycle runs dusk, night, dawn, then jumps
+  straight back to dusk - the day is skipped entirely, and dawn plays out in full before the jump.
+  `Config.TimeOfDay.NightOnly` (skip points configurable); also an installer option.
+- **Debug short cycle** - *new in 3.3.0, off by default.* Full-length dawn and dusk, but the flat
+  midday and deep-night stretches are cut to about an hour each: a complete lighting cycle in
+  minutes. `Config.TimeOfDay.DebugShortCycle`; wins over night-only if both are on.
 - **13 weather presets** (`presets.lua` / `weather.lua`): Clear_Skies, Partly_Cloudy, Cloudy,
   Overcast, Foggy, Rain_Light, Rain, Rain_Thunderstorm, Snow_Light, Snow, Snow_Blizzard,
   Sand_Dust_Calm, Sand_Dust_Storm. Rain/dry enforcement here is **stable - do not modify**.
@@ -96,10 +106,17 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Stars** (`stars.lua`): UDS real-stars night sky (safe bool + `Static Properties - Stars` on the
   game thread, settle-gated).
 - **Moon** (`moon.lua`): realistic phases, optional phase-over-time, and a `Scale` knob.
-- **Atmosphere** (`atmosphere.lua`): god rays (sun light shafts, faded by cloud cover), cloud
-  shadows, a second cloud layer, and **Tokyo city glow** (light pollution lighting the cloud bases +
-  a night sky glow), ramped in at night. (Auroras are off: TXR's content can't render them, see
-  section 6.)
+- **Atmosphere** (`atmosphere.lua`): god rays (the sun's screen-space light-shaft bloom, brightened
+  and warm-tinted - driving the real v1.5 controls since 3.3.0), soft cloud shadows, **Tokyo city
+  glow** (light pollution lighting the cloud bases + a night sky glow) ramped in at night, and an
+  optional second cloud layer (high cirrus; works since 3.3.0 but ships off - significant GPU cost).
+  (Auroras are off: TXR's content can't render them, see section 6.)
+- **Cinematic sky** (`cinematic_sky.lua`) - *new in 3.3.0, on by default.* A daytime look pass:
+  denser, darker cloud cores, stronger silver-lining glow, crisper cloud detail, visible high cirrus
+  that lights up near the sun, richer sky color, luminous overcast, stronger sunset/sunrise colors,
+  slower cloud drift, and time-lapse-coherent cloud movement. Unknown-range knobs are multipliers on
+  the sky's stock values (fresh each course, never compounds); each apply logs stock -> tuned pairs
+  under `CinematicSky` for data-driven retuning. `Config.CinematicSky`.
 - **Volumetric cloud light rays** (`volumetric_light_rays.lua`): god-ray shafts through natural
   cloud gaps (Niagara ray cards).
 - **Wind debris** (`wind_debris.lua`): leaves/dust blowing through the air, scaled by wind intensity.
@@ -114,6 +131,10 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Auto-exposure** (`exposure.lua`): a 144-slot (10-min) time-of-day curve pushing
   `r.SkylightIntensityMultiplier`, `r.EyeAdaptation.LensAttenuation`, and the Lumen skylight-leak
   cvar, interpolated continuously and marshalled to the game thread. Garage forces the night slot.
+  Since 3.3.0: **per-weather compensation** (`Config.Exposure.WeatherSkyMult` boosts skylight
+  brightness under overcast/rain/fog/snow, `WeatherLensMult` shapes adaptation as a secondary
+  lever; both smoothed over the clear-sky curve) and **live skylight tuning keybinds**
+  (`Alt+Z/X/C`, confirm with `Alt+V` - see Keybinds).
 - **Headlights** (`headlights.lua`): Auto mode follows the exposure brightness (with hysteresis) so
   the lamps track available light; manual mode (`Alt+Q`, the garage, and the light-button gesture);
   adjustable brightness; animated pop-ups via the game's native raise/lower.
@@ -160,6 +181,14 @@ place). General highlights:
   `"force_off"` (manual; `Alt+Q` toggles). Manual on/off + brightness persist across restarts.
 
 Feature blocks of note:
+- `Config.TimeOfDay.NightOnly` - the night-only cycle (dusk -> night -> dawn -> dusk), with
+  `NightOnlySkipFrom` / `NightOnlySkipTo` to move the day-skip points.
+- `Config.TimeOfDay.DebugShortCycle` - the short cycle (full dawn/dusk, ~1h day and night cores),
+  with `ShortCycleDaySkipFrom/To` and `ShortCycleNightSkipFrom/To` to move the four jump points.
+  `FastSpeed` (Alt+T fast mode) is also here - default is a full day in about two minutes.
+- `Config.CinematicSky` - the daytime look pass. Multiplier knobs for cloud density, silver lining,
+  detail, cirrus wisps, overcast luminance, sunset strength, cloud drift speed; absolute
+  `Saturation`; render-quality sample multipliers (ship at 1.0 - raise deliberately, GPU cost).
 - `Config.PhotoMode` - camera collision/distance/orbit unlocks, the zoom-range floor/ceiling and step,
   free-cam movement and rotation scaling, and the photo-mode vignette default.
 - `Config.WetGrip` - `MinGripMult` / `MinSideGripMult` (grip floors at full wet), `PrecipForFullWet`,
@@ -248,6 +277,12 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 
 See `CHANGELOG.md` for the full list. Most recent:
 
+- **3.3.0** - Night-only mode (dusk -> night -> dawn, repeat); debug short cycle
+  (full dawn/dusk, ~1h day and night cores); cinematic daytime sky (cloud shading, cirrus, color
+  grade, golden hour); god rays fixed (first time actually working); per-weather exposure
+  compensation; skylight tuning keybinds; exposure/skylight baseline retune (paint keeps sky
+  reflections in shade, earlier and brighter dusk ramp); 2x faster fast-forward;
+  garage-transition crash fixed.
 - **3.2.0** - Weather sounds (rain/wind/thunder, audible for the first time); wider garage alignment
   sliders with persistence (camber/toe/ride height/offset/tire width, 3x stock range); auroras
   retired as unrenderable in TXR; quieter release logging.

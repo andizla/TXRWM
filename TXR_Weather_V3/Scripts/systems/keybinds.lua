@@ -426,6 +426,42 @@ local function onExposureTooBright()
     exposure.LogFeedback("bright")
 end
 
+--- Skylight tuning session: Alt+Z/X/C nudge albedo/roughness/multiplier up,
+--- Alt+Shift lowers; Alt+V logs the datapoint, Alt+Shift+V resets to slot curve.
+local function nudgeSkylight(which, dir)
+    local exposure = getExposure()
+    if not exposure or not exposure.NudgeSkylight then
+        Log.Warn(MODULE, "Exposure module not available")
+        return
+    end
+    exposure.NudgeSkylight(which, dir)
+end
+
+local function onSkylightAlbedoUp()   nudgeSkylight("leak",  1) end
+local function onSkylightAlbedoDown() nudgeSkylight("leak", -1) end
+local function onSkylightRoughUp()    nudgeSkylight("rough",  1) end
+local function onSkylightRoughDown()  nudgeSkylight("rough", -1) end
+local function onSkylightMultUp()     nudgeSkylight("sky",  1) end
+local function onSkylightMultDown()   nudgeSkylight("sky", -1) end
+
+local function onSkylightConfirm()
+    local exposure = getExposure()
+    if not exposure or not exposure.LogSkylightConfirm then
+        Log.Warn(MODULE, "Exposure module not available")
+        return
+    end
+    exposure.LogSkylightConfirm()
+end
+
+local function onSkylightReset()
+    local exposure = getExposure()
+    if not exposure or not exposure.ResetSkylightTune then
+        Log.Warn(MODULE, "Exposure module not available")
+        return
+    end
+    exposure.ResetSkylightTune()
+end
+
 -- ============== PUBLIC API ==============
 
 --- Initialize keybinds module
@@ -542,6 +578,32 @@ function Keybinds.Init(config)
 
     if config.ExposureTooBright then
         registerKeybind("ExposureTooBright", config.ExposureTooBright, onExposureTooBright)
+    end
+
+    -- Skylight tuning session (Alt+Z/X/C nudge, Alt+V confirm, Alt+Shift+V reset)
+    if config.SkylightAlbedoUp then
+        registerKeybind("SkylightAlbedoUp", config.SkylightAlbedoUp, onSkylightAlbedoUp)
+    end
+    if config.SkylightAlbedoDown then
+        registerKeybind("SkylightAlbedoDown", config.SkylightAlbedoDown, onSkylightAlbedoDown)
+    end
+    if config.SkylightRoughUp then
+        registerKeybind("SkylightRoughUp", config.SkylightRoughUp, onSkylightRoughUp)
+    end
+    if config.SkylightRoughDown then
+        registerKeybind("SkylightRoughDown", config.SkylightRoughDown, onSkylightRoughDown)
+    end
+    if config.SkylightMultUp then
+        registerKeybind("SkylightMultUp", config.SkylightMultUp, onSkylightMultUp)
+    end
+    if config.SkylightMultDown then
+        registerKeybind("SkylightMultDown", config.SkylightMultDown, onSkylightMultDown)
+    end
+    if config.SkylightConfirm then
+        registerKeybind("SkylightConfirm", config.SkylightConfirm, onSkylightConfirm)
+    end
+    if config.SkylightReset then
+        registerKeybind("SkylightReset", config.SkylightReset, onSkylightReset)
     end
 
     isInitialized = true

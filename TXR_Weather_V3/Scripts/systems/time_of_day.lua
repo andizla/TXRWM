@@ -286,6 +286,54 @@ function TimeOfDay.FormatTime(tod)
     return string.format("%02d:%02d", hours, minutes)
 end
 
+--- Night-only cycle: if enabled and time has entered the day segment, jump
+--- straight to the pre-dusk point so the cycle runs dusk -> night -> dawn.
+--- Also catches persisted/restored daytime values landing mid-day.
+--- @param tod number|nil Current TOD (reads it if nil)
+function TimeOfDay.NightOnlyEnforce(tod)
+    if not Config.TimeOfDay.NightOnly then return end
+    if Config.TimeOfDay.DebugShortCycle then return end  -- short cycle wins
+    tod = tod or TimeOfDay.GetCurrentTOD()
+    if not tod then return end
+
+    local skipFrom = Config.TimeOfDay.NightOnlySkipFrom or Config.TimeOfDay.DawnEnd
+    local skipTo   = Config.TimeOfDay.NightOnlySkipTo or Config.TimeOfDay.DuskStart
+    if skipFrom >= skipTo then return end  -- misconfigured window, do nothing
+
+    if tod >= skipFrom and tod < skipTo then
+        Log.Info(MODULE, "Night-only: skipping day", {from = tod, to = skipTo})
+        TimeOfDay.SetTOD(skipTo)
+    end
+end
+
+--- Debug short cycle: keep dawn and dusk full length, but cut the flat day
+--- and night cores to about an hour each (exposure tuning aid). The day core
+--- is a plain skip window; the night core window wraps midnight. Takes
+--- precedence over NightOnly (which early-returns while this is enabled).
+--- @param tod number|nil Current TOD (reads it if nil)
+function TimeOfDay.ShortCycleEnforce(tod)
+    if not Config.TimeOfDay.DebugShortCycle then return end
+    tod = tod or TimeOfDay.GetCurrentTOD()
+    if not tod then return end
+
+    local dayFrom   = Config.TimeOfDay.ShortCycleDaySkipFrom or 830
+    local dayTo     = Config.TimeOfDay.ShortCycleDaySkipTo or 1630
+    local nightFrom = Config.TimeOfDay.ShortCycleNightSkipFrom or 2230
+    local nightTo   = Config.TimeOfDay.ShortCycleNightSkipTo or 420
+
+    if dayFrom < dayTo and tod >= dayFrom and tod < dayTo then
+        Log.Info(MODULE, "Short cycle: skipping day core", {from = tod, to = dayTo})
+        TimeOfDay.SetTOD(dayTo)
+        return
+    end
+
+    -- Night window wraps midnight: [nightFrom..2400) U [0..nightTo)
+    if tod >= nightFrom or tod < nightTo then
+        Log.Info(MODULE, "Short cycle: skipping night core", {from = tod, to = nightTo})
+        TimeOfDay.SetTOD(nightTo)
+    end
+end
+
 --- Baseline enforcement tick - ensures time keeps advancing correctly
 --- @param dt number Delta time in seconds
 function TimeOfDay.BaselineEnforceTick(dt)
@@ -333,10 +381,14 @@ function TimeOfDay.Tick(dt)
     dt = dt or (Config.MainLoop.TickIntervalMs / 1000)
     
     if not Actors.IsOnCourse() then return end
-    
+
     -- Update last known TOD
-    TimeOfDay.GetCurrentTOD()
-    
+    local tod = TimeOfDay.GetCurrentTOD()
+
+    -- Debug short cycle first (takes precedence), then night-only
+    TimeOfDay.ShortCycleEnforce(tod)
+    TimeOfDay.NightOnlyEnforce(tod)
+
     -- Baseline enforcement
     TimeOfDay.BaselineEnforceTick(dt)
 end
@@ -351,6 +403,8 @@ function TimeOfDay.GetStatus()
         speedMode = currentSpeedMode,
         speed = TimeOfDay.GetSpeed(),
         isPaused = TimeOfDay.IsPaused(),
+        nightOnly = Config.TimeOfDay.NightOnly or false,
+        shortCycle = Config.TimeOfDay.DebugShortCycle or false,
     }
 end
 
@@ -360,7 +414,11 @@ function TimeOfDay.OnCourseLoad()
         Log.Info(MODULE, "Applying starting TOD", {tod = Config.TimeOfDay.StartingTOD})
         TimeOfDay.SetTOD(Config.TimeOfDay.StartingTOD)
     end
-    
+
+    -- Skip modes: if the course loaded inside a skipped segment, jump now
+    TimeOfDay.ShortCycleEnforce()
+    TimeOfDay.NightOnlyEnforce()
+
     -- Ensure default speed
     TimeOfDay.SetSpeed(Config.TimeOfDay.DefaultSpeed)
     TimeOfDay.Resume()

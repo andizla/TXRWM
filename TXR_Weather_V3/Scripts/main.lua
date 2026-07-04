@@ -97,6 +97,7 @@ local LightRays = nil
 local Moon = nil
 local Rainbow = nil
 local SpaceLayer = nil
+local CinematicSky = nil
 local Vignette = nil
 local PhotoMode = nil
 local WetGrip = nil
@@ -288,6 +289,15 @@ local function loadSystemModules()
         if SpaceLayer.Init then SpaceLayer.Init() end
     else
         Log.Debug("Main", "SpaceLayer module not loaded")
+    end
+
+    -- Cinematic sky (daytime cloud/atmosphere grade; settle-gated one-shot)
+    CinematicSky = safeRequire("systems.cinematic_sky", "CinematicSky")
+    if CinematicSky then
+        Log.Info("Main", "System module loaded: CinematicSky")
+        if CinematicSky.Init then CinematicSky.Init() end
+    else
+        Log.Debug("Main", "CinematicSky module not loaded")
     end
 
     -- Vignette (hide HUD vignette; opt-in UI toggle)
@@ -599,6 +609,11 @@ local function onTick()
             SpaceLayer.Tick()
         end
 
+        -- Cinematic sky grade (settle-gated one-shot apply)
+        if CinematicSky and CinematicSky.Tick and not State.IsPAFrozen() then
+            CinematicSky.Tick()
+        end
+
         -- Weather audio (settle-gated one-shot apply of UDW's native sounds)
         if Audio and Audio.Tick and not State.IsPAFrozen() then
             Audio.Tick()
@@ -686,6 +701,13 @@ local function setupHooks()
     -- EndPlay hook for map unload detection
     local endPlaySuccess, endPlayErr = pcall(function()
         RegisterHook("/Script/Engine.Actor:ReceiveEndPlay", function(self)
+            -- During map teardown EndPlay fires for EVERY dying actor; the unload
+            -- handling already ran (LoadMapPreHook), so skip the per-actor name
+            -- lookups on half-destroyed objects for the rest of the window.
+            if Actors and Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended() then
+                return
+            end
+
             -- Safely get actor name
             local success, actorName = pcall(function()
                 return self:GetFullName()
@@ -775,6 +797,7 @@ local function initialize()
         if tg.Stars       == false then Stars = nil end
         if tg.Rainbow     == false then Rainbow = nil end
         if tg.SpaceLayer  == false then SpaceLayer = nil end
+        if tg.CinematicSky== false then CinematicSky = nil end
         if tg.Vignette    == false then Vignette = nil end
         if tg.PhotoMode   == false then PhotoMode = nil end
         if tg.WetGrip     == false then WetGrip = nil end
@@ -841,6 +864,12 @@ local _CourseStateBeforePA = nil
 -- LoadMapPreHook - fires BEFORE map unload while actors still valid
 if RegisterLoadMapPreHook then
     RegisterLoadMapPreHook(function()
+        -- Old world is about to die: stop the async actor search from touching
+        -- the object array until the new world's sky actor begins play
+        if Actors and Actors.SuspendDiscovery then
+            Actors.SuspendDiscovery()
+        end
+
         -- Get world tag from Actors module (or State) - NOT local variable
         local currentTag = "unknown"
         if Actors and Actors.GetWorldTag then
@@ -941,33 +970,42 @@ if RegisterBeginPlayPreHook then
         pcall(function() isValid = Actor.IsValid and Actor:IsValid() end)
         if not isValid then return end
         
-        -- Check if it's a sky actor using IsA (like V1.34)
-        local skyCls = TryGetSkyClass()
-        local courseCls = TryGetCourseSkyClass()
-        
-        local isSkyCls = false
-        local isCourseCls = false
-        
-        if skyCls then
-            pcall(function() isSkyCls = Actor:IsA(skyCls) end)
-        end
-        if courseCls then
-            pcall(function() isCourseCls = Actor:IsA(courseCls) end)
-        end
-        
-        -- Fallback: string matching
+        -- Cheap NAME check first - one tostring per actor. The old order ran
+        -- TryGetSkyClass() for EVERY actor beginning play, which revalidates a
+        -- CACHED CLASS OBJECT with IsValid(); during a world swap the previous
+        -- world's GC can have freed that class, making the revalidation a
+        -- freed-memory read - matching the intermittent transition-crash
+        -- signature (read AV in a game-thread hook, transitions only). The
+        -- class-cache route now runs only as a fallback when tostring gives
+        -- nothing usable, instead of hundreds of times per map load.
         local actorName = nil
         pcall(function() actorName = tostring(Actor) end)
-        local isSkyByName = actorName and (
-            actorName:find("UltraDynamicSky") or
-            actorName:find("Ultra_Dynamic_Sky") or
-            actorName:find("CourseSky") or
-            actorName:find("BP_Sky")
-        )
-        
-        -- Must match at least one detection method
-        if not (isSkyCls or isCourseCls or isSkyByName) then return end
-        
+
+        local isSky = false
+        if type(actorName) == "string" and #actorName > 0 then
+            isSky = (actorName:find("UltraDynamicSky")
+                  or actorName:find("Ultra_Dynamic_Sky")
+                  or actorName:find("CourseSky")
+                  or actorName:find("BP_Sky")) ~= nil
+        else
+            local skyCls = TryGetSkyClass()
+            local courseCls = TryGetCourseSkyClass()
+            if skyCls then
+                pcall(function() isSky = Actor:IsA(skyCls) end)
+            end
+            if not isSky and courseCls then
+                pcall(function() isSky = Actor:IsA(courseCls) end)
+            end
+        end
+
+        if not isSky then return end
+
+        -- A sky actor is beginning play: the new world is constructing, so the
+        -- teardown window is over - let the actor search run again
+        if Actors and Actors.ResumeDiscovery then
+            Actors.ResumeDiscovery()
+        end
+
         -- Get world tag from actor
         local tag = "course"
         local worldString = "unknown"
@@ -1109,6 +1147,7 @@ return {
     Exposure = Exposure,
     Rainbow = Rainbow,
     SpaceLayer = SpaceLayer,
+    CinematicSky = CinematicSky,
     Vignette = Vignette,
     PhotoMode = PhotoMode,
     WetGrip = WetGrip,

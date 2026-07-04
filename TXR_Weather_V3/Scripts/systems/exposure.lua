@@ -28,6 +28,9 @@ local UPDATE_INTERVAL = 2.0         -- seconds between slot re-evaluations
 local CVAR_SKY  = "r.SkylightIntensityMultiplier"
 local CVAR_LEAK = "r.Lumen.SkylightLeaking.ReflectionAverageAlbedo"
 local CVAR_LENS = "r.EyeAdaptation.LensAttenuation"
+local CVAR_ROUGH = "r.Lumen.SkylightLeaking.Roughness"  -- tuning keybinds only, not slot-driven
+local TUNE_STEP = 0.05
+local ROUGH_BASELINE = 1.0          -- engine.ini boot value; keep in sync (1.0 = max, engine clamps)
 
 -- Slot table: [1..144] = { sky=<float>, leak=<float>, lens=<float> }
 -- Populated from Config.Exposure.Slots in Init (falls back to empty -> no-op).
@@ -39,6 +42,30 @@ local currentSlot = nil             -- last evaluated slot (0-based), nil = none
 local lastCheckClock = 0.0          -- os.clock() of last evaluation (throttle)
 local lastInterpLens = nil          -- last interpolated lens (brightness proxy; see GetBrightnessLens)
 local lastApplied = { sky = nil, leak = nil, lens = nil }  -- last pushed cvar values (skip redundant pushes)
+-- Skylight tuning overrides (Alt+Z/X/C keybinds). While set, sky/leak take these
+-- values instead of the slot curve (applyValues substitutes them, so they survive
+-- slot flips and transitions). rough is not slot-driven: its override is pushed
+-- once per nudge; a course load resets the cvar to engine.ini, re-nudge after loads.
+local tune = { sky = nil, leak = nil, rough = nil }
+local TUNE_LIMITS = {
+    sky   = { min = 0.0, max = 4.0, fallback = 1.0 },
+    leak  = { min = 0.0, max = 1.0, fallback = 0.07 },
+    rough = { min = 0.0, max = 1.0 },   -- fallback = ROUGH_BASELINE (1.0 is the real max)
+}
+
+-- Per-weather compensation (Config.Exposure.WeatherLensMult / WeatherSkyMult).
+-- The slot curve is tuned for clear skies; overcast/rain is darker at the same
+-- TOD. The 2026-07-04 feedback runs showed the LENS lever barely reads on screen
+-- (lens 34 -> 78 under overcast night = no perceived change), so the SKY
+-- multiplier (r.SkylightIntensityMultiplier - the actual brightness lever, and
+-- the very light overcast blocks) carries the compensation now; lens stays as a
+-- secondary. Both are SMOOTHED toward the preset's target so changes don't pop.
+local WEATHER_MULT = {}
+local WEATHER_SKY_MULT = {}
+local MULT_SMOOTH_SECONDS = 20.0
+local weatherMult = 1.0
+local weatherSkyMult = 1.0
+local lastMultClock = nil
 local armed = false                 -- course-exposure gate. False during a course/PA entry until
                                     -- the restore has run (OnCourseLoad). A freshly (re)spawned UDS
                                     -- reports Time Of Day = 0 before restore; without this gate the
@@ -147,6 +174,9 @@ local function lerp(a, b, t) return a + (b - a) * t end
 --- @return boolean success (commands scheduled, or true if skipped as unchanged)
 local function applyValues(sky, leak, lens, tod, reason)
     local eps = 1e-4
+    -- Skylight tuning overrides win over the slot curve (see NudgeSkylight)
+    if tune.sky  then sky  = tune.sky  end
+    if tune.leak then leak = tune.leak end
     -- Push ONLY the cvars that actually changed. leak is constant across the whole
     -- table, so after the first push it is never re-emitted - that drops a third of
     -- the console commands (and a Lumen cvar write) on every transition step. sky and
@@ -196,6 +226,14 @@ function Exposure.Init()
         if cfg.CvarLeak then CVAR_LEAK = cfg.CvarLeak end
         if cfg.CvarLens then CVAR_LENS = cfg.CvarLens end
         if type(cfg.Slots) == "table" then slots = cfg.Slots end
+        if type(cfg.Tune) == "table" then
+            if cfg.Tune.Step then TUNE_STEP = cfg.Tune.Step end
+            if cfg.Tune.CvarRough then CVAR_ROUGH = cfg.Tune.CvarRough end
+            if cfg.Tune.RoughnessBaseline then ROUGH_BASELINE = cfg.Tune.RoughnessBaseline end
+        end
+        if type(cfg.WeatherLensMult) == "table" then WEATHER_MULT = cfg.WeatherLensMult end
+        if type(cfg.WeatherSkyMult) == "table" then WEATHER_SKY_MULT = cfg.WeatherSkyMult end
+        if cfg.WeatherLensSmoothSeconds then MULT_SMOOTH_SECONDS = cfg.WeatherLensSmoothSeconds end
     end
 
     isInitialized = true
@@ -287,6 +325,32 @@ function Exposure.Update()
     local leak = lerp(a.leak, b.leak, frac)
     local lens = lerp(a.lens, b.lens, frac)
 
+    -- Weather compensation: scale sky (the effective brightness lever) and lens
+    -- by the active preset's multipliers, smoothed toward the targets so preset
+    -- changes don't pop the exposure. Lens is intentionally applied to the
+    -- headlight brightness proxy too (lastInterpLens): lamps should come on
+    -- earlier under overcast.
+    local target, skyTarget = 1.0, 1.0
+    local preset = nil
+    pcall(function() preset = State.GetCurrentPreset() end)
+    if preset then
+        if WEATHER_MULT[preset] then target = WEATHER_MULT[preset] end
+        if WEATHER_SKY_MULT[preset] then skyTarget = WEATHER_SKY_MULT[preset] end
+    end
+    local dtm = 0.5
+    if lastMultClock then dtm = clamp(now - lastMultClock, 0.0, 5.0) end
+    lastMultClock = now
+    if MULT_SMOOTH_SECONDS > 0 then
+        local blend = clamp(dtm / MULT_SMOOTH_SECONDS, 0.0, 1.0)
+        weatherMult = weatherMult + (target - weatherMult) * blend
+        weatherSkyMult = weatherSkyMult + (skyTarget - weatherSkyMult) * blend
+    else
+        weatherMult = target
+        weatherSkyMult = skyTarget
+    end
+    lens = lens * weatherMult
+    sky = sky * weatherSkyMult
+
     currentSlot = slot
     lastInterpLens = lens
     applyValues(sky, leak, lens, currentTOD, "slot " .. slot)
@@ -307,8 +371,9 @@ end
 --- us which slot to nudge and in which direction. Greppable tag: "ExposureTune".
 --- The `where` field also diagnoses the "exposure not active in cutscenes" report:
 --- if it isn't "course" during a cutscene, the cutscene world isn't being driven.
---- @param direction string "dark" (too dark) | "bright" (too bright)
-function Exposure.LogFeedback(direction)
+--- Capture the shared tuning-log context: time, weather preset, world tag.
+--- @return number|nil tod, string todStr, string preset, string where
+local function captureContext()
     local tod, todStr = nil, "--:--"
     local t = getTimeOfDay()
     if t then
@@ -330,6 +395,13 @@ function Exposure.LogFeedback(direction)
         end
     end
 
+    return tod, todStr, preset, where
+end
+
+--- @param direction string "dark" (too dark) | "bright" (too bright)
+function Exposure.LogFeedback(direction)
+    local tod, todStr, preset, where = captureContext()
+
     Log.Info("ExposureTune", "FEEDBACK too-" .. tostring(direction), {
         verdict      = direction,                 -- "dark" or "bright"
         time         = todStr,
@@ -341,7 +413,88 @@ function Exposure.LogFeedback(direction)
         applied_leak = lastApplied.leak,
         applied_lens = lastApplied.lens,
         interp_lens  = lastInterpLens,
+        weather_mult = weatherMult,       -- lens = slot curve * this (per-weather comp)
+        weather_sky_mult = weatherSkyMult, -- sky = slot curve * this (the brightness lever)
     })
+end
+
+--- Nudge one of the skylight cvars by one Tune.Step (skylight tuning keybinds).
+--- The new value becomes an override: sky/leak hold it across slot flips and
+--- transitions until ResetSkylightTune; rough is pushed directly (nothing else
+--- writes it at runtime, but a course load resets it to the engine.ini value).
+--- @param which string "sky" | "leak" | "rough"
+--- @param dir number +1 (raise) | -1 (lower)
+function Exposure.NudgeSkylight(which, dir)
+    local lim = TUNE_LIMITS[which]
+    if not lim then
+        Log.Warn(MODULE, "NudgeSkylight: unknown cvar key", {which = tostring(which)})
+        return
+    end
+
+    local cur = tune[which]
+    if cur == nil then
+        if which == "rough" then
+            cur = ROUGH_BASELINE
+        else
+            cur = lastApplied[which] or lim.fallback
+        end
+    end
+
+    local new = clamp(cur + dir * TUNE_STEP, lim.min, lim.max)
+
+    -- Already at the limit (key-repeat holds spam this case): nothing changes,
+    -- so don't queue a no-op game-thread console push or log a NUDGE line.
+    if new == cur then return end
+
+    tune[which] = new
+
+    local cvar = (which == "sky" and CVAR_SKY) or (which == "leak" and CVAR_LEAK) or CVAR_ROUGH
+    scheduleExec({ string.format("%s %.6f", cvar, new) })
+    -- Keep the change-detection in sync so the next slot evaluation does not
+    -- immediately re-emit the same (overridden) value.
+    if which ~= "rough" then lastApplied[which] = new end
+
+    Log.Info("SkylightTune", "NUDGE " .. which .. (dir > 0 and " +" or " -"), {
+        cvar = cvar,
+        from = string.format("%.3f", cur),
+        to   = string.format("%.3f", new),
+        slot = currentSlot,
+    })
+end
+
+--- Log one skylight tuning datapoint (confirm keybind): time, weather, world
+--- context, and the three skylight values in effect. Greppable tag: "SkylightTune".
+--- rough falls back to the engine.ini baseline when never nudged this session.
+function Exposure.LogSkylightConfirm()
+    local tod, todStr, preset, where = captureContext()
+
+    local overridden = {}
+    for _, k in ipairs({"sky", "leak", "rough"}) do
+        if tune[k] then overridden[#overridden + 1] = k end
+    end
+
+    Log.Info("SkylightTune", "CONFIRM", {
+        time      = todStr,
+        tod       = tod and string.format("%.0f", tod) or "nil",
+        weather   = preset,
+        where     = where,
+        slot      = currentSlot,
+        albedo    = tune.leak or lastApplied.leak,
+        rough     = tune.rough or ROUGH_BASELINE,
+        sky       = tune.sky or lastApplied.sky,
+        overrides = (#overridden > 0) and table.concat(overridden, ",") or "none",
+    })
+end
+
+--- Drop all skylight tuning overrides: rough goes back to the engine.ini
+--- baseline now, sky/leak fall back to the slot curve on the next evaluation.
+function Exposure.ResetSkylightTune()
+    tune.sky, tune.leak, tune.rough = nil, nil, nil
+    scheduleExec({ string.format("%s %.6f", CVAR_ROUGH, ROUGH_BASELINE) })
+    -- Force the next Update to re-emit the slot values immediately
+    lastApplied.sky, lastApplied.leak = nil, nil
+    lastCheckClock = 0.0
+    Log.Info("SkylightTune", "RESET to slot curve", {slot = currentSlot})
 end
 
 -- Alias so the module can be ticked as either Tick() or Update().

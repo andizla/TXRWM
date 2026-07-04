@@ -5,6 +5,9 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 
 ## Features
 - Dynamic time of day - adjustable speed, pause, and persistence across sessions
+- **Night-only mode** - dusk, night, dawn, then straight back to dusk: the day is skipped entirely (off by default; installer option)
+- **Cinematic sky** - a daytime look pass: denser cloud cores, silver-lining glow, high cirrus that lights up near the sun, richer sky color, luminous overcast, stronger sunsets, slower cloud drift
+- **Per-weather exposure compensation** - overcast, rain, fog and snow scenes automatically get brighter instead of gray mush
 - Weather preset cycling - clear, cloudy, fog, rain, thunderstorm, and more
 - Random weather scheduler - weighted and time-of-day aware (clear skies rarer by day)
 - Lightning / thunderstorm flashes
@@ -41,7 +44,8 @@ shares the same goal (driving Ultra Dynamic Sky/Weather inside TXR) but **none o
   exposure-driven auto headlights with animated pop-ups + a controller light-button gesture, a weighted
   time-of-day-aware random weather scheduler, dawn/dusk slow-time, Tokyo city glow, volumetric cloud
   light rays, wind debris, moon phases, rainbows, a night-sky nebula, audible weather sounds, wider
-  garage alignment sliders, and an installer with Engine.ini graphics profiles.
+  garage alignment sliders, a night-only time cycle, a cinematic daytime sky pass, per-weather
+  exposure compensation, and an installer with Engine.ini graphics profiles.
 - **What 1.34 had that V3 deliberately leaves out.** Surface/vehicle wetness and screen-space weather
   effects (rain-on-lens, frost) - they rely on material/post-process paths the game doesn't composite,
   so they never rendered reliably; V3 focuses on the effects that actually show in TXR.
@@ -98,6 +102,8 @@ controller): a short press turns the headlights on, a ~2-second hold turns them 
 All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
 - `Config.Weather.Enabled = false` - time-of-day + visuals only, no weather (presets/rain/cycling off).
 - `Config.ModuleToggles` - turn individual modules on/off.
+- `Config.TimeOfDay.NightOnly = true` - the night-only cycle (dusk -> night -> dawn, repeat).
+- `Config.CinematicSky` - the daytime look pass: cloud density/silver lining/cirrus/color knobs (on by default).
 - `Config.Rainbow` / `Config.SpaceLayer` - rainbows and the night-sky nebula (both on; tune or disable).
 - `Config.WetGrip` - dynamic wet grip: grip floors, the full-wet rain threshold, and wet/dry timing (on by default).
 - `Config.PhotoMode` - photo mode camera unlocks: collision, distance, zoom range, and speed (on by default).

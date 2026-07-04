@@ -40,12 +40,16 @@ local NIGHT_SKY_GLOW_MAX = 0.5    -- peak ambient night-sky glow
 local LIGHT_POLLUTION_COLOR = {R = 1.00, G = 0.55, B = 0.25, A = 1.0}  -- warm sodium amber
 local NIGHT_SKY_GLOW_COLOR  = {R = 0.45, G = 0.50, B = 0.65, A = 1.0}  -- faint cool
 
--- God rays cutoff (disable when too cloudy)
-local GOD_RAYS_CLOUD_CUTOFF = 7.2  -- Disable god rays above this cloud coverage
+-- God rays (sun light-shaft bloom): brightness multiplier on UDS's stock
+-- (clear, overcast) pair + a slightly warm tint (Config.Atmosphere overrides)
+local SUN_SHAFT_BRIGHTNESS_MULT = 1.3
+local SUN_SHAFT_TINT = {R = 1.00, G = 0.92, B = 0.80, A = 1.0}
 
--- Cloud shadows intensity
+-- Cloud shadows intensity + softness (softness scaled from stock for soft
+-- dappled light instead of hard-edged blotches)
 local CLOUD_SHADOWS_SUNNY = 0.7
 local CLOUD_SHADOWS_OVERCAST = 0.3
+local CLOUD_SHADOW_SOFTNESS_MULT = 1.3
 
 -- Smoothing
 local SMOOTHING_SPEED = 0.1  -- How fast to interpolate (0-1 per tick)
@@ -63,14 +67,21 @@ local AURORA_SETTLE_TICKS = 32  -- ~4s at 8 Hz past BeginPlay before constructin
 local PROP_USE_CLOUD_SHADOWS = "Use Cloud Shadows"
 local PROP_CLOUD_SHADOWS_INTENSITY_SUNNY = "Cloud Shadows Intensity When Sunny"
 local PROP_CLOUD_SHADOWS_INTENSITY_OVERCAST = "Cloud Shadows Intensity When Overcast"
+local PROP_CLOUD_SHADOWS_SOFTNESS_SUNNY = "Cloud Shadows Softness When Sunny"
+local PROP_CLOUD_SHADOWS_SOFTNESS_OVERCAST = "Cloud Shadows Softness When Overcast"
 
--- God Rays (Light Shafts)
-local PROP_USE_SUN_LIGHT_SHAFTS = "Use Sun Light Shafts"
-local PROP_LIGHT_SHAFT_INTENSITY = "Light Shaft Intensity"
+-- God rays = the sun's screen-space light-shaft bloom. The names this module
+-- used before 3.2.x ("Use Sun Light Shafts" / "Light Shaft Intensity") do NOT
+-- exist in v1.5's UDS - those writes were silent no-ops. The real controls are
+-- an enable bool, a (clear, overcast) FVector2D max-brightness pair, and a tint.
+-- UDS fades the shafts with sun occlusion itself, so no per-tick drive is needed.
+local PROP_SUN_SHAFT_BLOOM = "Enable Sun Light Shaft Bloom"
+local PROP_SUN_SHAFT_MAX   = "Sun Light Shaft Max Brightness"  -- FVector2D
+local PROP_SUN_SHAFT_TINT  = "Sun Light Shaft Tint Color"      -- FLinearColor
 
--- Second Cloud Layer
-local PROP_USE_SECOND_CLOUD_LAYER = "Use Second Cloud Layer"
-local PROP_SECOND_LAYER_OPACITY = "Second Cloud Layer Opacity"
+-- Second Cloud Layer ("Two Layers" is the real v1.5 property; the old
+-- "Use Second Cloud Layer" name did not exist, so the enable was a silent no-op)
+local PROP_TWO_LAYERS = "Two Layers"
 
 -- City glow (light pollution + night sky glow)
 local PROP_LIGHT_POLLUTION_INTENSITY = "Light Pollution Intensity"
@@ -81,14 +92,11 @@ local PROP_NIGHT_SKY_GLOW_COLOR      = "Night Sky Glow Color"
 -- ============== STATE ==============
 local isInitialized = false
 local currentAuroraIntensity = 0.0
-local currentGodRayIntensity = 0.0
 local targetAuroraIntensity = 0.0
-local targetGodRayIntensity = 0.0
 
 -- Cache what we last pushed to UDS so we can skip redundant per-tick writes
 -- (and avoid reading "Use Auroras" back every tick).
 local auroraOn = false
-local lastGodRayWritten = nil
 local lastAuroraWritten = nil
 
 -- Aurora construction gate: the 2D aurora only renders after UDS's
@@ -312,17 +320,14 @@ local function calculateAuroraIntensity(tod)
     return nightFactor01(tod) * AURORA_MAX_INTENSITY
 end
 
---- Calculate god ray intensity based on cloud coverage
---- @param cloudCoverage number 0-10
---- @return number 0.0 to 1.0
-local function calculateGodRayIntensity(cloudCoverage)
-    if cloudCoverage >= GOD_RAYS_CLOUD_CUTOFF then
-        return 0.0
-    end
-    
-    -- Fade out as clouds increase
-    local fade = 1.0 - (cloudCoverage / GOD_RAYS_CLOUD_CUTOFF)
-    return math.max(0.0, math.min(1.0, fade))
+--- Scale a numeric UDS property from its stock value (read -> multiply -> write).
+--- Setup runs once per course on a freshly spawned sky actor, so this never
+--- compounds. Skips silently if the property can't be read.
+local function scaleUDS(propName, mult)
+    if not mult or mult == 1.0 then return end
+    local old = tonumber(readUDS(propName))
+    if old == nil then return end
+    writeUDS(propName, old * mult)
 end
 
 --- Lerp toward target value
@@ -375,6 +380,15 @@ function Atmosphere.Init()
         if Config.Atmosphere.NightSkyGlowColor then
             NIGHT_SKY_GLOW_COLOR = Config.Atmosphere.NightSkyGlowColor
         end
+        if Config.Atmosphere.SunShaftBrightnessMult ~= nil then
+            SUN_SHAFT_BRIGHTNESS_MULT = Config.Atmosphere.SunShaftBrightnessMult
+        end
+        if Config.Atmosphere.SunShaftTint then
+            SUN_SHAFT_TINT = Config.Atmosphere.SunShaftTint
+        end
+        if Config.Atmosphere.CloudShadowSoftnessMult ~= nil then
+            CLOUD_SHADOW_SOFTNESS_MULT = Config.Atmosphere.CloudShadowSoftnessMult
+        end
         if Config.Atmosphere.Enabled == false then
             Log.Info(MODULE, "Atmosphere disabled in config")
             isInitialized = true
@@ -393,24 +407,37 @@ function Atmosphere.Setup()
     local actors = getActors()
     if not actors or not actors.IsOnCourse() then return end
     
-    -- Enable cloud shadows
+    -- Enable cloud shadows (intensity absolute, softness scaled from stock)
     if ENABLE_CLOUD_SHADOWS then
         writeUDS(PROP_USE_CLOUD_SHADOWS, true)
         writeUDS(PROP_CLOUD_SHADOWS_INTENSITY_SUNNY, CLOUD_SHADOWS_SUNNY)
         writeUDS(PROP_CLOUD_SHADOWS_INTENSITY_OVERCAST, CLOUD_SHADOWS_OVERCAST)
+        scaleUDS(PROP_CLOUD_SHADOWS_SOFTNESS_SUNNY, CLOUD_SHADOW_SOFTNESS_MULT)
+        scaleUDS(PROP_CLOUD_SHADOWS_SOFTNESS_OVERCAST, CLOUD_SHADOW_SOFTNESS_MULT)
         Log.Debug(MODULE, "Cloud shadows enabled")
     end
-    
-    -- Enable second cloud layer
+
+    -- Enable second cloud layer (high cirrus; real property is "Two Layers")
     if ENABLE_SECOND_CLOUD_LAYER then
-        writeUDS(PROP_USE_SECOND_CLOUD_LAYER, true)
-        Log.Debug(MODULE, "Second cloud layer enabled")
+        writeUDS(PROP_TWO_LAYERS, true)
+        Log.Debug(MODULE, "Second cloud layer (Two Layers) enabled")
     end
-    
-    -- God rays will be controlled dynamically based on clouds
+
+    -- God rays: enable the sun's light-shaft bloom, brighten it from stock and
+    -- tint it warm. One-shot - UDS drives shaft visibility with sun occlusion.
     if ENABLE_GOD_RAYS then
-        writeUDS(PROP_USE_SUN_LIGHT_SHAFTS, true)
-        Log.Debug(MODULE, "God rays enabled")
+        writeUDS(PROP_SUN_SHAFT_BLOOM, true)
+        local maxB = readUDS(PROP_SUN_SHAFT_MAX)
+        if maxB and SUN_SHAFT_BRIGHTNESS_MULT ~= 1.0 then
+            local x, y = nil, nil
+            pcall(function() x, y = maxB.X, maxB.Y end)
+            if x and y then
+                writeUDS(PROP_SUN_SHAFT_MAX, {X = x * SUN_SHAFT_BRIGHTNESS_MULT,
+                                              Y = y * SUN_SHAFT_BRIGHTNESS_MULT})
+            end
+        end
+        writeUDS(PROP_SUN_SHAFT_TINT, SUN_SHAFT_TINT)
+        Log.Debug(MODULE, "God rays (sun light-shaft bloom) enabled")
     end
     
     -- Aurora is constructed after the settle gate in Tick (see applyAuroraStatic);
@@ -430,7 +457,6 @@ function Atmosphere.Setup()
     end
 
     -- Force the next tick to push fresh values
-    lastGodRayWritten = nil
     lastAuroraWritten = nil
     lastLightPollutionWritten = nil
     lastNightSkyGlowWritten = nil
@@ -462,15 +488,6 @@ function Atmosphere.Tick()
     
     local currentTOD = tod.GetCurrentTOD()
     if not currentTOD then return end
-    
-    -- Get current cloud coverage for god rays
-    local udw = actors.GetUDW()
-    local cloudCoverage = 0
-    if udw then
-        pcall(function()
-            cloudCoverage = tonumber(udw["Cloud Coverage"]) or 0
-        end)
-    end
     
     -- Update Aurora
     if ENABLE_AURORA then
@@ -520,17 +537,9 @@ function Atmosphere.Tick()
         end
     end
 
-    -- Update God Rays based on cloud coverage
-    if ENABLE_GOD_RAYS then
-        targetGodRayIntensity = calculateGodRayIntensity(cloudCoverage)
-        currentGodRayIntensity = smoothStep(currentGodRayIntensity, targetGodRayIntensity, SMOOTHING_SPEED)
-
-        -- Skip the reflected-property write once the value has converged
-        if not lastGodRayWritten or math.abs(currentGodRayIntensity - lastGodRayWritten) > 0.005 then
-            writeUDS(PROP_LIGHT_SHAFT_INTENSITY, currentGodRayIntensity)
-            lastGodRayWritten = currentGodRayIntensity
-        end
-    end
+    -- (God rays are one-shot in Setup now: UDS fades the shaft bloom with sun
+    -- occlusion itself, so the old per-tick intensity drive - which wrote a
+    -- nonexistent property anyway - is gone.)
 
     -- City glow: light pollution + night sky glow, ramped in at night
     if ENABLE_CITY_GLOW then
@@ -557,12 +566,6 @@ function Atmosphere.GetAuroraIntensity()
     return currentAuroraIntensity
 end
 
---- Get current god ray intensity
---- @return number
-function Atmosphere.GetGodRayIntensity()
-    return currentGodRayIntensity
-end
-
 --- Check if aurora is currently active
 --- @return boolean
 function Atmosphere.IsAuroraActive()
@@ -577,8 +580,6 @@ function Atmosphere.GetStatus()
         auroraIntensity = currentAuroraIntensity,
         auroraTarget = targetAuroraIntensity,
         auroraConstructed = auroraStaticApplied,
-        godRayIntensity = currentGodRayIntensity,
-        godRayTarget = targetGodRayIntensity,
         cloudShadowsEnabled = ENABLE_CLOUD_SHADOWS,
         godRaysEnabled = ENABLE_GOD_RAYS,
         auroraEnabled = ENABLE_AURORA,

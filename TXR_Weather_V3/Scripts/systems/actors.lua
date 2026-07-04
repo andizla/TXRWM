@@ -21,6 +21,18 @@ local discoveryAttempts = 0
 local lastDiscoveryTime = 0
 local isSearching = false
 
+-- Map-teardown guard. Between LoadMapPreHook (old world starts dying) and the
+-- next sky-actor BeginPlay (new world constructing), the game thread is
+-- destroying the object array. Searching it from the async tick during that
+-- window (FindFirstOf) reads dying objects - the suspected cause of the
+-- intermittent course-to-garage transition crash (access violation inside the
+-- object search; see the "UDS found but not valid" spam right before each one).
+-- Discovery is suspended for the window, with a time failsafe in case no sky
+-- actor ever begins play (menu-only worlds).
+local suspendedForTeardown = false
+local suspendedAt = 0
+local SUSPEND_FAILSAFE_SECONDS = 15
+
 -- ============== INTERNAL FUNCTIONS ==============
 
 --- Get world tag from actor's world object
@@ -83,6 +95,11 @@ end
 ---      outgame level load, so it usually detects sooner than the garage manager.
 --- @return boolean
 local function isInGarage()
+    -- During map teardown, don't probe the object array - serve the cache
+    if suspendedForTeardown then
+        return garageCheckCache.isInGarage
+    end
+
     local now = os.clock()
 
     -- Return cached value if checked recently
@@ -337,9 +354,33 @@ function Actors.Discover()
     return discoverActors()
 end
 
+--- Suspend discovery while the old world tears down (from LoadMapPreHook)
+function Actors.SuspendDiscovery()
+    if not suspendedForTeardown then
+        suspendedForTeardown = true
+        suspendedAt = os.time()
+        Log.Info(MODULE, "Discovery suspended (map teardown)")
+    end
+end
+
+--- Resume discovery once a new world is constructing (from BeginPlay hooks)
+function Actors.ResumeDiscovery()
+    if suspendedForTeardown then
+        suspendedForTeardown = false
+        Log.Info(MODULE, "Discovery resumed (new world alive)")
+    end
+end
+
+--- Whether the map-teardown window is active (world being destroyed)
+--- @return boolean
+function Actors.IsDiscoverySuspended()
+    return suspendedForTeardown
+end
+
 --- Called when a map loads (from BeginPlay hook)
 function Actors.OnMapLoad()
     Log.Info(MODULE, "Map load detected - starting actor discovery")
+    suspendedForTeardown = false
     isSearching = true
     discoveryAttempts = 0
     
@@ -366,6 +407,17 @@ end
 
 --- Tick function - called from main loop
 function Actors.Tick()
+    -- Map teardown window: leave the object array alone while the old world is
+    -- being destroyed. Failsafe-resume in case no sky actor ever begins play.
+    if suspendedForTeardown then
+        if os.time() - suspendedAt >= SUSPEND_FAILSAFE_SECONDS then
+            suspendedForTeardown = false
+            Log.Warn(MODULE, "Discovery resume failsafe hit (no BeginPlay seen)")
+        else
+            return
+        end
+    end
+
     -- If we already have valid actors, just validate periodically
     if State.HasActors() then
         -- Validate every few seconds
@@ -418,6 +470,7 @@ function Actors.GetStatus()
         isSearching = isSearching,
         discoveryAttempts = discoveryAttempts,
         lastDiscoveryTime = lastDiscoveryTime,
+        suspendedForTeardown = suspendedForTeardown,
     }
 end
 

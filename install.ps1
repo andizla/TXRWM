@@ -169,6 +169,24 @@ function Set-HeadlightMode($modDst, $mode){
     Ok "Set Config.Headlights.Mode = `"$mode`" (headlight control)."
 }
 
+# Set Config.TimeOfDay.NightOnly in the installed mod's config.lua: true = the
+# time cycle skips the day (dusk -> night -> dawn, repeat).
+function Set-NightOnly($modDst, $on){
+    $cfg = Join-Path $modDst 'Scripts\config.lua'
+    if(-not (Test-Path $cfg)){ return }
+    $val = if($on){ 'true' } else { 'false' }
+    $lines = @(Get-Content $cfg)
+    $inTod = $false
+    for($i = 0; $i -lt $lines.Count; $i++){
+        if($lines[$i] -match '^\s*Config\.TimeOfDay\s*=\s*\{'){ $inTod = $true; continue }
+        if($inTod -and $lines[$i] -match '^\s*NightOnly\s*='){
+            $lines[$i] = $lines[$i] -replace 'NightOnly\s*=\s*(true|false)', "NightOnly = $val"
+            break
+        }
+    }
+    WriteLines $cfg $lines
+}
+
 # Set Config.<Block>.Enabled = true/false in the installed mod's config.lua (the first
 # Enabled line inside that block - the module's master switch).
 function Set-ConfigEnabled($modDst, $block, $on){
@@ -202,6 +220,7 @@ Say "  4. Set up Engine.ini - pick a graphics profile (photomode / optimizations
 Say "     Any existing Engine.ini is backed up first."
 Say "  5. Choose headlight behaviour (auto or manual)."
 Say "  6. Choose gameplay options (dynamic wet grip)."
+Say "  7. Choose the time-of-day cycle (full day, or night only)."
 Say ""
 Say "Nothing on disk is changed until you confirm the location on the next screen." White
 Say ""
@@ -423,6 +442,20 @@ try {
     Set-ConfigEnabled $modDst 'WetGrip' $grip
     $gripState = if($grip){ 'enabled' } else { 'disabled' }
     Ok "Dynamic wet grip $gripState."
+
+    # 8) Time-of-day cycle (full day vs night only) ---------------------------
+    Step 'Time of day - full cycle or night only'
+    Say '    Normally time runs through the full 24 hours. Night-only mode skips the'
+    Say '    day: dusk -> night -> dawn, then straight back to dusk, on repeat.'
+    Say ''
+    Say '      1) Full day cycle   day and night both play out   [recommended]' Green
+    Say '      2) Night only       dusk -> night -> dawn, repeat'
+    Say ''
+    $todPick = (Read-Host '    Choice [1-2, Enter = 1]').Trim()
+    $nightOnly = ($todPick -eq '2')
+    Set-NightOnly $modDst $nightOnly
+    $todState = if($nightOnly){ 'night only (dusk -> night -> dawn)' } else { 'full day cycle' }
+    Ok "Time of day: $todState."
 
 } finally {
     if(Test-Path $tmp){ Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
