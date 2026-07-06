@@ -328,8 +328,27 @@ try {
     }
 
     $modDst = Join-Path $modsDir $ModName
+    # Files carried across an update: persisted runtime state and collected
+    # exposure-tuning datapoints. config.lua intentionally resets (release
+    # defaults change between versions).
+    $keepFiles = @('last_state.txt','headlight_state.txt','Logs\tuning_feedback.log')
+    $keepDir = $null
     if(Test-Path $modDst){
-        if(AskYesNo 'Mod already installed. Overwrite (update) it?'){ Remove-Item $modDst -Recurse -Force }
+        if(AskYesNo 'Mod already installed. Overwrite (update) it?'){
+            foreach($rel in $keepFiles){
+                $src = Join-Path $modDst $rel
+                if(Test-Path $src){
+                    if(-not $keepDir){
+                        $keepDir = Join-Path $tmp 'keep'
+                        New-Item -ItemType Directory -Force -Path $keepDir | Out-Null
+                    }
+                    $dst = Join-Path $keepDir $rel
+                    New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+                    Copy-Item $src $dst -Force
+                }
+            }
+            Remove-Item $modDst -Recurse -Force
+        }
         else { Warn 'Keeping existing mod files.' }
     }
     if(-not (Test-Path $modDst)){
@@ -337,6 +356,17 @@ try {
         & robocopy @rc | Out-Null
         if($LASTEXITCODE -ge 8){ throw "robocopy failed copying the mod (code $LASTEXITCODE)" }
         Ok "Installed mod to $modDst"
+        if($keepDir){
+            foreach($rel in $keepFiles){
+                $src = Join-Path $keepDir $rel
+                if(Test-Path $src){
+                    $dst = Join-Path $modDst $rel
+                    New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+                    Copy-Item $src $dst -Force
+                }
+            }
+            Ok 'Restored saved state (time of day / headlights) and tuning_feedback.log from the previous install.'
+        }
     }
 
     # mods.txt (merge: keep existing entries, add ours if missing)
