@@ -64,7 +64,7 @@ base.
 | `Alt+Q` | Headlights on/off (manual). In the garage, toggles the displayed car (pop-ups animate). Auto mode is config-only and ignores this. |
 | `Alt+B` / `Alt+Shift+B` | Headlight brightness up / down (0.5x / 1x / 2x / 3x / 5x) |
 | `Alt+L` / `Alt+Shift+L` | Re-apply shadow distance |
-| `Alt+D` / `Alt+Shift+D` | Exposure feedback: flag the picture as too dark / too bright (logs time + weather + applied exposure under tag `ExposureTune` for tuning) |
+| `Alt+D` / `Alt+Shift+D` | Exposure feedback: flag the picture as too dark / too bright (logs time + weather + applied exposure under tag `ExposureTune`, and appends the datapoint to `Logs/tuning_feedback.log` for easy sharing) |
 | `Alt+Z` / `Alt+Shift+Z` | Skylight tuning: raise / lower the skylight leak albedo |
 | `Alt+X` / `Alt+Shift+X` | Skylight tuning: raise / lower the skylight leak roughness |
 | `Alt+C` / `Alt+Shift+C` | Skylight tuning: raise / lower the skylight intensity |
@@ -176,7 +176,9 @@ place). General highlights:
   tick/setup never runs). Core modules (Actors/Presets/Keybinds) are not toggleable.
 - `Config.Exposure.Slots` - the 144-row day/night exposure curve. `sky` is the brightness lever;
   `lens` tracks with it (both higher = brighter). Use the `Alt+D` / `Alt+Shift+D` feedback keys, then
-  grep the log for `ExposureTune` to see which slot to nudge.
+  grep the log for `ExposureTune` to see which slot to nudge. Every feedback keypress is also
+  appended to `Logs/tuning_feedback.log` - a small, session-marked file that is perfect to attach
+  when reporting exposure that looks wrong (no need to send full session logs).
 - `Config.Headlights.Mode` - `"auto"` (exposure-driven, untouchable at runtime), `"force_on"`, or
   `"force_off"` (manual; `Alt+Q` toggles). Manual on/off + brightness persist across restarts.
 

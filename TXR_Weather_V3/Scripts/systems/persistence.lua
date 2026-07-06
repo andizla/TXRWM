@@ -173,7 +173,20 @@ function Persistence.Restore()
             restored = true
             
             if data.speed then
-                TimeOfDay.SetSpeed(data.speed)
+                -- Only restore a speed that matches a CURRENT config mode.
+                -- The file can hold a stale value (an older config's FastSpeed,
+                -- or a dusk slow-window capture) which would silently run the
+                -- clock at the wrong rate every session until resaved.
+                local speed = data.speed
+                local def = Config.TimeOfDay.DefaultSpeed
+                local fast = Config.TimeOfDay.FastSpeed
+                if math.abs(speed - def) >= 1
+                   and not (fast and math.abs(speed - fast) < 1) then
+                    Log.Info(MODULE, "Persisted speed stale - using default",
+                        {saved = speed, default = def})
+                    speed = def
+                end
+                TimeOfDay.SetSpeed(speed)
             end
             if data.paused == 1 and TimeOfDay.Pause then
                 TimeOfDay.Pause()

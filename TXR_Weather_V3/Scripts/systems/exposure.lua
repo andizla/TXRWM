@@ -141,16 +141,43 @@ end
 --- the game thread races the render thread and crashes (access violation) during
 --- course load, so we marshal onto the game thread (as the standalone VEAO did).
 --- The Engine/Kismet refs are resolved ONCE per batch (cached), not per command.
---- @param cmds string[]
---- @return boolean scheduled
+---
+--- EXECUTION IS VERIFIED, not assumed: "Applied exposure (scheduled=true)" only
+--- means the game-thread job was queued. If Engine/KSL resolution fails at run
+--- time the whole batch is dropped - that used to happen SILENTLY, which would
+--- make the slot table look "applied" in the log while the screen never changes.
+--- Now: one INFO line on the first executed batch per session, a WARN when a
+--- batch is dropped or a command errors (throttled), and counters in GetStatus.
+local execBatches = 0     -- batches actually executed on the game thread
+local dropBatches = 0     -- batches dropped (Engine/KSL unavailable at run time)
+local execLoggedOnce = false
+local cmdErrWarned = false
 local function scheduleExec(cmds)
     if not cmds or #cmds == 0 then return false end
     local run = function()
         local ksl = getKslRef()
         local eng = getEngineRef()
-        if not ksl or not eng then return end
+        if not ksl or not eng then
+            dropBatches = dropBatches + 1
+            if dropBatches == 1 or dropBatches % 50 == 0 then
+                Log.Warn(MODULE, "Cvar batch DROPPED - Engine/KSL unavailable at run time",
+                    {drops = dropBatches, ksl = ksl ~= nil, eng = eng ~= nil})
+            end
+            return
+        end
+        local allOk = true
         for _, cmd in ipairs(cmds) do
-            pcall(function() ksl:ExecuteConsoleCommand(eng, cmd, nil) end)
+            local ok = pcall(function() ksl:ExecuteConsoleCommand(eng, cmd, nil) end)
+            if not ok then allOk = false end
+        end
+        execBatches = execBatches + 1
+        if not execLoggedOnce then
+            execLoggedOnce = true
+            Log.Info(MODULE, "First cvar batch EXECUTED on game thread", {cmds = #cmds})
+        end
+        if not allOk and not cmdErrWarned then
+            cmdErrWarned = true
+            Log.Warn(MODULE, "ExecuteConsoleCommand errored for at least one cvar push")
         end
     end
     if ExecuteInGameThread then
@@ -162,6 +189,25 @@ local function scheduleExec(cmds)
 end
 
 local function lerp(a, b, t) return a + (b - a) * t end
+
+-- Drive-state transition log (cutscene diagnosis). Exposure only pushes cvars
+-- from two branches - garage and armed-course; any other world state leaves the
+-- engine.ini boot values on screen. Logging each branch CHANGE (throttled by the
+-- Update interval, so cheap) shows exactly which state a cutscene lands in:
+-- "idle" during a cutscene = the world simply isn't driven (fixable by covering
+-- that state); "course" while the picture still looks wrong = a per-camera
+-- post-process override (a different fight). Grep: "Drive state".
+local lastDriveState = nil
+local function noteDriveState(state)
+    if state == lastDriveState then return end
+    lastDriveState = state
+    local tag = "?"
+    local actors = getActors()
+    if actors and actors.GetWorldTag then
+        pcall(function() tag = actors.GetWorldTag() or "?" end)
+    end
+    Log.Info(MODULE, "Drive state: " .. state, {world = tag})
+end
 
 --- Push exposure cvars for explicit sky/leak/lens values. Skips the push when the
 --- values are unchanged from the last one (the day/night cores are flat for hours),
@@ -290,6 +336,7 @@ function Exposure.Update()
     if actors.IsInGarage and actors.IsInGarage() then
         local cfg = slots[1]
         if cfg then
+            noteDriveState("garage")
             currentSlot = 0
             lastInterpLens = cfg.lens
             applyValues(cfg.sky, cfg.leak, cfg.lens, 0.0, "garage")
@@ -301,7 +348,10 @@ function Exposure.Update()
     -- reads Time Of Day = 0 before restore; applying that would flash the midnight
     -- slot (full-night sky/lens) over a daytime scene for one tick on every PA/course
     -- entry. Armed in OnCourseLoad (post-restore), disarmed in OnCourseUnload.
-    if not armed then return true end
+    if not armed then
+        noteDriveState("idle (not garage, course not armed)")
+        return true
+    end
 
     -- Course: interpolate between the current slot and the next so the exposure
     -- ramps continuously instead of snapping at 30-min boundaries (kills the
@@ -310,7 +360,10 @@ function Exposure.Update()
     local tod = getTimeOfDay()
     if not tod then return true end
     local currentTOD = tod.GetCurrentTOD()
-    if not currentTOD then return true end   -- no valid UDS read this cycle
+    if not currentTOD then
+        noteDriveState("armed, no TOD read")
+        return true
+    end
 
     currentTOD = clamp(currentTOD, 0.0, 2400.0)
     local f = currentTOD / SLOT_SIZE_TOD
@@ -351,6 +404,7 @@ function Exposure.Update()
     lens = lens * weatherMult
     sky = sky * weatherSkyMult
 
+    noteDriveState("course")
     currentSlot = slot
     lastInterpLens = lens
     applyValues(sky, leak, lens, currentTOD, "slot " .. slot)
@@ -509,6 +563,8 @@ function Exposure.GetStatus()
         currentSlot = currentSlot,
         slotCount = SLOT_COUNT,
         haveTable = (next(slots) ~= nil),
+        execBatches = execBatches,
+        dropBatches = dropBatches,
     }
 end
 

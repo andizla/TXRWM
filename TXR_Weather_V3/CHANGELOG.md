@@ -3,6 +3,48 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.3.1] - 2026-07-06
+
+### Fixed
+- **Transition crash hardening.** The weather-audio, photo-mode and HUD-vignette systems
+  no longer touch game objects while a world is being torn down - the cause of rare hard
+  crashes during garage/course transitions reported on some installs. If a sound asset
+  never becomes playable (older game versions are missing some), the mod now gives up
+  after ~30 seconds instead of retrying forever.
+- **Course loads settle in seconds.** New-world detection was broken, so every course
+  load waited out a 15-second failsafe before time-of-day, weather and exposure snapped
+  in. Loads now settle in about 2 seconds - this also covers the pre-race camera
+  sweeps, which used to play with unmanaged exposure ("auto exposure off in cutscenes").
+- **Garage brightness applies immediately** after leaving a course (was up to 15 seconds
+  of leftover on-course exposure - very dark after a dusk drive).
+- **Headlight brightness survives hi-beam flashes.** The chosen brightness level is now
+  baked into the lamp source values and re-asserted after a flash instead of snapping
+  back to stock. Deferred brightness application also now works in the manual force
+  modes, and applies without delay in auto.
+- **Auto headlights respect the game's own call at course entry.** Spawning at dusk no
+  longer forces lamps off that the game had just turned on; the auto ON threshold was
+  retuned to match the game's native timing.
+- **Stale saved time speed.** A fast-forward speed saved by an older version can no
+  longer make the clock silently run fast every session; unknown saved speeds now reset
+  to normal.
+- **Parking-area state freeze** works again (its world detection had been silently
+  broken in 3.3.0).
+
+### Changed
+- **Dawn and dusk exposure fully retuned** from in-car feedback datapoints. Dusk now
+  holds daylight until ~19:00, collapses with the sun through ~20:00, and reaches the
+  night look by ~20:10 (was ramping from late afternoon and not settling until ~21:30).
+  Dawn brightens more decisively before sunrise and lands on the day look by ~07:15.
+  Partly Cloudy compensation trimmed to match.
+- **Brighter night sky.** Night-sky city glow raised and the real-star layer roughly
+  doubled in intensity.
+
+### Added
+- **Tuning feedback file.** Every exposure/skylight feedback keypress (`Alt+D`,
+  `Alt+Shift+D`, `Alt+V`, and the skylight nudge keys) is now also appended to
+  `Logs/tuning_feedback.log` - one small, session-marked file you can attach to a
+  feedback report instead of digging through full session logs.
+
 ## [3.3.0] - 2026-07-04
 
 ### Added

@@ -34,6 +34,19 @@ local MOD_VERSION = "3.0.0"  -- overwritten from config.version in Init (Config.
 local FLUSH_INTERVAL = 0.5  -- seconds
 local lastFlush = 0
 
+-- Tuning-feedback side channel: lines with these module tags (the Alt+D /
+-- Alt+Shift+D exposure feedback and the Alt+Z/X/C/V skylight nudges) are ALSO
+-- appended to one persistent Logs/tuning_feedback.log, so users can send just
+-- the relevant datapoints instead of digging through full session logs. The
+-- file accumulates across sessions with a session marker, is only created on
+-- the first feedback press, and every line is flushed (presses are rare and
+-- must survive a crash).
+local FEEDBACK_TAGS = { ExposureTune = true, SkylightTune = true }
+local FEEDBACK_FILENAME = "tuning_feedback.log"
+local feedbackFile = nil
+local feedbackPath = nil
+local feedbackSessionMarked = false
+
 -- ============== INTERNAL HELPERS ==============
 
 local function getTimestamp()
@@ -89,6 +102,28 @@ local function writeToConsole(message)
     if logToConsole then
         print(message)
     end
+end
+
+--- Append one line to the persistent tuning-feedback file (lazy-opened; a
+--- session marker precedes the first line of each session)
+local function writeFeedback(line)
+    if not feedbackFile then
+        local ok = pcall(function()
+            local logsDir = ensureLogDirectory()
+            feedbackPath = logsDir .. FEEDBACK_FILENAME
+            feedbackFile = io.open(feedbackPath, "a")
+        end)
+        if not ok or not feedbackFile then return end
+    end
+    pcall(function()
+        if not feedbackSessionMarked then
+            feedbackSessionMarked = true
+            feedbackFile:write(string.format(
+                "---- Session %s (mod v%s) ----\n", getDateTimeString(), MOD_VERSION))
+        end
+        feedbackFile:write(line, "\n")
+        feedbackFile:flush()
+    end)
 end
 
 -- ============== PUBLIC API ==============
@@ -175,8 +210,12 @@ function Logging.Shutdown()
         logFile:close()
         logFile = nil
     end
+    if feedbackFile then
+        pcall(function() feedbackFile:close() end)
+        feedbackFile = nil
+    end
     writeToConsole(footer)
-    
+
     isInitialized = false
 end
 
@@ -223,6 +262,11 @@ function Logging.Log(level, module, message, data)
         writeToFile(line, level >= LOG_LEVELS.WARN)
     end
     writeToConsole(line)
+
+    -- Tuning-feedback side channel (see FEEDBACK_TAGS)
+    if module and FEEDBACK_TAGS[module] then
+        writeFeedback(line)
+    end
 end
 
 --- Convenience functions for each log level

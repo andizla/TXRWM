@@ -159,7 +159,7 @@ Config.Stars = {
     -- real-star map; we no longer swap the texture ourselves (that off-thread
     -- object write was the old course-load crash). Apply is deferred past BeginPlay.
     Tiling = nil,    -- nil = keep UDS default
-    Intensity = 1.5, -- nil = keep UDS default
+    Intensity = 3.0, -- nil = keep UDS default (1.5 -> 3.0 2026-07-06: "stars quite dim")
 }
 
 -- ============== WIND DEBRIS ==============
@@ -322,7 +322,7 @@ Config.Atmosphere = {
     -- amber by default); night sky glow keeps the night sky from going pitch black.
     EnableCityGlow = true,
     LightPollutionMax = 1.0,   -- peak light-pollution intensity at deep night (tune to taste)
-    NightSkyGlowMax = 0.5,     -- peak ambient night-sky glow
+    NightSkyGlowMax = 1.5,     -- peak ambient night-sky glow (0.5 -> 1.5 2026-07-06, night-feel test)
     -- Colors are LinearColor {R,G,B,A}; defaults live in atmosphere.lua. Uncomment to override:
     -- LightPollutionColor = {R = 1.00, G = 0.55, B = 0.25, A = 1.0},
     -- NightSkyGlowColor   = {R = 0.45, G = 0.50, B = 0.65, A = 1.0},
@@ -515,7 +515,9 @@ Config.Headlights = {
     -- ~0.78 bright day .. ~30 deep night) instead of a fixed clock, so the lamps
     -- follow available light and stay in sync if you retune exposure. The On/Off
     -- pair is a hysteresis band (On > Off) to stop flicker around the threshold.
-    OnLens  = 6.0,   -- turn ON once brightness-lens rises above this (getting dark)
+    OnLens  = 4.5,   -- turn ON once brightness-lens rises above this (getting dark)
+                     -- (4.5 ~ the dusk point where TXR's own auto lights up;
+                     -- the old 6.0 lagged native by ~half the dusk window)
     OffLens = 3.5,   -- turn OFF once it falls below this (getting light)
 
     DefaultBrightnessLevel = 3,  -- 1=0.5x 2=1.0x 3=2.0x 4=3.0x 5=5.0x
@@ -594,7 +596,9 @@ Config.Exposure = {
     -- the real per-weather brightening is WeatherSkyMult below.
     WeatherLensMult = {
         Clear_Skies       = 1.00,
-        Partly_Cloudy     = 1.15,
+        Partly_Cloudy     = 1.05,  -- 1.15 -> 1.05 2026-07-06: every press that
+                                   -- session (day tail, dusk knee, night cap)
+                                   -- read uniformly ~slightly bright under PC
         Cloudy            = 1.45,
         Overcast          = 2.00,
         Foggy             = 1.60,
@@ -617,7 +621,7 @@ Config.Exposure = {
     -- read weather_sky_mult in the ExposureTune log lines.
     WeatherSkyMult = {
         Clear_Skies       = 1.00,
-        Partly_Cloudy     = 1.10,
+        Partly_Cloudy     = 1.05,  -- 1.10 -> 1.05 2026-07-06 (see lens mult note)
         Cloudy            = 1.25,
         Overcast          = 1.50,
         Foggy             = 1.40,
@@ -671,16 +675,23 @@ Config.Exposure = {
         [ 33] = { sky = 0.7000, leak = 0.070, lens = 17.33 }, -- 05:20-05:30
         [ 34] = { sky = 0.6000, leak = 0.070, lens = 14.00 }, -- 05:30-05:40
         [ 35] = { sky = 0.4833, leak = 0.070, lens = 11.00 }, -- 05:40-05:50
-        [ 36] = { sky = 0.3667, leak = 0.070, lens =  8.00 }, -- 05:50-06:00
-        [ 37] = { sky = 0.2500, leak = 0.070, lens =  6.40 }, -- 06:00-06:10
-        [ 38] = { sky = 0.2067, leak = 0.070, lens =  5.40 }, -- 06:10-06:20
-        [ 39] = { sky = 0.1633, leak = 0.070, lens =  4.60 }, -- 06:20-06:30
-        [ 40] = { sky = 0.1200, leak = 0.070, lens =  3.60 }, -- 06:30-06:40
-        [ 41] = { sky = 0.1067, leak = 0.070, lens =  3.10 }, -- 06:40-06:50
-        [ 42] = { sky = 0.1000, leak = 0.070, lens =  2.60 }, -- 06:50-07:00
-        [ 43] = { sky = 0.1000, leak = 0.070, lens =  2.20 }, -- 07:00-07:10
-        [ 44] = { sky = 0.1000, leak = 0.070, lens =  1.80 }, -- 07:10-07:20
-        [ 45] = { sky = 0.1000, leak = 0.070, lens =  1.40 }, -- 07:20-07:30
+        -- 2026-07-06: dawn descent raised for 4x too-dark (under Rain_Light),
+        -- then walked back HALFWAY after 6x too-bright under Partly_Cloudy -
+        -- the rain case is now carried by the Rain lens mults, not the curve.
+        -- Sky bump kept (feeds reflections; inert without a light source).
+        [ 36] = { sky = 0.4000, leak = 0.070, lens =  9.50 }, -- 05:50-06:00
+        [ 37] = { sky = 0.3000, leak = 0.070, lens =  7.50 }, -- 06:00-06:10
+        -- post-sunup rampdown ACCELERATED 2026-07-06 ("slightly too bright
+        -- after sun up, rampdown too slow, midday fine") - day floor now
+        -- effectively reached ~07:15 instead of ~07:40
+        [ 38] = { sky = 0.2600, leak = 0.070, lens =  5.80 }, -- 06:10-06:20
+        [ 39] = { sky = 0.2100, leak = 0.070, lens =  4.60 }, -- 06:20-06:30
+        [ 40] = { sky = 0.1700, leak = 0.070, lens =  3.40 }, -- 06:30-06:40
+        [ 41] = { sky = 0.1500, leak = 0.070, lens =  2.60 }, -- 06:40-06:50
+        [ 42] = { sky = 0.1300, leak = 0.070, lens =  2.00 }, -- 06:50-07:00
+        [ 43] = { sky = 0.1100, leak = 0.070, lens =  1.55 }, -- 07:00-07:10
+        [ 44] = { sky = 0.1000, leak = 0.070, lens =  1.25 }, -- 07:10-07:20
+        [ 45] = { sky = 0.1000, leak = 0.070, lens =  1.10 }, -- 07:20-07:30
         [ 46] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 07:30-07:40
         [ 47] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 07:40-07:50
         [ 48] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 07:50-08:00
@@ -738,36 +749,41 @@ Config.Exposure = {
         [ 99] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:20-16:30
         [100] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:30-16:40
         [101] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:40-16:50
-        [102] = { sky = 0.1000, leak = 0.070, lens =  1.15 }, -- 16:50-17:00
-        [103] = { sky = 0.1000, leak = 0.070, lens =  1.40 }, -- 17:00-17:10
-        [104] = { sky = 0.1000, leak = 0.070, lens =  1.80 }, -- 17:10-17:20
-        [105] = { sky = 0.1000, leak = 0.070, lens =  2.40 }, -- 17:20-17:30
+        -- 2026-07-06 dusk lens rebuild, pass 2 (dawn = the confirmed-good
+        -- reference shape). Pass-1 presses: still too BRIGHT 18:20-19:43 at
+        -- applied 3.6-28.6, while 20:05 at 29 was too DARK the run before -
+        -- the light collapses between ~19:40 and ~20:05. So: hold ~day level
+        -- to 18:00, creep to ~19:00, climb 19:00-19:50, cap 30 by ~20:05.
+        [102] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:50-17:00
+        [103] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:00-17:10
+        [104] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:10-17:20
+        [105] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:20-17:30
         -- DUSK -> EVENING (brightened 2026-07-03 from Alt+D nudges: ramp now
         -- starts 16:50 and runs ~2x through 19:10; was flat 1.00 until 17:40)
-        [106] = { sky = 0.1000, leak = 0.070, lens =  3.20 }, -- 17:30-17:40
-        [107] = { sky = 0.1000, leak = 0.070, lens =  4.20 }, -- 17:40-17:50
-        [108] = { sky = 0.1000, leak = 0.070, lens =  5.20 }, -- 17:50-18:00
-        [109] = { sky = 0.1000, leak = 0.070, lens =  6.20 }, -- 18:00-18:10
-        [110] = { sky = 0.1333, leak = 0.070, lens =  7.50 }, -- 18:10-18:20
-        [111] = { sky = 0.1767, leak = 0.070, lens =  9.00 }, -- 18:20-18:30
-        [112] = { sky = 0.2200, leak = 0.070, lens = 10.80 }, -- 18:30-18:40
-        [113] = { sky = 0.2967, leak = 0.070, lens = 13.00 }, -- 18:40-18:50
-        [114] = { sky = 0.3733, leak = 0.070, lens = 15.50 }, -- 18:50-19:00
-        [115] = { sky = 0.4500, leak = 0.070, lens = 18.00 }, -- 19:00-19:10
-        [116] = { sky = 0.5267, leak = 0.070, lens = 20.00 }, -- 19:10-19:20
-        [117] = { sky = 0.6033, leak = 0.070, lens = 20.50 }, -- 19:20-19:30
-        [118] = { sky = 0.6800, leak = 0.070, lens = 21.00 }, -- 19:30-19:40
-        [119] = { sky = 0.7433, leak = 0.070, lens = 21.67 }, -- 19:40-19:50
-        [120] = { sky = 0.8067, leak = 0.070, lens = 23.33 }, -- 19:50-20:00
-        [121] = { sky = 0.8700, leak = 0.070, lens = 25.00 }, -- 20:00-20:10
-        [122] = { sky = 0.9033, leak = 0.070, lens = 26.00 }, -- 20:10-20:20
-        [123] = { sky = 0.9367, leak = 0.070, lens = 27.00 }, -- 20:20-20:30
-        [124] = { sky = 0.9700, leak = 0.070, lens = 28.00 }, -- 20:30-20:40
-        [125] = { sky = 0.9807, leak = 0.070, lens = 28.50 }, -- 20:40-20:50
-        [126] = { sky = 0.9913, leak = 0.070, lens = 29.00 }, -- 20:50-21:00
-        [127] = { sky = 1.0020, leak = 0.070, lens = 29.50 }, -- 21:00-21:10
-        [128] = { sky = 1.0030, leak = 0.070, lens = 29.67 }, -- 21:10-21:20
-        [129] = { sky = 1.0040, leak = 0.070, lens = 29.83 }, -- 21:20-21:30
+        [106] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:30-17:40
+        [107] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:40-17:50
+        [108] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:50-18:00
+        [109] = { sky = 0.1000, leak = 0.070, lens =  1.10 }, -- 18:00-18:10
+        [110] = { sky = 0.1333, leak = 0.070, lens =  1.20 }, -- 18:10-18:20
+        [111] = { sky = 0.1767, leak = 0.070, lens =  1.35 }, -- 18:20-18:30
+        [112] = { sky = 0.2200, leak = 0.070, lens =  1.55 }, -- 18:30-18:40
+        [113] = { sky = 0.2967, leak = 0.070, lens =  1.85 }, -- 18:40-18:50
+        [114] = { sky = 0.3733, leak = 0.070, lens =  2.10 }, -- 18:50-19:00
+        [115] = { sky = 0.4500, leak = 0.070, lens =  2.20 }, -- 19:00-19:10
+        [116] = { sky = 0.5267, leak = 0.070, lens =  2.60 }, -- 19:10-19:20
+        [117] = { sky = 0.6033, leak = 0.070, lens =  3.20 }, -- 19:20-19:30
+        [118] = { sky = 0.6800, leak = 0.070, lens =  5.00 }, -- 19:30-19:40
+        [119] = { sky = 0.7433, leak = 0.070, lens = 10.00 }, -- 19:40-19:50
+        [120] = { sky = 0.8067, leak = 0.070, lens = 17.50 }, -- 19:50-20:00
+        [121] = { sky = 0.8700, leak = 0.070, lens = 24.00 }, -- 20:00-20:10
+        [122] = { sky = 0.9033, leak = 0.070, lens = 30.00 }, -- 20:10-20:20
+        [123] = { sky = 0.9367, leak = 0.070, lens = 30.00 }, -- 20:20-20:30
+        [124] = { sky = 0.9700, leak = 0.070, lens = 30.00 }, -- 20:30-20:40
+        [125] = { sky = 0.9807, leak = 0.070, lens = 30.00 }, -- 20:40-20:50
+        [126] = { sky = 0.9913, leak = 0.070, lens = 30.00 }, -- 20:50-21:00
+        [127] = { sky = 1.0020, leak = 0.070, lens = 30.00 }, -- 21:00-21:10
+        [128] = { sky = 1.0030, leak = 0.070, lens = 30.00 }, -- 21:10-21:20
+        [129] = { sky = 1.0040, leak = 0.070, lens = 30.00 }, -- 21:20-21:30
         -- NIGHT CORE
         [130] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 21:30-21:40
         [131] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 21:40-21:50
@@ -816,10 +832,10 @@ Config.ModuleToggles = {
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 3, Patch = 0,
-    String = "3.3.0",
+    Major = 3, Minor = 3, Patch = 1,
+    String = "3.3.1",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.3.0",
+    FullName = "TXR Weather Mod v3.3.1",
 }
 
 return Config

@@ -970,16 +970,24 @@ if RegisterBeginPlayPreHook then
         pcall(function() isValid = Actor.IsValid and Actor:IsValid() end)
         if not isValid then return end
         
-        -- Cheap NAME check first - one tostring per actor. The old order ran
+        -- Cheap NAME check first - one GetFullName per actor. The old order ran
         -- TryGetSkyClass() for EVERY actor beginning play, which revalidates a
         -- CACHED CLASS OBJECT with IsValid(); during a world swap the previous
         -- world's GC can have freed that class, making the revalidation a
         -- freed-memory read - matching the intermittent transition-crash
         -- signature (read AV in a game-thread hook, transitions only). The
-        -- class-cache route now runs only as a fallback when tostring gives
+        -- class-cache route now runs only as a fallback when the name read gives
         -- nothing usable, instead of hundreds of times per map load.
+        -- NOT tostring(Actor): UE4SS's __tostring returns the userdata address
+        -- ("...Userdata: 0x..."), never the object name - the 3.3.0 tostring
+        -- version made isSky never match, so discovery only ever resumed via
+        -- the 15s failsafe (the "TOD takes ~15s to snap in after a load"
+        -- symptom). GetFullName on the live hook param is safe: this actor is
+        -- spawning in the NEW world, not a cached cross-world reference.
         local actorName = nil
-        pcall(function() actorName = tostring(Actor) end)
+        pcall(function()
+            if Actor.GetFullName then actorName = Actor:GetFullName() end
+        end)
 
         local isSky = false
         if type(actorName) == "string" and #actorName > 0 then
@@ -998,7 +1006,23 @@ if RegisterBeginPlayPreHook then
             end
         end
 
-        if not isSky then return end
+        if not isSky then
+            -- Garage/menu worlds have NO sky actor, so the sky-based resume
+            -- below never fires there and the teardown suspension always sat
+            -- out the full 15s failsafe. While suspended the garage probe is
+            -- cache-only, so the exposure garage branch could not fire either:
+            -- the garage ran ~15s on the previous course's cvars (after a dusk
+            -- course that is sky=0.1 = a very dark garage). The outgame
+            -- managers begin play early in those worlds - use them as the
+            -- resume signal.
+            if type(actorName) == "string"
+               and (actorName:find("OutGameGarageManager") or actorName:find("OutGameMode"))
+               and Actors and Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended()
+               and Actors.ResumeDiscovery then
+                Actors.ResumeDiscovery()
+            end
+            return
+        end
 
         -- A sky actor is beginning play: the new world is constructing, so the
         -- teardown window is over - let the actor search run again
@@ -1006,13 +1030,16 @@ if RegisterBeginPlayPreHook then
             Actors.ResumeDiscovery()
         end
 
-        -- Get world tag from actor
+        -- Get world tag from actor. GetFullName, NOT tostring: tostring(world)
+        -- is just "UWorld: 0x..." (the address, no map path), which made every
+        -- world tag as the "course" default - the PA branch below never fired.
         local tag = "course"
         local worldString = "unknown"
         pcall(function()
             local worldObj = Actor:GetWorld()
             if worldObj and worldObj.IsValid and worldObj:IsValid() then
-                local ws = tostring(worldObj)
+                local ws = worldObj:GetFullName()
+                if type(ws) ~= "string" or #ws == 0 then return end
                 worldString = ws  -- Capture for logging
                 local lw = ws:lower()
                 if lw:find("garage") or lw:find("outgame") or lw:find("ls_") then

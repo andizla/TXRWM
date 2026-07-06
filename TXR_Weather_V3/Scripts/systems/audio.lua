@@ -63,6 +63,12 @@ local SETTLE_TICKS = 32          -- ~4s at 8 Hz past BeginPlay before applying
 local UPDATE_INTERVAL_TICKS = 8  -- ~1s between direct-spawn volume updates
 local THUNDER_GAP_MIN = 7.0      -- seconds between thunder one-shots
 local THUNDER_GAP_MAX = 20.0
+local MAX_SPAWN_FAILS = 30       -- failed spawn attempts per asset per course
+                                 -- before giving up (~30s of 1s retries; on
+                                 -- installs where the asset isn't cooked the
+                                 -- load NEVER succeeds and retrying forever
+                                 -- means a failed StaticLoadObject on the game
+                                 -- thread every second for the whole session)
 
 -- ============== STATE ==============
 local isInitialized = false
@@ -78,6 +84,8 @@ local rainAC = nil
 local windAC = nil
 local nextThunderAt = 0
 local warnedOnce = {}  -- one-time warnings per asset/subsystem
+local spawnFails = {}  -- per-asset failed spawn attempts this course
+local deadAssets = {}  -- assets given up on this course (see MAX_SPAWN_FAILS)
 
 -- ============== INTERNAL FUNCTIONS ==============
 
@@ -96,6 +104,18 @@ local function warnOnce(key, msg, ctx)
 end
 
 -- ---------- game-thread-only helpers (call only from ExecuteInGameThread) ----------
+
+--- True while a map teardown is in progress. Game-thread jobs are scheduled
+--- from the async tick, so the world can start dying between schedule time and
+--- run time - every GT entry point must re-check this at RUN time (a spawn or
+--- native call against a dying world is an uncatchable access violation).
+local function teardownActiveGT()
+    local actors = getActors()
+    if actors and actors.IsDiscoverySuspended then
+        return actors.IsDiscoverySuspended()
+    end
+    return false
+end
 
 local function loadSoundGT(path)
     local obj = nil
@@ -130,8 +150,20 @@ local function getGameplayStaticsGT()
     return nil
 end
 
+--- Count a failed spawn attempt; after MAX_SPAWN_FAILS the asset is dead for
+--- the rest of the course and no further load/spawn is attempted
+local function countSpawnFail(path)
+    spawnFails[path] = (spawnFails[path] or 0) + 1
+    if spawnFails[path] >= MAX_SPAWN_FAILS then
+        deadAssets[path] = true
+        warnOnce("dead_" .. path, "Sound never became playable - giving up for this course",
+            {asset = path, attempts = spawnFails[path]})
+    end
+end
+
 --- Spawn a 2D sound. Returns the audio component or nil (each failure logged).
 local function spawn2DGT(path, vol, label)
+    if deadAssets[path] then return nil end
     local gs = getGameplayStaticsGT()
     if not gs then return nil end
     local w = getWorldGT()
@@ -139,8 +171,10 @@ local function spawn2DGT(path, vol, label)
     local snd = loadSoundGT(path)
     if not snd then
         warnOnce(path, "Sound asset not found (not cooked into TXR?)", {asset = path})
+        countSpawnFail(path)
         return nil
     end
+    spawnFails[path] = nil
     local ac = nil
     -- (WorldContext, Sound, Volume, Pitch, StartTime, Concurrency, bPersistAcrossLevelTransition, bAutoDestroy)
     pcall(function() ac = gs:SpawnSound2D(w, snd, vol, 1.0, 0.0, nil, false, true) end)
@@ -179,6 +213,7 @@ end
 
 --- Full direct-spawn update for one snapshot of the weather state (game thread)
 local function updateSoundsGT(rainVol, windVol, thunderOn)
+    if teardownActiveGT() then return end
     rainAC = updateLoopGT(rainAC, ASSET_RAIN_LOOP, rainVol, "rain_loop")
     windAC = updateLoopGT(windAC, ASSET_WIND_FALLBACK, windVol, "wind_loop")
 
@@ -205,8 +240,14 @@ local function updateSoundsGT(rainVol, windVol, thunderOn)
 end
 
 local function killAllSoundsGT()
-    fadeKillGT(rainAC); rainAC = nil
-    fadeKillGT(windAC); windAC = nil
+    -- During a teardown the components die with the world; just drop the
+    -- references without touching them
+    if not teardownActiveGT() then
+        fadeKillGT(rainAC)
+        fadeKillGT(windAC)
+    end
+    rainAC = nil
+    windAC = nil
     nextThunderAt = 0
 end
 
@@ -214,6 +255,7 @@ end
 --- apply functions. Produces no audio itself, but causes UDW to async-load the
 --- soft-referenced sound assets our spawns need. Game thread only.
 local function nativeLoadKickGT()
+    if teardownActiveGT() then return end
     local actors = getActors()
     if not actors then return end
     local udw = actors.GetUDW()
@@ -309,6 +351,8 @@ end
 function Audio.Setup()
     settleTicks = 0
     appliedThisCourse = false
+    spawnFails = {}
+    deadAssets = {}
 end
 
 --- Per-tick: after the settle gate, run the direct-spawn volume update every ~1s

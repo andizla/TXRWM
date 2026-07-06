@@ -74,6 +74,18 @@ local pendingBrightnessApply = false
 local brightnessRetryCount = 0
 local MAX_BRIGHTNESS_RETRIES = 50  -- ~6 seconds at 125ms tick
 
+-- Original SOURCE intensities per light component (GetFullName -> {normal, hibeam}).
+-- The game recomputes a lamp's live .Intensity from its source props
+-- (Normal_intensity / hibeam_intensity) on every hi-beam or setup event, so a
+-- brightness multiplier written only to .Intensity is wiped by the next flash.
+-- The multiplier is baked into the source props instead, always scaled from the
+-- cached ORIGINAL so re-applies never compound. Cleared per course (fresh comps).
+local srcOrig = {}
+
+-- Debounced brightness re-assert after a hi-beam flash: the OffHiBeam recompute
+-- runs as the flash ends, so re-apply shortly after release (os.clock deadline).
+local brightnessReassertAt = nil
+
 -- Forward declaration for applyBrightness (defined later)
 local applyBrightness
 
@@ -463,6 +475,8 @@ function Headlights.OnCourseLoad()
     modeChanged = true          -- re-assert force_on / force_off
     entryAssertPending = true   -- force one auto assert, ignoring the stale cache
     courseTicks = 0
+    srcOrig = {}                -- fresh world = fresh light components
+    brightnessReassertAt = nil
     Log.Info(MODULE, "Course load - will re-assert headlight state")
 end
 
@@ -498,6 +512,15 @@ local function handleLightGesture(pawn)
     if on then
         gHbRise = now                              -- button down
     else
+        -- Hi-beam released: the game's OffHiBeam recompute resets lamp intensity
+        -- as the flash ends. Re-assert IMMEDIATELY (the pending block runs right
+        -- after this handler in the same tick) and once more shortly after, in
+        -- case the game's recompute lands later than the release edge.
+        if headlightsOn then
+            pendingBrightnessApply = true
+            brightnessRetryCount = 0
+        end
+        brightnessReassertAt = now + 0.6
         local held = gHbRise and (now - gHbRise) or nil   -- button up
         gHbRise = nil
         if held then
@@ -532,6 +555,32 @@ function Headlights.Tick()
     courseTicks = courseTicks + 1
 
     handleLightGesture(pawn)  -- light-button hold gestures (headlights 3s / hi-beam latch 5s)
+
+    -- Debounced post-flash re-assert (set on the hi-beam release edge)
+    if brightnessReassertAt and os.clock() >= brightnessReassertAt then
+        brightnessReassertAt = nil
+        if headlightsOn then
+            pendingBrightnessApply = true
+            brightnessRetryCount = 0
+        end
+    end
+
+    -- Deferred brightness application. Processed HERE, before the force-mode
+    -- returns and the auto TOD-change throttle: the old placement at the end of
+    -- the auto path made it unreachable in force modes and delayed it by the
+    -- throttle window in auto.
+    if pendingBrightnessApply and headlightsOn then
+        brightnessRetryCount = brightnessRetryCount + 1
+        local multiplier = BRIGHTNESS_MULTIPLIERS[currentBrightnessLevel]
+        local count = applyBrightness(multiplier)
+        if count > 0 then
+            pendingBrightnessApply = false
+            Log.Info(MODULE, "Deferred brightness applied", {multiplier = multiplier, retries = brightnessRetryCount})
+        elseif brightnessRetryCount >= MAX_BRIGHTNESS_RETRIES then
+            pendingBrightnessApply = false
+            Log.Warn(MODULE, "Brightness apply retries exhausted")
+        end
+    end
 
     -- Force modes don't need time check
     if currentMode == "force_on" then
@@ -569,6 +618,19 @@ function Headlights.Tick()
     lastTOD = currentTOD
     modeChanged = false
 
+    -- Course-entry reconcile: seed the hysteresis with the car's ACTUAL light
+    -- state first. The game's native auto may have already made the right call
+    -- (lights ON at a dusk spawn); computing from a cold headlightsOn=false
+    -- seed inside the dead band (OffLens..OnLens) overrode that to OFF and kept
+    -- it off until the lens crossed OnLens ("lights start on, then turn off").
+    -- A real daytime cast-only desync still clears: the day lens sits below
+    -- OffLens, so an adopted ON immediately computes back to OFF.
+    if entryAssertPending and courseTicks >= ENTRY_SETTLE_TICKS then
+        local actual = nil
+        pcall(function() local v = pawn.is_light_on; if type(v) == "boolean" then actual = v end end)
+        if actual ~= nil then headlightsOn = actual end
+    end
+
     -- Driven by the exposure brightness (lens) with hysteresis; TOD is the fallback.
     local shouldBeOn = computeAutoDesired(currentTOD)
 
@@ -594,19 +656,6 @@ function Headlights.Tick()
         Log.Info(MODULE, "Auto headlights OFF", {tod = currentTOD})
     end
 
-    -- Retry pending brightness application
-    if pendingBrightnessApply and headlightsOn then
-        brightnessRetryCount = brightnessRetryCount + 1
-        local multiplier = BRIGHTNESS_MULTIPLIERS[currentBrightnessLevel]
-        local count = applyBrightness(multiplier)
-        if count > 0 then
-            pendingBrightnessApply = false
-            Log.Info(MODULE, "Deferred brightness applied", {multiplier = multiplier, retries = brightnessRetryCount})
-        elseif brightnessRetryCount >= MAX_BRIGHTNESS_RETRIES then
-            pendingBrightnessApply = false
-            Log.Warn(MODULE, "Brightness apply retries exhausted")
-        end
-    end
 end
 
 --- Cycle headlight mode: auto -> force_on -> force_off -> auto
@@ -759,6 +808,31 @@ end
 applyBrightness = function(multiplier)
     local count = 0
 
+    -- Pawn-level source templates. The flash recompute pulls intensity from
+    -- these (component-source scaling alone did not survive a hi-beam flash:
+    -- lamps dropped to stock until the delayed re-assert), so the multiplier is
+    -- baked in here too - same cached-original rule so it never compounds.
+    pcall(function()
+        local pawn = getPlayerPawn()
+        if not pawn then return end
+        local key = nil
+        pcall(function() key = "pawn:" .. pawn:GetFullName() end)
+        local orig = key and srcOrig[key] or nil
+        if not orig then
+            orig = {
+                normal = safeGet(pawn, "headlight_normal_intensity"),
+                hibeam = safeGet(pawn, "headlight_hibeam_intensity"),
+            }
+            if key then srcOrig[key] = orig end
+        end
+        if type(orig.normal) == "number" and orig.normal > 0 then
+            pcall(function() pawn.headlight_normal_intensity = orig.normal * multiplier end)
+        end
+        if type(orig.hibeam) == "number" and orig.hibeam > 0 then
+            pcall(function() pawn.headlight_hibeam_intensity = orig.hibeam * multiplier end)
+        end
+    end)
+
     -- Try BP_CarLightSpriteComponent_C first (controls visual glow/bloom)
     pcall(function()
         local sprites = FindAllOf("BP_CarLightSpriteComponent_C")
@@ -786,9 +860,33 @@ applyBrightness = function(multiplier)
             for _, light in ipairs(components) do
                 if light and light:IsValid() then
                     pcall(function()
+                        -- Cache this component's ORIGINAL source intensities once,
+                        -- before we ever scale them (first-seen value = stock).
+                        local key = nil
+                        pcall(function() key = light:GetFullName() end)
+                        local orig = key and srcOrig[key] or nil
+                        if not orig then
+                            orig = {
+                                normal = safeGet(light, "Normal_intensity"),
+                                hibeam = safeGet(light, "hibeam_intensity"),
+                            }
+                            if key then srcOrig[key] = orig end
+                        end
+
+                        -- Bake the multiplier into the SOURCE props (from the
+                        -- original base) so the game's own hi-beam/setup
+                        -- recomputes land on the scaled value instead of stock.
+                        if type(orig.normal) == "number" and orig.normal > 0 then
+                            pcall(function() light.Normal_intensity = orig.normal * multiplier end)
+                        end
+                        if type(orig.hibeam) == "number" and orig.hibeam > 0 then
+                            pcall(function() light.hibeam_intensity = orig.hibeam * multiplier end)
+                        end
+
                         -- Off cars get zero intensity; on (or unknown) cars get brightened.
                         local lit = ownerLightsOn(light)
-                        local baseNormal = light["Normal_intensity"] or 1000
+                        local baseNormal = (type(orig.normal) == "number" and orig.normal > 0)
+                            and orig.normal or 1000
                         local newIntensity = (lit == false) and 0 or (baseNormal * multiplier)
                         light.Intensity = newIntensity
                         if light.SetIntensity then

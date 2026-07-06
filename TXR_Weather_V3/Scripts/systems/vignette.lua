@@ -30,6 +30,27 @@ local REASSERT_INTERVAL = 1.5  -- seconds between periodic re-asserts
 local lastLoggedState = nil
 local hookRegistered = false
 
+-- Lazy-loaded to avoid circular requires
+local Actors = nil
+local function getActors()
+    if not Actors then
+        local ok, mod = pcall(require, "systems.actors")
+        if ok then Actors = mod end
+    end
+    return Actors
+end
+
+--- True while a map teardown is in progress: no object probes or widget calls
+--- then (an object search against a dying world can be an uncatchable access
+--- violation - same gating as audio/photomode/tuning)
+local function teardownActive()
+    local actors = getActors()
+    if actors and actors.IsDiscoverySuspended then
+        return actors.IsDiscoverySuspended()
+    end
+    return false
+end
+
 local function getHud()
     local hud = nil
     pcall(function() hud = FindFirstOf("WBP_InGame_Hud_C") end)
@@ -52,6 +73,7 @@ end
 
 --- Apply the current hide/show state to the frame widget. Returns true if applied.
 local function applyOnce()
+    if teardownActive() then return false end
     local v = getFrame()
     if not v then return false end
 

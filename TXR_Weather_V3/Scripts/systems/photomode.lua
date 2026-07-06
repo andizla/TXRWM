@@ -46,6 +46,29 @@ local _loggedActive = false
 
 local function valid(o) return o and o.IsValid and o:IsValid() end
 
+-- Lazy-loaded to avoid circular requires
+local Actors = nil
+local function getActors()
+    if not Actors then
+        local ok, mod = pcall(require, "systems.actors")
+        if ok then Actors = mod end
+    end
+    return Actors
+end
+
+--- True while a map teardown is in progress. This module's dedicated loop and
+--- its game-thread closures both do FindAllOf sweeps + object writes; running
+--- those against a dying world is the round-3/4 crash mechanism (uncatchable
+--- access violation), so every pass checks this on the async side AND again at
+--- game-thread RUN time (the world can start dying between schedule and run).
+local function teardownActive()
+    local actors = getActors()
+    if actors and actors.IsDiscoverySuspended then
+        return actors.IsDiscoverySuspended()
+    end
+    return false
+end
+
 -- Resolve the first VALID instance of a class. FindFirstOf can hand back a STALE /
 -- pending-kill object (e.g. a just-destroyed free camera lingering until GC) whose
 -- IsValid() is false - which would make us think photo mode closed and drop every
@@ -311,6 +334,12 @@ local _dbgPass = 0
 local _dbgLastLog = 0.0
 local function reassert()
     _dbgPass = _dbgPass + 1  -- monotonic pass counter (proves the loop is alive)
+    if teardownActive() then
+        -- World is being torn down: no FindAllOf sweeps, and treat photo mode
+        -- as closed so the next real detection logs again
+        _loggedActive = false
+        return
+    end
     local comp = find("BPC_PhotoMode_C")
     local cam  = find("BP_FreeCamera_C")
     if not comp and not cam then
@@ -333,6 +362,9 @@ local function reassert()
 
     if type(ExecuteInGameThread) == "function" then
         ExecuteInGameThread(function()
+            -- Re-check at RUN time: comp/cam were found up to a pass ago on the
+            -- async thread and a teardown may have started since
+            if teardownActive() then return end
             if doDbg then
                 -- Read the live limits BEFORE we overwrite them: if these come back
                 -- "re-enabled" every log while pass= keeps climbing, the game is
