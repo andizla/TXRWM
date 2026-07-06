@@ -94,6 +94,7 @@ profile, so try Photomode if a lighter profile looks flat.
 | `Alt+Q` | Headlights on / off (manual; also toggles the displayed car in the garage). Auto mode is set in config |
 | `Alt+B` / `Alt+Shift+B` | Headlight brightness (up / down) |
 | `Alt+L` / `Alt+Shift+L` | Re-apply shadow distance |
+| `Alt+D` / `Alt+Shift+D` | Exposure feedback: too dark / too bright (appends a datapoint to `Logs/tuning_feedback.log` - attach that file when reporting) |
 
 In **manual** headlight mode you can also use the car's own light button (keyboard or
 controller): a short press turns the headlights on, a ~2-second hold turns them off.
@@ -115,14 +116,14 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
 - **Pick an Engine.ini profile in the installer** (see above). Brightness, shadow-quality, and
   glass-reflection problems are almost always a skipped Engine.ini step or a custom/outdated one,
   not the mod.
-- **High-beam flash resets the headlight brightness** back to default until the next brightness
-  change (the game recomputes intensity on its own hi-beam path).
 - **Rain in tunnels / odd sun & shadows indoors** - the game's tunnel meshes have no interior
   collision, so weather and lighting can't be occluded there from the mod.
 - **Surface wetness and screen weather effects** - the game's road materials lack Ultra Dynamic
   Weather's wetness logic, and the game doesn't composite UDW's screen-space effects (rain-on-lens,
   frost, etc.), so those don't render. Not fixable from the mod; would need cooked content.
-- **Transitions might be rough** i am working on ingame time of day/weather/brightness value GUI to easily report these events when noticed
+- **Exposure looks wrong at some time of day / in some weather?** Tap `Alt+D` (too dark) or
+  `Alt+Shift+D` (too bright) at that moment and attach `TXR_Weather_V3/Logs/tuning_feedback.log`
+  to your report - the dawn/dusk curves are tuned from exactly these datapoints.
 ## Credits
 Inspired by **Silent**'s original Dynamic Day/Night Cycle. **EDGERUNN3R** took it further and made Ultra Dynamic TXR. This project was started together with **EDGERUNN3R**, who shared his early source and helped get it set up and understand UDS and UE4SS. TXR Weather Mod V3 is a full rewrite by **Ten** (andizla) and uses none of the original Ultra Dynamic TXR 1.34 code. The dynamic wet grip's global tire-table approach is credited to **Chrystales**. The alignment slider-widening approach is credited to **NadzW** and **FenderBender** (WheelOffsetUnlocker).
 
