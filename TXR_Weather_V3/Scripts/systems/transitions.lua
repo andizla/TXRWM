@@ -84,11 +84,44 @@ local function getTimeOfDay()
     return TimeOfDay
 end
 
---- Check if TOD is in slow window (for speed control)
+-- Sun-elevation window bounds (2026-07-07): the slow window is keyed to the
+-- SUN, not the clock. The stock game's date advances every in-game midnight,
+-- so sunrise/sunset drift seasonally - fixed TOD windows aim at the wrong
+-- sky within days of play (the measured August dusk collapse was 19:15-20:05
+-- while the old window ended at 19:30). Elevation centers the window on the
+-- actual event wherever the date drifts. TOD windows remain the FALLBACK when
+-- elevation is unavailable (LightCycle off / not yet armed).
+local SLOW_ELEV_MAX = 8.0
+local SLOW_ELEV_MIN = -8.0
+
+local LightCycleMod = nil
+local function getSunElevation()
+    if not LightCycleMod then
+        local ok, mod = pcall(require, "systems.light_cycle")
+        if ok then LightCycleMod = mod end
+    end
+    if LightCycleMod and LightCycleMod.IsActive and LightCycleMod.IsActive()
+       and LightCycleMod.GetSunElevation then
+        local ok, v = pcall(LightCycleMod.GetSunElevation)
+        if ok then return v end
+    end
+    return nil
+end
+
+--- Check if the slow window is active (for speed control). Elevation-keyed
+--- when the sun is readable; falls back to the configured TOD windows.
 --- @param tod number Time of day (0-2400)
 --- @return boolean inWindow
 --- @return string|nil windowType "dawn" or "dusk" or nil
 local function isInSlowTimeWindow(tod)
+    local elev = getSunElevation()
+    if type(elev) == "number" then
+        if elev <= SLOW_ELEV_MAX and elev >= SLOW_ELEV_MIN then
+            -- dawn vs dusk only matters for the log; morning = dawn
+            return true, (tod < 1200 and "dawn" or "dusk")
+        end
+        return false, nil
+    end
     if tod >= SLOW_DAWN_START and tod <= SLOW_DAWN_END then
         return true, "dawn"
     elseif tod >= SLOW_DUSK_START and tod <= SLOW_DUSK_END then
@@ -354,6 +387,8 @@ function Transitions.Init()
         if Config.Transitions.SlowDuskStart then SLOW_DUSK_START = Config.Transitions.SlowDuskStart end
         if Config.Transitions.SlowDuskEnd then SLOW_DUSK_END = Config.Transitions.SlowDuskEnd end
         if Config.Transitions.SlowFactor then SLOW_FACTOR = Config.Transitions.SlowFactor end
+        if Config.Transitions.SlowElevMax then SLOW_ELEV_MAX = Config.Transitions.SlowElevMax end
+        if Config.Transitions.SlowElevMin then SLOW_ELEV_MIN = Config.Transitions.SlowElevMin end
         -- Legacy absolute override still honored if someone set it.
         if Config.Transitions.SlowSpeed then SLOW_FACTOR = Config.Transitions.SlowSpeed / NORMAL_SPEED end
         if Config.Transitions.Enabled == false then

@@ -92,12 +92,14 @@ local Headlights = nil
 local Audio = nil
 local Stars = nil
 local Exposure = nil
+local LightCycle = nil
 local WindDebris = nil
 local LightRays = nil
 local Moon = nil
 local Rainbow = nil
 local SpaceLayer = nil
 local CinematicSky = nil
+local RealSun = nil
 local Vignette = nil
 local PhotoMode = nil
 local WetGrip = nil
@@ -237,13 +239,23 @@ local function loadSystemModules()
         Log.Debug("Main", "Stars module not loaded")
     end
 
-    -- Phase 13: Auto-exposure scheduler (ported from VEAO)
+    -- Phase 13: Auto-exposure scheduler (ported from VEAO; LEGACY fallback -
+    -- superseded by LightCycle below, disabled via Config.Exposure.Enabled)
     Exposure = safeRequire("systems.exposure", "Exposure")
     if Exposure then
         Log.Info("Main", "System module loaded: Exposure")
         if Exposure.Init then Exposure.Init() end
     else
         Log.Debug("Main", "Exposure module not loaded")
+    end
+
+    -- Light cycle: sun-elevation-driven exposure (the active exposure system)
+    LightCycle = safeRequire("systems.light_cycle", "LightCycle")
+    if LightCycle then
+        Log.Info("Main", "System module loaded: LightCycle")
+        if LightCycle.Init then LightCycle.Init() end
+    else
+        Log.Debug("Main", "LightCycle module not loaded")
     end
 
     -- Wind debris (UDW Niagara debris, scales with wind intensity)
@@ -298,6 +310,15 @@ local function loadSystemModules()
         if CinematicSky.Init then CinematicSky.Init() end
     else
         Log.Debug("Main", "CinematicSky module not loaded")
+    end
+
+    -- Real sun (probe + real-world solar simulation experiment; settle-gated)
+    RealSun = safeRequire("systems.real_sun", "RealSun")
+    if RealSun then
+        Log.Info("Main", "System module loaded: RealSun")
+        if RealSun.Init then RealSun.Init() end
+    else
+        Log.Debug("Main", "RealSun module not loaded")
     end
 
     -- Vignette (hide HUD vignette; opt-in UI toggle)
@@ -494,6 +515,9 @@ local function onTick()
                 if Exposure and Exposure.OnCourseLoad then
                     Exposure.OnCourseLoad()
                 end
+                if LightCycle and LightCycle.OnCourseLoad then
+                    LightCycle.OnCourseLoad()
+                end
 
                 -- Reconcile headlights: clear any cast-only desync the game's native
                 -- auto leaves at load by re-asserting the desired state on entry.
@@ -524,6 +548,9 @@ local function onTick()
             -- UDS reads Time Of Day = 0) can't flash the midnight slot before restore.
             if Exposure and Exposure.OnCourseUnload then
                 Exposure.OnCourseUnload()
+            end
+            if LightCycle and LightCycle.OnCourseUnload then
+                LightCycle.OnCourseUnload()
             end
             initialWeatherApplied = false
             _pendingRestore = true  -- Signal to restore on next actor detection
@@ -614,6 +641,11 @@ local function onTick()
             CinematicSky.Tick()
         end
 
+        -- Real sun probe/experiment (settle-gated one-shot)
+        if RealSun and RealSun.Tick and not State.IsPAFrozen() then
+            RealSun.Tick()
+        end
+
         -- Weather audio (settle-gated one-shot apply of UDW's native sounds)
         if Audio and Audio.Tick and not State.IsPAFrozen() then
             Audio.Tick()
@@ -629,6 +661,11 @@ local function onTick()
         -- so it is intentionally NOT gated by the PA-frozen check)
         if Exposure and Exposure.Tick then
             Exposure.Tick()
+        end
+
+        -- Light cycle (sun-elevation exposure; same gating rationale as Exposure)
+        if LightCycle and LightCycle.Tick then
+            LightCycle.Tick()
         end
 
         -- Tuning slider widening (the alignment menu lives in the garage, so
@@ -798,6 +835,8 @@ local function initialize()
         if tg.Rainbow     == false then Rainbow = nil end
         if tg.SpaceLayer  == false then SpaceLayer = nil end
         if tg.CinematicSky== false then CinematicSky = nil end
+        if tg.LightCycle  == false then LightCycle = nil end
+        if tg.RealSun     == false then RealSun = nil end
         if tg.Vignette    == false then Vignette = nil end
         if tg.PhotoMode   == false then PhotoMode = nil end
         if tg.WetGrip     == false then WetGrip = nil end
@@ -860,6 +899,7 @@ end
 -- Track world context for PA transitions
 local _LastWorldTag = "unknown"
 local _CourseStateBeforePA = nil
+local _WorldLogPending = true       -- one-shot "World identify" log per map load (PA-name hunt)
 
 -- LoadMapPreHook - fires BEFORE map unload while actors still valid
 if RegisterLoadMapPreHook then
@@ -926,6 +966,7 @@ if RegisterLoadMapPreHook then
         end
         
         _LastWorldTag = currentTag
+        _WorldLogPending = true
     end)
 end
 
@@ -988,6 +1029,24 @@ if RegisterBeginPlayPreHook then
         pcall(function()
             if Actor.GetFullName then actorName = Actor:GetFullName() end
         end)
+
+        -- One-shot per map load: log the first NAMED actor's world, so worlds
+        -- whose sky never matches the patterns below (PA? menus?) are still
+        -- identifiable from the log. Same safe pattern as the sky path: live
+        -- spawning actor, GetWorld+GetFullName once per load.
+        if _WorldLogPending and type(actorName) == "string" and #actorName > 0 then
+            _WorldLogPending = false
+            pcall(function()
+                local w = Actor:GetWorld()
+                if w and w.IsValid and w:IsValid() then
+                    local ws = w:GetFullName()
+                    if type(ws) == "string" and #ws > 0 and Log then
+                        Log.Info("Main", string.format("World identify: %s (first actor: %s)",
+                            ws:sub(1, 120), actorName:sub(1, 100)))
+                    end
+                end
+            end)
+        end
 
         local isSky = false
         if type(actorName) == "string" and #actorName > 0 then
@@ -1172,9 +1231,11 @@ return {
     Audio = Audio,
     Stars = Stars,
     Exposure = Exposure,
+    LightCycle = LightCycle,
     Rainbow = Rainbow,
     SpaceLayer = SpaceLayer,
     CinematicSky = CinematicSky,
+    RealSun = RealSun,
     Vignette = Vignette,
     PhotoMode = PhotoMode,
     WetGrip = WetGrip,

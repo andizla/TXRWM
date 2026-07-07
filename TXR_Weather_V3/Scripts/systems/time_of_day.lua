@@ -344,11 +344,19 @@ function TimeOfDay.BaselineEnforceTick(dt)
     if baselineEnforceAccum < 3.0 then return end
     baselineEnforceAccum = 0
     
-    -- Skip speed enforcement if Transitions module is controlling speed
-    local Transitions = nil
-    pcall(function() Transitions = require("systems.transitions") end)
-    if Transitions and Transitions.IsInSlowWindow and Transitions.IsInSlowWindow() then
-        return  -- Let transitions module control speed
+    -- Skip speed enforcement only while Transitions is ACTUALLY controlling
+    -- speed. Transitions slow-time applies in NORMAL mode only (fast-forward
+    -- is exempt by design), so deferring unconditionally left NOBODY writing
+    -- speed when a course loaded INTO a slow window in fast mode: the sky kept
+    -- its spawn-default Simulation Speed (~1.0 = real-time crawl) until a
+    -- manual Alt+T - the "stuck clock" bug (2026-07-06/07 episodes, TOD frozen
+    -- at 1739 and 530 for 70-90s).
+    if currentSpeedMode == "normal" then
+        local Transitions = nil
+        pcall(function() Transitions = require("systems.transitions") end)
+        if Transitions and Transitions.IsInSlowWindow and Transitions.IsInSlowWindow() then
+            return  -- Let transitions module control speed
+        end
     end
     
     -- Check and fix Simulation Speed if it drifted

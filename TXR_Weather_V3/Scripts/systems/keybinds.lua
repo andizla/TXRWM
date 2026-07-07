@@ -119,7 +119,19 @@ local function getScheduler()
     return Scheduler
 end
 
+-- Active exposure provider: the LightCycle module (sun-elevation system) when
+-- it is enabled, else the legacy slot-table Exposure module. Both expose the
+-- same feedback/tuning API (LogFeedback / NudgeSkylight / LogSkylightConfirm /
+-- ResetSkylightTune), so the Alt+D family routes to whichever is live.
+local LightCycleMod = nil
 local function getExposure()
+    if not LightCycleMod then
+        local success, mod = pcall(require, "systems.light_cycle")
+        if success then LightCycleMod = mod end
+    end
+    if LightCycleMod and LightCycleMod.IsActive and LightCycleMod.IsActive() then
+        return LightCycleMod
+    end
     if not Exposure then
         local success, mod = pcall(require, "systems.exposure")
         if success then Exposure = mod end

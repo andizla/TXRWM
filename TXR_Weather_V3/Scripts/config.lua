@@ -1,4 +1,4 @@
--- TXR Weather Mod v3.0
+﻿-- TXR Weather Mod v3.0
 -- config.lua - all user-configurable settings
 -- See readme.md for full explanations; comments here are kept brief.
 
@@ -198,10 +198,25 @@ Config.LightRays = {
 -- ============== TRANSITIONS (dawn/dusk slow-time + Tokyo tint) ==============
 Config.Transitions = {
     Enabled = true,
+
+    -- Slow window keyed to the SUN (2026-07-07): active while the sun's
+    -- elevation is inside [SlowElevMin, SlowElevMax] degrees, so it stays
+    -- centered on the actual sunrise/sunset wherever the drifting in-game date
+    -- puts them (the date advances every in-game midnight - fixed clock
+    -- windows aim at the wrong sky within days of play). +/-8 deg is roughly
+    -- 40-45 real minutes either side of the sun event - it covers the whole
+    -- measured light collapse (which the old 17:30-19:30 window ENDED at).
+    SlowElevMax = 8.0,
+    SlowElevMin = -8.0,
+
+    -- Clock-window FALLBACK, used only when sun elevation is unavailable
+    -- (LightCycle module off, or the first seconds after a course load).
     SlowDawnStart = 500, SlowDawnEnd = 700,    -- 05:00 - 07:00
     SlowDuskStart = 1730, SlowDuskEnd = 1930,  -- 17:30 - 19:30
+
     -- Time speed during dawn/dusk as a FRACTION of normal. Lower = slower, so the
     -- window lingers longer in real time. 0.40 = original feel (~5.7 min dusk).
+    -- NOTE: slow-time applies at NORMAL speed only (fast-forward is exempt).
     SlowFactor = 0.40,
 }
 
@@ -423,6 +438,44 @@ Config.CinematicSky = {
     Debug = false,  -- extra per-property logging while tuning
 }
 
+-- ============== REAL SUN (EXPERIMENT) ==============
+-- Real-world solar simulation. The module ALWAYS logs the sky's stock
+-- Simulation values once per course (grep "RealSun" - the Phase 0 probe).
+-- With Enabled=true it also switches UDS to Simulate Real Sun/Moon for the
+-- coordinates and pinned date below: astronomically correct sunrise/sunset
+-- times and sun path. NOTE: the exposure slot curve is tuned for the stock
+-- sun path - expect dawn/dusk timing shifts on dates far from late July
+-- (Tokyo sunset ~18:50, the closest match to the current curve).
+Config.RealSun = {
+    Enabled = false,       -- flip true to run the experiment
+
+    Latitude  = 35.676,    -- Tokyo
+    Longitude = 139.650,
+    TimeZone  = 9.0,       -- UTC+9 (DST is forced off; Japan has none)
+    RealMoon  = true,      -- also simulate real moon position and phase
+
+    -- Pinned date (the sun path depends on it; nil = leave the sky's own date)
+    Year = 2026, Month = 7, Day = 25,
+
+    -- World-space direction of north, degrees (nil = leave stock; UDS default
+    -- north is +X). Calibrate by watching where the sun actually sets.
+    NorthYaw = nil,
+
+    -- ---- Date policy (independent of Enabled above) ----
+    -- The stock game advances the calendar every in-game midnight, so the
+    -- season - and sunrise/sunset times - drift as you play (the game persists
+    -- this across sessions itself). Set PinMonth+PinDay to force a fixed date
+    -- once per course instead (PinYear optional). nil = let the seasons drift.
+    PinYear = nil, PinMonth = nil, PinDay = nil,
+
+    -- TEMPORARY interior-system probe: writes Apply Interior Adjustments=true
+    -- once per course (stock ships it FALSE). Visually a no-op (stock interior
+    -- multipliers are 1.0, interior bias 0) - it exists to test whether the
+    -- occlusion cache starts moving in tunnels once the system actually runs.
+    -- Watch "Interior occlusion" log lines; turn off after the verdict.
+    EnableInteriorProbe = true,
+}
+
 -- ============== VIGNETTE (hide HUD vignette, opt-in) ==============
 -- Hide TXR's in-game HUD vignette (the darkened corner frame) for a cleaner,
 -- photographic look. Pure UI-widget toggle on TXR's own HUD (no game files). Default
@@ -555,11 +608,108 @@ Config.Tuning = {
     Debug = false,          -- log alignment rows, slider probes + widened ranges
 }
 
--- ============== AUTO-EXPOSURE (TOD -> Lumen/eye-adaptation, ex-VEAO) ==============
+-- ============== LIGHT CYCLE (sun-elevation exposure - the active system) ==============
+-- Replaces the 144-slot TOD exposure table (Config.Exposure below, kept as a
+-- fallback behind ModuleToggles.Exposure). Drives the same three cvars, but from
+-- the sun's REAL elevation (stock TXR runs UDS's Tokyo solar simulation), so the
+-- curve is anchored on physical twilight bands and survives date/season changes.
+-- Anchors ship mapped from the tuned 3.3.1 slot table via the measured effective
+-- sun events (sunrise ~06:00 / sunset ~19:30); dusk tuning won the dawn/dusk
+-- conflicts (it had the datapoints). Tune with Alt+D / Alt+Shift+D as before -
+-- feedback lines now carry sun_elev.
+Config.LightCycle = {
+    Enabled = true,
+    UpdateIntervalSeconds = 2.0,
+
+    -- Elevation anchors (degrees; +90 zenith, 0 horizon, negative below).
+    -- Piecewise-linear between anchors, clamped flat outside the ends.
+    -- sky  = r.SkylightIntensityMultiplier (scene-ambient brightness lever)
+    -- lens = r.EyeAdaptation.LensAttenuation (3D-scene EV trim; CANNOT dim the
+    --        sky dome - UDS's sky is exposure-compensated)
+    -- 2026-07-07: golden-hour lens anchors lowered to the tuned DUSK values
+    -- (the first mapping compromised toward dawn's higher numbers - read as
+    -- "way too high in golden hour"). Direction of travel: lens shrinks toward
+    -- a flat trim as the source-light levers take over the brightness duty.
+    Curve = {
+        { elev =  30, sky = 0.100, lens =  1.0 },  -- day core
+        { elev =  15, sky = 0.110, lens =  1.4 },
+        { elev =   9, sky = 0.150, lens =  2.2 },  -- late golden hour
+        { elev =   6, sky = 0.190, lens =  2.8 },
+        { elev =   2, sky = 0.380, lens =  3.4 },  -- sun on the towers
+        { elev =   0, sky = 0.550, lens =  4.6 },  -- sunset/sunrise moment
+        { elev =  -3, sky = 0.780, lens = 10.0 },  -- civil twilight (blue hour)
+        { elev =  -5, sky = 0.860, lens = 20.0 },
+        { elev =  -7, sky = 0.930, lens = 28.0 },
+        { elev = -10, sky = 1.005, lens = 30.0 },  -- night
+    },
+    LeakAlbedo = 0.07,   -- constant across the cycle (reflection floor)
+
+    -- Garage / PA-menu worlds (artificial light, no sun): fixed values
+    Garage = { Sky = 1.005, Lens = 30.0 },
+
+    -- Night scene floor: multiplier on UDS "Directional Lights Absent
+    -- Brightness" (scene light when neither sun nor moon contributes), scaled
+    -- from stock once per course. 1.0 = leave stock. Raise toward the reference
+    -- target (real Tokyo night reads ~25-30% of day) in a dedicated session.
+    AbsentBrightnessMult = 1.0,
+
+    -- Effective sun events for the pseudo-elevation fallback / sign calibration
+    -- (measured on the stock install: real sun + DST shift).
+    SunriseTOD = 600, SunsetTOD = 1930,
+
+    -- TEMPORARY probe: log UDS's interior-occlusion cache when it changes.
+    -- Drive through a tunnel; if "Interior occlusion" lines appear, TXR wired
+    -- UDS's occlusion system (native tunnel exposure/light multipliers usable).
+    -- Turn off after the probe session.
+    ProbeInterior = true,
+
+    -- Per-weather compensation (same semantics as the legacy module; smoothed).
+    -- These are the LIVE tables now - the copies in Config.Exposure below are
+    -- only used if the legacy module is re-enabled.
+    WeatherSkyMult = {
+        Clear_Skies       = 1.00,
+        Partly_Cloudy     = 1.05,
+        Cloudy            = 1.25,
+        Overcast          = 1.50,
+        Foggy             = 1.40,
+        Rain_Light        = 1.35,
+        Rain              = 1.50,
+        Rain_Thunderstorm = 1.70,
+        Snow_Light        = 1.25,
+        Snow              = 1.40,
+        Snow_Blizzard     = 1.70,
+        Sand_Dust_Calm    = 1.20,
+        Sand_Dust_Storm   = 1.50,
+    },
+    WeatherLensMult = {
+        Clear_Skies       = 1.00,
+        Partly_Cloudy     = 1.05,
+        Cloudy            = 1.45,
+        Overcast          = 2.00,
+        Foggy             = 1.60,
+        Rain_Light        = 1.70,
+        Rain              = 1.90,
+        Rain_Thunderstorm = 2.20,
+        Snow_Light        = 1.45,
+        Snow              = 1.70,
+        Snow_Blizzard     = 2.20,
+        Sand_Dust_Calm    = 1.30,
+        Sand_Dust_Storm   = 1.80,
+    },
+    WeatherSmoothSeconds = 20.0,
+
+    -- Skylight tuning keybinds (Alt+Z/X/C, Alt+V, Alt+Shift+V)
+    Tune = { Step = 0.05, RoughnessBaseline = 1.0 },
+}
+
+-- ============== AUTO-EXPOSURE (LEGACY - TOD slots, ex-VEAO) ==============
+-- Superseded by Config.LightCycle above; kept intact as the fallback
+-- (ModuleToggles: Exposure=false, LightCycle=true). Re-enable by flipping both.
 -- 144 slots of 10 min across 00:00-24:00 (TOD 0..2400); garage forces night (slot 0).
 -- Requires the exposure cvars in engine.ini (shipped minimal ini / installer).
 Config.Exposure = {
-    Enabled = true,
+    Enabled = false,  -- LEGACY: superseded by Config.LightCycle. To fall back:
+                      -- set this true AND Config.LightCycle.Enabled = false.
     SlotCount = 144,
     SlotSizeTOD = 2400 / 144,    -- 16.667 TOD units = 10 min
     UpdateIntervalSeconds = 0.5,  -- slot re-evaluation rate. Kept low so exposure
@@ -824,6 +974,8 @@ Config.ModuleToggles = {
     Rainbow     = true,   -- mesh-rendered rainbow (UDW drives visibility)
     SpaceLayer  = true,   -- night-sky nebula
     CinematicSky= true,   -- daytime cloud/atmosphere grade (see Config.CinematicSky)
+    LightCycle  = true,   -- sun-elevation exposure (see Config.LightCycle)
+    RealSun     = true,   -- real-sun probe + experiment (see Config.RealSun)
     Vignette    = true,   -- hide the HUD vignette (see Config.Vignette)
     PhotoMode   = true,   -- photo mode free-camera unlocks
     WetGrip     = true,   -- dynamic wet grip

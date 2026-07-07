@@ -107,7 +107,19 @@ local function getTimeOfDay()
     return TimeOfDay
 end
 
+-- Active exposure provider: LightCycle (sun-elevation system) when enabled,
+-- else the legacy Exposure module. Both expose GetBrightnessLens on the same
+-- scale (~1.0 bright day .. ~30 deep night), so the auto-mode hysteresis
+-- thresholds (OnLens/OffLens) work unchanged against either.
+local LightCycleMod = nil
 local function getExposure()
+    if not LightCycleMod then
+        local success, mod = pcall(require, "systems.light_cycle")
+        if success then LightCycleMod = mod end
+    end
+    if LightCycleMod and LightCycleMod.IsActive and LightCycleMod.IsActive() then
+        return LightCycleMod
+    end
     if not Exposure then
         local success, mod = pcall(require, "systems.exposure")
         if success then Exposure = mod end
