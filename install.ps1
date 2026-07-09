@@ -92,11 +92,18 @@ function Find-GameWin64 {
     }
     $hits = @()
     foreach($lib in ($libs | Select-Object -Unique)){
-        $common = Join-Path $lib 'steamapps\common\TokyoXtremeRacer'
-        if(Test-Path $common){
-            $exe = Get-ChildItem -Path $common -Recurse -Filter 'TokyoXtremeRacer-Win64-Shipping.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-            if($exe){ $hits += $exe.DirectoryName }
-        }
+        # Steam keeps STALE library entries in libraryfolders.vdf after a
+        # drive is removed/renamed. Join-Path validates the drive letter and
+        # throws DriveNotFoundException on those; with ErrorActionPreference
+        # 'Stop' that killed the whole install (field report 2026-07-09).
+        # Skip anything unreachable instead.
+        try {
+            $common = Join-Path $lib 'steamapps\common\TokyoXtremeRacer'
+            if(Test-Path $common){
+                $exe = Get-ChildItem -Path $common -Recurse -Filter 'TokyoXtremeRacer-Win64-Shipping.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if($exe){ $hits += $exe.DirectoryName }
+            }
+        } catch {}
     }
     return ($hits | Select-Object -Unique)
 }
