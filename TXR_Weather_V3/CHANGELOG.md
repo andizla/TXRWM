@@ -34,6 +34,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 - `Alt+J` - manually toggle rain/snow particles off/on without changing the weather.
+- **Installer: updates keep your data.** Re-running the installer over an existing
+  install now preserves the saved time-of-day/weather state, headlight settings and
+  `Logs/tuning_feedback.log` (`config.lua` still intentionally resets to the new
+  release defaults).
 
 ### Fixed
 - A stuck game clock when loading into a course during a dawn/dusk window in

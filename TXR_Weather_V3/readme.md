@@ -43,9 +43,14 @@ file). Pick a profile - every profile ships the cvars the mod relies on (exposur
 - **Optimizations only (+/- exposure)** - lighter, good for midrange / non-DLSS rigs.
 - **Minimal** - only what the mod needs.
 
-"Exposure" means the mod drives manual exposure (correct brightness + working photomode aperture);
-"no exposure" leaves the game's vanilla auto-exposure. If the game looks too bright / washed out,
-you most likely skipped the Engine.ini step - re-run the installer and pick a profile.
+"Exposure" enables the mod's dynamic day/night exposure (the game's own auto-exposure steered by
+the real sun - see Lighting and exposure below); "no exposure" leaves vanilla brightness. If dusk
+or night look wrong, you most likely skipped the Engine.ini step - re-run the installer and pick
+a profile. **Updating from 3.3.x or older: download a fresh `install.bat` + `install.ps1` first** -
+old installer copies write an Engine.ini line that breaks the 3.4+ exposure.
+
+Updates preserve your saved time-of-day/weather state, headlight settings and
+`Logs/tuning_feedback.log`; `config.lua` intentionally resets to the new release defaults.
 
 The base profile inis live in `engines/` (`photomode_engine.ini`, `optimization_only_engine.ini`).
 The runtime copy excludes that folder; the installer composes the live `Engine.ini` from the chosen
