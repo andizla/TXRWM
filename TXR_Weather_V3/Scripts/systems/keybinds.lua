@@ -13,7 +13,6 @@ local Config = require("config")
 local Weather = nil
 local TimeOfDay = nil
 local Wetness = nil
-local Actors = nil
 local Shadows = nil
 local Headlights = nil
 local Scheduler = nil
@@ -85,14 +84,6 @@ local function getWetness()
         if success then Wetness = mod end
     end
     return Wetness
-end
-
-local function getActors()
-    if not Actors then
-        local success, mod = pcall(require, "systems.actors")
-        if success then Actors = mod end
-    end
-    return Actors
 end
 
 local function getShadows()
@@ -438,6 +429,33 @@ local function onExposureTooBright()
     exposure.LogFeedback("bright")
 end
 
+--- Toggle the engine's eye-adaptation debug overlay (live histogram + applied
+--- EV + exposure compensation; shows any PP-volume bias actually in effect).
+--- Silently does nothing if the shipping build stripped the visualizer.
+local function onExposureDebugOverlay()
+    local exposure = getExposure()
+    if not exposure or not exposure.ToggleHDRDebug then
+        Log.Warn(MODULE, "Exposure debug overlay not available (legacy module active?)")
+        return
+    end
+    exposure.ToggleHDRDebug()
+end
+
+--- Manual test for the tunnel precip suppression mechanism (Alt+J): toggles
+--- Weather.SetPrecipSuppressed. Use in rain: particles should vanish
+--- immediately and return on the second press. The volume-containment signal
+--- will drive this automatically once tunnel volumes are identified.
+local precipTestOn = false
+local function onPrecipSuppressTest()
+    local ok, Weather = pcall(require, "systems.weather")
+    if not ok or not Weather or not Weather.SetPrecipSuppressed then
+        Log.Warn(MODULE, "Weather module not available")
+        return
+    end
+    precipTestOn = not precipTestOn
+    Weather.SetPrecipSuppressed(precipTestOn)
+end
+
 --- Skylight tuning session: Alt+Z/X/C nudge albedo/roughness/multiplier up,
 --- Alt+Shift lowers; Alt+V logs the datapoint, Alt+Shift+V resets to slot curve.
 local function nudgeSkylight(which, dir)
@@ -590,6 +608,14 @@ function Keybinds.Init(config)
 
     if config.ExposureTooBright then
         registerKeybind("ExposureTooBright", config.ExposureTooBright, onExposureTooBright)
+    end
+
+    if config.ExposureDebugOverlay then
+        registerKeybind("ExposureDebugOverlay", config.ExposureDebugOverlay, onExposureDebugOverlay)
+    end
+
+    if config.PrecipSuppressTest then
+        registerKeybind("PrecipSuppressTest", config.PrecipSuppressTest, onPrecipSuppressTest)
     end
 
     -- Skylight tuning session (Alt+Z/X/C nudge, Alt+V confirm, Alt+Shift+V reset)

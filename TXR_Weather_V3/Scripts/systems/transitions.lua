@@ -32,7 +32,6 @@ local SLOW_SPEED   = NORMAL_SPEED * SLOW_FACTOR
 
 -- Tokyo Tint timing (in TOD units, from V1.34)
 local TINT_LEAD_TOD = 240        -- Start tint this much BEFORE slow window
-local TINT_FADE_IN_TOD = 50      -- TOD units to fade in
 local TINT_FADE_OUT_EXTRA = 140  -- Continue tint this much AFTER slow window
 
 -- Peak tint times (at actual sunrise/sunset)
@@ -46,11 +45,6 @@ local TOKYO_TINT_COLORS = {
     redStrong    = {R = 0.92, G = 0.16, B = 0.16, A = 1.0},
     pink         = {R = 1.00, G = 0.45, B = 0.55, A = 1.0},
 }
-
--- Tokyo Tint timing (in TOD units, 100 = 1 hour)
-local TINT_FADE_IN_DURATION = 50     -- How long to fade in
-local TINT_FADE_OUT_DURATION = 100   -- How long to fade out
-local TINT_PEAK_DURATION = 30        -- How long at full strength
 
 -- UDS property names for color control
 local PROP_SUN_COLOR = "Sun Light Color"

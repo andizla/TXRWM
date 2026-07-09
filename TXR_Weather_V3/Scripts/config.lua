@@ -1,4 +1,4 @@
-﻿-- TXR Weather Mod v3.0
+-- TXR Weather Mod v3.0
 -- config.lua - all user-configurable settings
 -- See readme.md for full explanations; comments here are kept brief.
 
@@ -236,6 +236,15 @@ Config.Keybinds = {
     CycleHeadlights    = { Key = "Q", Modifiers = {"Alt"} },          -- manual headlights on/off (garage too); auto is config-only
     BrightnessUp     = { Key = "B", Modifiers = {"Alt"} },
     BrightnessDown   = { Key = "B", Modifiers = {"Alt", "Shift"} },
+    -- DEV: UDS exposure-bias liveness test (+2 EV on all five knobs, press
+    -- again to restore). Unbound for release - uncomment to re-enable.
+    -- ExposureDebugOverlay = { Key = "H", Modifiers = {"Alt"} },
+
+    -- Manual rain suppression: toggles the rain/snow particles off/on at the
+    -- component level (weather state untouched - it keeps "raining"). The
+    -- tunnel system drives the same mechanism automatically.
+    PrecipSuppressTest = { Key = "J", Modifiers = {"Alt"} },
+
     -- Exposure tuning feedback: press when the picture looks wrong; logs time,
     -- weather, and the exposure values in effect (grep the log for "ExposureTune").
     ExposureTooDark   = { Key = "D", Modifiers = {"Alt"} },
@@ -251,6 +260,17 @@ Config.Keybinds = {
     SkylightMultDown   = { Key = "C", Modifiers = {"Alt", "Shift"} },
     SkylightConfirm    = { Key = "V", Modifiers = {"Alt"} },          -- log the datapoint
     SkylightReset      = { Key = "V", Modifiers = {"Alt", "Shift"} }, -- drop overrides, back to slot curve
+}
+
+-- ============== PA (PARKING AREA) ==============
+-- The PA scene lives inside the outgame world but has its own working sky
+-- and weather. Stock, it is CANNED: always night (TOD 19:50, heavy cloud).
+--   "continue" - carry your course weather and time of day into the PA and
+--                keep the clock running at your course time speed (default)
+--   "freeze"   - carry the course state, then freeze time while in the PA
+--   "stock"    - leave the canned PA night alone (pre-3.4 behavior)
+Config.PA = {
+    Mode = "continue",
 }
 
 -- ============== PERSISTENCE ==============
@@ -336,7 +356,9 @@ Config.Atmosphere = {
     -- in at night. Light pollution lights cloud bases from below (warm sodium
     -- amber by default); night sky glow keeps the night sky from going pitch black.
     EnableCityGlow = true,
-    LightPollutionMax = 1.0,   -- peak light-pollution intensity at deep night (tune to taste)
+    LightPollutionMax = 1.5,   -- peak light-pollution intensity at deep night
+                               -- (1.0 -> 1.5 2026-07-07: night-floor lift first
+                               -- pass toward the real-Tokyo city-glow reference)
     NightSkyGlowMax = 1.5,     -- peak ambient night-sky glow (0.5 -> 1.5 2026-07-06, night-feel test)
     -- Colors are LinearColor {R,G,B,A}; defaults live in atmosphere.lua. Uncomment to override:
     -- LightPollutionColor = {R = 1.00, G = 0.55, B = 0.25, A = 1.0},
@@ -468,12 +490,6 @@ Config.RealSun = {
     -- once per course instead (PinYear optional). nil = let the seasons drift.
     PinYear = nil, PinMonth = nil, PinDay = nil,
 
-    -- TEMPORARY interior-system probe: writes Apply Interior Adjustments=true
-    -- once per course (stock ships it FALSE). Visually a no-op (stock interior
-    -- multipliers are 1.0, interior bias 0) - it exists to test whether the
-    -- occlusion cache starts moving in tunnels once the system actually runs.
-    -- Watch "Interior occlusion" log lines; turn off after the verdict.
-    EnableInteriorProbe = true,
 }
 
 -- ============== VIGNETTE (hide HUD vignette, opt-in) ==============
@@ -621,6 +637,42 @@ Config.LightCycle = {
     Enabled = true,
     UpdateIntervalSeconds = 2.0,
 
+    -- DIAGNOSTIC (mission completed 2026-07-08 - it exposed the handoff gap
+    -- and the dead source levers): push engine-neutral cvars, no shaping at
+    -- all. Keep false unless testing raw UDS light again.
+    DiagnosticNeutralCvars = false,
+
+    -- ============ OUTPUT MODE (the post-breakthrough architecture) ============
+    -- "bias" (default): STOCK AUTO-EXPOSURE runs (engine.ini MethodOverride
+    -- removed 2026-07-08) and this module drives UDS's five Exposure Bias
+    -- knobs - user-confirmed live on the composited pipeline, natively
+    -- smoothed. Cvars held at engine-neutral. The old Curve below then serves
+    -- ONLY as the headlight brightness proxy.
+    -- "cvars": legacy behavior (needs r.EyeAdaptation.MethodOverride=3 back
+    -- in engine.ini to look right).
+    OutputMode = "bias",
+
+    -- EV bias vs sun elevation (bias mode). Daytime adaptation is fine stock
+    -- (user verdict); dawn/dusk/night read TOO BRIGHT because adaptation
+    -- flattens the natural darkening - the negative ramp restores it.
+    -- First pass 2026-07-08, conservative; tune with Alt+D (log carries
+    -- sun_elev + the applied EV in "Applied bias" lines).
+    BiasCurve = {
+        { elev =  30, bias = -0.3 },   -- day: user 2026-07-08 "everything
+        { elev =   8, bias = -0.3 },   -- feels bright during daytime"
+        { elev =   3, bias = -0.5 },   -- golden hour starts settling
+        { elev =   0, bias = -0.8 },   -- sunset
+        { elev =  -3, bias = -1.2 },   -- blue hour
+        { elev =  -6, bias = -1.6 },   -- civil twilight ends
+        { elev = -10, bias = -1.9 },   -- night
+    },
+
+    -- Weather EV compensation in bias mode. Ships OFF (0.0): auto-exposure
+    -- self-normalizes weather brightness (the reason the old cvar-era weather
+    -- mults existed is gone). Raise toward 1.0 only if Alt+D says cloudy
+    -- nights genuinely lag: bias += log2(weather sky mult, night-weighted) * this.
+    WeatherBiasScale = 0.0,
+
     -- Elevation anchors (degrees; +90 zenith, 0 horizon, negative below).
     -- Piecewise-linear between anchors, clamped flat outside the ends.
     -- sky  = r.SkylightIntensityMultiplier (scene-ambient brightness lever)
@@ -630,17 +682,27 @@ Config.LightCycle = {
     -- (the first mapping compromised toward dawn's higher numbers - read as
     -- "way too high in golden hour"). Direction of travel: lens shrinks toward
     -- a flat trim as the source-light levers take over the brightness duty.
+    -- 2026-07-07 late sweep: golden band (0..+15) trimmed 25-30% - "too
+    -- bright" presses in that band across ALL weathers incl. mult-inert ones
+    -- (= base curve verdict); collapse zone (-3/-5) sky nudged up ("too dark"
+    -- right after sunset even under light cloud).
+    -- 2026-07-08: post-sunset LENS ramp HALVED ("3D stuff glows weirdly right
+    -- after the day/night shift" - lens lifts everything EXCEPT the
+    -- exposure-compensated sky dome, so objects pop against the darkening
+    -- sky). The lost brightness moves to SKY (skylight lights the scene
+    -- naturally, and the real-time captured skylight couples it to the dome
+    -- glow). Deep night lens 30 -> 22, leaning on the new source floors.
     Curve = {
-        { elev =  30, sky = 0.100, lens =  1.0 },  -- day core
-        { elev =  15, sky = 0.110, lens =  1.4 },
-        { elev =   9, sky = 0.150, lens =  2.2 },  -- late golden hour
-        { elev =   6, sky = 0.190, lens =  2.8 },
-        { elev =   2, sky = 0.380, lens =  3.4 },  -- sun on the towers
-        { elev =   0, sky = 0.550, lens =  4.6 },  -- sunset/sunrise moment
-        { elev =  -3, sky = 0.780, lens = 10.0 },  -- civil twilight (blue hour)
-        { elev =  -5, sky = 0.860, lens = 20.0 },
-        { elev =  -7, sky = 0.930, lens = 28.0 },
-        { elev = -10, sky = 1.005, lens = 30.0 },  -- night
+        { elev =  30, sky = 0.100, lens =  1.0 },   -- day core
+        { elev =  15, sky = 0.105, lens =  1.25 },
+        { elev =   9, sky = 0.130, lens =  1.8 },   -- late golden hour
+        { elev =   6, sky = 0.155, lens =  2.2 },
+        { elev =   2, sky = 0.270, lens =  2.7 },   -- sun on the towers
+        { elev =   0, sky = 0.420, lens =  3.8 },   -- sunset/sunrise moment
+        { elev =  -3, sky = 0.860, lens =  5.5 },   -- civil twilight (blue hour)
+        { elev =  -5, sky = 0.950, lens =  9.0 },
+        { elev =  -7, sky = 1.000, lens = 14.0 },
+        { elev = -10, sky = 1.050, lens = 22.0 },   -- night
     },
     LeakAlbedo = 0.07,   -- constant across the cycle (reflection floor)
 
@@ -648,20 +710,90 @@ Config.LightCycle = {
     Garage = { Sky = 1.005, Lens = 30.0 },
 
     -- Night scene floor: multiplier on UDS "Directional Lights Absent
-    -- Brightness" (scene light when neither sun nor moon contributes), scaled
-    -- from stock once per course. 1.0 = leave stock. Raise toward the reference
-    -- target (real Tokyo night reads ~25-30% of day) in a dedicated session.
-    AbsentBrightnessMult = 1.0,
+    -- Brightness" (scene light when neither sun nor moon contributes; stock
+    -- 1.5), scaled from stock once per course. Reference target: real Tokyo
+    -- night reads ~25-30% of day raw. 1.3 = conservative first pass 2026-07-07.
+    AbsentBrightnessMult = 1.3,
 
-    -- Effective sun events for the pseudo-elevation fallback / sign calibration
-    -- (measured on the stock install: real sun + DST shift).
+    -- Cloudy-night scene floor: ABSOLUTE value for UDS "Extra Night Brightness
+    -- When Cloudy" - a free stock lever (ships 0.0, so cloudy nights get no
+    -- extra light and read darkest-of-all; real city cloud REFLECTS glow and
+    -- reads brighter). nil = leave stock. 1.0 first pass read as nothing (nine
+    -- "too dark" presses through an overcast night at lens 60/sky 1.5) - the
+    -- sibling "Night Brightness" runs on a 3.0 scale, so match it.
+    NightCloudyBrightness = 3.0,
+
+    -- Overcast night keep-fraction: ABSOLUTE for UDS "Overcast Brightness
+    -- (Night)" - the engine's own "how much light survives under full cloud at
+    -- night" (stock 0.2 = cloud removes 80%). The reference footage says
+    -- overcast night city is the BRIGHTEST night (cloud reflects the glow).
+    -- nil = leave stock.
+    OvercastBrightnessNight = 0.45,
+
+    -- Dawn damping: the anchor curve is dusk-tuned, and dawn read "a tad
+    -- bright" at the same elevations (user 2026-07-07). While the sun is
+    -- RISING, sky/lens scale by these, feathered across the transition band
+    -- so there are no steps. 1.0 = off (symmetric curve).
+    DawnSkyMult  = 0.90,
+    DawnLensMult = 0.85,
+
+    -- UDS sun-vector vertical sign (the cached vector is the LIGHT direction:
+    -- raw Z = -sin(elevation), so -1). A constant of the UDS implementation -
+    -- only change this if a UDS update flips the convention (the module WARNS
+    -- "Sun vector sign LOOKS WRONG" if it detects a persistent mismatch).
+    SunVectorSign = -1,
+
+    -- Effective sun events for the pseudo-elevation FALLBACK (used only while
+    -- the sun vector is unreadable, e.g. the first seconds of a course load).
+    -- August-calibrated; the drifting date moves the real events away from
+    -- these, which is fine for a seconds-long fallback.
     SunriseTOD = 600, SunsetTOD = 1930,
 
-    -- TEMPORARY probe: log UDS's interior-occlusion cache when it changes.
-    -- Drive through a tunnel; if "Interior occlusion" lines appear, TXR wired
-    -- UDS's occlusion system (native tunnel exposure/light multipliers usable).
-    -- Turn off after the probe session.
-    ProbeInterior = true,
+    -- PP-volume RESEARCH flag: keeps the containment watcher running even
+    -- with no tunnel features configured, for ID-dump/classification drives.
+    -- The watcher runs anyway whenever tunnel features are on - leave false.
+    ProbePPVolumes = false,
+
+    -- TUNNEL FEATURES (2026-07-09). The course's 33 PostProcessVolumes are
+    -- inert as shipped but outline the covered road sections; the containment
+    -- poll fires ENTER/EXIT as the car crosses them. Volumes listed here BY
+    -- NAME (from "PP volume [i]" ID-dump / ENTER log lines) are treated as
+    -- tunnels: bias trim while inside + rain particle suppression.
+    -- These four are video-confirmed tunnel bores (2026-07-09 00:13 capture):
+    TunnelVolumes = {
+        "9C6B0021494DE9FA01_1223679167",  -- Takebashi-area tunnel (east part)
+        "9C6B0021494DE9FA01_1415472168",  -- Takebashi tunnel west part (the
+                                          -- bore is CHAINED [7]->[6]; missing
+                                          -- this one dropped the trim+rain
+                                          -- kill mid-tunnel on 2026-07-09)
+        "PostProcessVolume_20",           -- the long C1 tunnel (Miyakezaka JCT)
+        "PostProcessVolume_19",           -- Kasumigaseki tunnel
+        "PostProcessVolume_24",           -- Ginza-area tunnel (C1 inner)
+    },
+    -- Membership shortcut (user call 2026-07-09): treat EVERY volume the
+    -- devs authored a nonzero AutoExposureBias on as covered - their own
+    -- list, so un-ID'd bores (the "same symptoms" stretches) are covered
+    -- without more video passes. Costs: open trenches/portal ramps and a
+    -- few HUGE area boxes ([8][9][21][33], whole-district size) also get
+    -- trim + rain kill - if rain visibly dies on open road or a good-looking
+    -- trench goes dark, set this false (curated TunnelVolumes still applies).
+    TunnelAutoByBias = true,
+    -- Tunnel trim v2: EV = -TunnelTrimScale * authoredBias * dayWeight.
+    -- authoredBias = the volume's dev-authored dormant AutoExposureBias
+    -- (0.5..0.8 on the confirmed bores - the devs' own coveredness map, so
+    -- deeper tunnels trim harder for free). dayWeight ramps 0->1 across sun
+    -- elevation TunnelTrimFade.low..high: night tunnels are fine stock, so
+    -- the trim dies with the sun and never steps at dusk.
+    -- 3.0 measured "-0.5 EV short" (user 2026-07-09) -> 3.7 = Kasumigaseki
+    -- -2.6 EV, Ginza -3.0, Takebashi -1.85 at midday.
+    TunnelTrimScale = 3.7,
+    TunnelTrimFade = { low = 0.0, high = 12.0 },
+    -- Suppress rain/snow particles inside tunnels (weather STATE untouched -
+    -- it keeps raining outside; Weather.SetPrecipSuppressed does the work).
+    -- Lookahead (seconds of travel) starts the kill just before the portal
+    -- so already-falling drops are gone as you cross it.
+    TunnelRainKill = true,
+    TunnelRainLookahead = 1.2,
 
     -- Per-weather compensation (same semantics as the legacy module; smoothed).
     -- These are the LIVE tables now - the copies in Config.Exposure below are
@@ -984,10 +1116,10 @@ Config.ModuleToggles = {
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 3, Patch = 1,
-    String = "3.3.1",
+    Major = 3, Minor = 4, Patch = 0,
+    String = "3.4.0",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.3.1",
+    FullName = "TXR Weather Mod v3.4.0",
 }
 
 return Config

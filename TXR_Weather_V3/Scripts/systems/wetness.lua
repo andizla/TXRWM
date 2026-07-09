@@ -16,7 +16,6 @@ local Wetness = {}
 local Log = require("core.logging")
 local Utils = require("core.utils")
 local State = require("core.state")
-local Config = require("config")
 local Actors = require("systems.actors")
 local Presets = require("systems.presets")
 
@@ -892,7 +891,7 @@ function Wetness.OnActorsReady()
     
     -- Step 3: Get Material State Manager and START THE SIMULATION
     local msm = nil
-    local msmSuccess, msmErr = pcall(function()
+    local _, msmErr = pcall(function()
         msm = udw[UDW_PROPS.MATERIAL_STATE_MANAGER]
     end)
     

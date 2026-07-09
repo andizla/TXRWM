@@ -15,7 +15,6 @@ local Headlights = {}
 local Log = require("core.logging")
 local State = require("core.state")
 local Config = require("config")
-local Utils = require("core.utils")
 
 -- Lazy-load to avoid circular dependencies
 local Actors = nil

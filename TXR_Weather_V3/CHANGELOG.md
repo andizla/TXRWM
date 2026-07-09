@@ -3,6 +3,43 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.4.0] - 2026-07-09
+
+### Changed
+- **New exposure engine.** The mod no longer replaces the game's auto-exposure with a
+  fixed manual anchor; it rides the stock auto-exposure and steers it through the sky
+  system's own exposure-bias controls, driven by the sun's real elevation. Dusk and dawn
+  land wherever the sun actually is, brightness self-normalizes across weathers, and
+  menus/cutscenes can no longer catch an unmanaged exposure state.
+  **Re-run the installer:** the old `r.EyeAdaptation.MethodOverride=3` line must be gone
+  from Engine.ini for 3.4+ to look right - the updated installer strips it automatically.
+- **Seasons.** The in-game calendar advances every in-game midnight (the game saves it),
+  so sunrise and sunset times drift through the year like real Tokyo - long summer
+  evenings, early winter nights. Prefer a fixed date? Set `Config.RealSun.PinMonth` /
+  `PinDay`.
+- **Tunnels handled properly.** Entering a tunnel in daylight now darkens the picture
+  the way eyes would (nights were already right), and rain/snow stop falling under
+  covered road and return at the exit portal - it keeps raining outside. Detection uses
+  the course's own covered-road volume data, so it covers every tunnel without a
+  hand-made list.
+- **The Parking Area continues your weather.** No more canned always-night PA: your
+  course weather and time of day carry over and the clock keeps running.
+  `Config.PA.Mode` = `"continue"` (default), `"freeze"` (carry the state, stop the
+  clock), or `"stock"` (the old canned night).
+- **Dawn/dusk slow-time windows follow the sun**, tracking the drifting seasons instead
+  of a fixed clock window.
+- **Cloudy and overcast nights lifted** to a realistic city-glow floor through the
+  sky's native night levers (they were the darkest nights of all; real overcast city
+  nights are the brightest).
+
+### Added
+- `Alt+J` - manually toggle rain/snow particles off/on without changing the weather.
+
+### Fixed
+- A stuck game clock when loading into a course during a dawn/dusk window in
+  fast-forward mode.
+- Changing the weather while inside a tunnel no longer makes it rain in the tunnel.
+
 ## [3.3.1] - 2026-07-06
 
 ### Fixed

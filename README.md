@@ -5,6 +5,14 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 
 ## Features
 - Dynamic time of day - adjustable speed, pause, and persistence across sessions
+- **Dynamic exposure (3.4.0)** - rides the game's own auto-exposure, steered by the sun's real
+  elevation: dusk and dawn land wherever the sun actually is, in any season
+- **Seasons (3.4.0)** - the in-game calendar advances and sunrise/sunset drift through the year
+  like real Tokyo (pinnable to a fixed date)
+- **Tunnels (3.4.0)** - daylight tunnel exposure adapts like your eyes would, and rain stops
+  under covered road and returns at the portal
+- **Parking Area weather (3.4.0)** - the PA continues your course weather and time of day with
+  the clock running (no more canned always-night)
 - **Night-only mode** - dusk, night, dawn, then straight back to dusk: the day is skipped entirely (off by default; installer option)
 - **Cinematic sky** - a daytime look pass: denser cloud cores, silver-lining glow, high cirrus that lights up near the sun, richer sky color, luminous overcast, stronger sunsets, slower cloud drift
 - **Per-weather exposure compensation** - overcast, rain, fog and snow scenes automatically get brighter instead of gray mush

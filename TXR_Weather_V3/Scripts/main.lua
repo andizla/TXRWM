@@ -4,9 +4,6 @@
 
 -- ============== MODULE LOADING ==============
 
--- Get the script directory for relative requires
-local scriptDir = debug.getinfo(1, "S").source:match("@?(.*/)") or "./"
-
 -- Helper to safely require modules
 local function safeRequire(modulePath, moduleName)
     local success, result = pcall(require, modulePath)
@@ -385,7 +382,6 @@ end
 local lastHeartbeat = os.time()
 local tickCount = 0
 local initialWeatherApplied = false  -- Track if we've applied initial weather this session
-local lastWorldContext = "unknown"   -- Track world context for PA transitions
 local restoredFromPA = false         -- Flag to skip initial weather when restoring from PA
 local _pendingRestore = false        -- Flag set when actors become invalid, triggers restore on next valid
 
@@ -397,6 +393,101 @@ local function enforcePAFreezeWatchdog()
         pcall(function() uds["Simulation Speed"] = 0 end)
         pcall(function() uds["Time Speed"] = 0 end)
     end
+end
+
+-- Captured course state (runtime fallback for the persistence file), written
+-- on map unload. Declared HERE so applyPAState below captures it as an
+-- upvalue (declared further down it would silently split into a global).
+local _CourseStateBeforePA = nil
+
+-- PA weather (Config.PA.Mode, canon 2026-07-09): the PA scene lives in the
+-- SAME outgame world as the garage but has its OWN working UDS/UDW (canned
+-- state: always night, TOD 1950 / cloud 7.5 / fog 3.0). Discovery succeeding
+-- in an outgame world = PA - the garage's UDS never validates.
+--   "continue": carry the captured course weather/time into the PA and keep
+--               the clock running at the captured course speed.
+--   "freeze":   same carry, then freeze time (the original V1.32 behavior).
+--   "stock":    leave the canned PA night alone.
+local paStateApplied = false
+
+local function applyPAState()
+    local mode = "continue"
+    pcall(function()
+        if type(Config.PA.Mode) == "string" then mode = Config.PA.Mode:lower() end
+    end)
+
+    local uds = Actors and Actors.GetUDS and Actors.GetUDS()
+    local udw = Actors and Actors.GetUDW and Actors.GetUDW()
+    if not uds then return end
+
+    -- Captured course state: persistence file first, runtime capture fallback
+    local tod, cloud, fog, preset, speed = nil, nil, nil, nil, nil
+    if Persistence and Persistence.LoadRaw then
+        local data = Persistence.LoadRaw()
+        if data then
+            tod, cloud, fog, preset, speed =
+                data.tod, data.cloud, data.fog, data.preset, data.speed
+        end
+    end
+    local cap = _CourseStateBeforePA
+    if cap then
+        if (not tod or tod < 0) and cap.tod then tod = cap.tod end
+        if (not cloud or cloud < 0) and cap.cloud then cloud = cap.cloud end
+        if fog == nil and cap.fog then fog = cap.fog end
+        if preset == nil and cap.preset then preset = cap.preset end
+        if speed == nil and cap.speed then speed = cap.speed end
+    end
+
+    if tod and tod >= 0 and tod <= 2400 then
+        pcall(function() uds["Time Of Day"] = tod end)
+    end
+    if udw then
+        if cloud and cloud >= 0 then
+            pcall(function() udw["Cloud Coverage - Manual Override"] = true end)
+            pcall(function() udw["Cloud Coverage"] = cloud end)
+        end
+        if fog ~= nil then
+            pcall(function() udw["Fog - Manual Override"] = true end)
+            pcall(function() udw["Fog"] = fog end)
+        end
+    end
+    -- Re-apply the preset for rain/effects (Weather.Apply accepts the PA
+    -- scene: its actors validate, unlike the garage's)
+    if preset and Weather and Weather.Apply then
+        pcall(function() Weather.Apply(preset, 0) end)
+    end
+
+    if mode == "freeze" then
+        pcall(function() uds["Simulate Real Sun"] = false end)
+        pcall(function() uds["Animate Time of Day"] = false end)
+        pcall(function() uds["Time Speed"] = 0 end)
+        pcall(function() uds["Simulation Speed"] = 0 end)
+        if State and State.SetPAFrozen then State.SetPAFrozen(true) end
+    else
+        -- continue: PA clock runs at the captured course speed
+        pcall(function() uds["Animate Time of Day"] = true end)
+        local spd = speed
+        if not spd and State and State.GetTimeSpeed then spd = State.GetTimeSpeed() end
+        if spd and spd > 0 then
+            pcall(function() uds["Time Speed"] = 1.0 end)
+            pcall(function() uds["Simulation Speed"] = spd end)
+        end
+    end
+
+    -- Exposure follows the PA's real sun (light_cycle bypasses the garage
+    -- constants for a validated PA scene) - arm it like a course entry.
+    if LightCycle and LightCycle.OnCourseLoad then
+        LightCycle.OnCourseLoad()
+    end
+
+    Log.Info("Main", "PA state applied", {
+        mode = mode,
+        tod = tod or -1,
+        cloud = cloud or -1,
+        fog = fog or -1,
+        preset = preset or "?",
+        speed = speed or -1,
+    })
 end
 
 local function onTick()
@@ -534,6 +625,24 @@ local function onTick()
             end
         end
         
+        -- PA lifecycle (Config.PA.Mode ~= "stock"): apply the captured course
+        -- state once when the PA's own actors bind; clear when they're gone.
+        if Config.PA and Config.PA.Mode and Config.PA.Mode ~= "stock" then
+            if not paStateApplied and Actors and Actors.IsInPAScene and Actors.IsInPAScene() then
+                paStateApplied = true
+                applyPAState()
+            elseif paStateApplied and Actors and not Actors.HasActors() then
+                paStateApplied = false
+                if State and State.IsPAFrozen and State.IsPAFrozen() then
+                    State.SetPAFrozen(false)
+                end
+                if LightCycle and LightCycle.OnCourseUnload then
+                    LightCycle.OnCourseUnload()   -- disarm; the PA actors are gone
+                end
+                Log.Info("Main", "PA state cleared (actors lost)")
+            end
+        end
+
         -- Reset flag when leaving course
         if initialWeatherApplied and Actors and not Actors.HasActors() then
             -- Save state before leaving course
@@ -898,7 +1007,8 @@ end
 
 -- Track world context for PA transitions
 local _LastWorldTag = "unknown"
-local _CourseStateBeforePA = nil
+-- (_CourseStateBeforePA is declared above the main loop - applyPAState
+-- captures it as an upvalue)
 local _WorldLogPending = true       -- one-shot "World identify" log per map load (PA-name hunt)
 
 -- LoadMapPreHook - fires BEFORE map unload while actors still valid
@@ -1101,10 +1211,11 @@ if RegisterBeginPlayPreHook then
                 if type(ws) ~= "string" or #ws == 0 then return end
                 worldString = ws  -- Capture for logging
                 local lw = ws:lower()
+                -- NOTE: there is NO separate "pa" world - the PA scene lives
+                -- inside the outgame world (L_OutGame_P) and is handled by
+                -- the tick loop's PA lifecycle (Actors.IsInPAScene).
                 if lw:find("garage") or lw:find("outgame") or lw:find("ls_") then
                     tag = "outgame"
-                elseif lw:find("_pa") or lw:find("/pa") or lw:find(" pa ") or lw:find("pa_") or lw:find("pause") then
-                    tag = "pa"
                 end
             end
         end)
@@ -1112,90 +1223,11 @@ if RegisterBeginPlayPreHook then
         if Log then Log.Info("Main", string.format("BeginPlayPreHook: worldString=%s tag=%s (was %s)",
             worldString:sub(1,80), tag, _LastWorldTag)) end
         
-        -- Handle PA entry - V1.32 pattern: load from file, apply, freeze
-        if tag == "pa" then
-            if Log then Log.Info("Main", "Entering PA - loading state from file") end
-            
-            -- STEP 1: Load state from persistence file FIRST (V1.32 pattern)
-            -- This ensures we have valid saved values even if runtime vars were lost
-            local savedTOD, savedCloud, savedFog, savedPreset = nil, nil, nil, nil
-            if Persistence and Persistence.LoadRaw then
-                local data = Persistence.LoadRaw()
-                if data then
-                    savedTOD = data.tod
-                    savedCloud = data.cloud
-                    savedFog = data.fog
-                    savedPreset = data.preset
-                end
-            end
-            
-            -- Fallback to runtime captured state if file didn't have values
-            if (not savedTOD or savedTOD < 0) and _CourseStateBeforePA and _CourseStateBeforePA.tod then
-                savedTOD = _CourseStateBeforePA.tod
-            end
-            if (not savedCloud or savedCloud < 0) and _CourseStateBeforePA and _CourseStateBeforePA.cloud then
-                savedCloud = _CourseStateBeforePA.cloud
-            end
-            if (not savedFog) and _CourseStateBeforePA and _CourseStateBeforePA.fog then
-                savedFog = _CourseStateBeforePA.fog
-            end
-            if (not savedPreset) and _CourseStateBeforePA and _CourseStateBeforePA.preset then
-                savedPreset = _CourseStateBeforePA.preset
-            end
-            
-            -- STEP 2: Apply saved TOD to PA actor
-            if savedTOD and savedTOD >= 0 and savedTOD <= 2400 then
-                pcall(function() Actor["Time Of Day"] = savedTOD end)
-            end
-            
-            -- STEP 3: Get UDW and apply cloud/fog
-            local udw = nil
-            pcall(function() udw = Actor["Ultra Dynamic Weather"] end)
-            
-            if udw then
-                -- Update State module with PA actors
-                if State and State.SetUDS then State.SetUDS(Actor) end
-                if State and State.SetUDW then State.SetUDW(udw) end
-                
-                -- Apply cloud/fog with manual override
-                if savedCloud and savedCloud >= 0 then
-                    pcall(function() udw["Cloud Coverage - Manual Override"] = true end)
-                    pcall(function() udw["Cloud Coverage"] = savedCloud end)
-                end
-                if savedFog ~= nil then
-                    pcall(function() udw["Fog - Manual Override"] = true end)
-                    pcall(function() udw["Fog"] = savedFog end)
-                end
-            end
-            
-            -- STEP 4: Re-apply weather preset to get rain/effects
-            if savedPreset and Weather and Weather.Apply then
-                if Log then Log.Info("Main", "PA: Re-applying preset " .. tostring(savedPreset)) end
-                pcall(function() Weather.Apply(savedPreset, 0) end)
-            end
-            
-            -- STEP 5: Freeze time
-            pcall(function() Actor["Simulate Real Sun"] = false end)
-            pcall(function() Actor["Animate Time of Day"] = false end)
-            pcall(function() Actor["Time Speed"] = 0 end)
-            pcall(function() Actor["Simulation Speed"] = 0 end)
-            
-            -- STEP 6: Save state snapshot (like V1.32)
-            if Persistence and Persistence.Save then
-                Persistence.Save("enter_pa")
-            end
-            
-            if State and State.SetPAFrozen then State.SetPAFrozen(true) end
-            if Log then Log.Info("Main", string.format("PA frozen: TOD=%.2f cloud=%.2f fog=%.2f preset=%s",
-                savedTOD or -1, savedCloud or -1, savedFog or -1, savedPreset or "?")) end
-            
-            _LastWorldTag = tag
-            return  -- Don't continue to course handling
-            
-        -- Handle return to course (PA/map transition)
-        -- Don't restore here - let the main tick loop's Persistence.Restore() handle it
-        -- This matches Fix1 behavior where TOD worked
-        elseif tag == "course" and _pendingRestore then
+        -- PA handling moved to the tick loop's PA lifecycle (applyPAState):
+        -- the old tag=="pa" branch here was DEAD - no world path ever matched,
+        -- the PA scene is part of the outgame world. Course return: don't
+        -- restore here - the tick loop's Persistence.Restore() handles it.
+        if tag == "course" and _pendingRestore then
             if Log then Log.Info("Main", "Course entry - deferring restore to tick loop") end
             _pendingRestore = false
             -- restoredFromPA stays false so tick loop will call Persistence.Restore()

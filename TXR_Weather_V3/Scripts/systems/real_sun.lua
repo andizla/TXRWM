@@ -106,8 +106,20 @@ local function runOnGameThread()
         sys_time   = tostring(readProp(uds, PROP_SYS_TIME)),
         apply_dst  = tostring(readProp(uds, PROP_APPLY_DST)),
     }
+    -- UDS's own computed sun events for the current date (data for aligning
+    -- fallback windows and for the seasons feature; the elevation driver does
+    -- not need them).
+    pcall(function()
+        local fn = uds["Current Sunrise Event Time"]
+        if fn then probe.sunrise_event = tostring(fn(uds)) end
+    end)
+    pcall(function()
+        local fn = uds["Current Sunset Event Time"]
+        if fn then probe.sunset_event = tostring(fn(uds)) end
+    end)
+
     lastProbe = probe
-    Log.Info(MODULE, "Sim probe (stock)", probe)
+    Log.Debug(MODULE, "Sim probe (stock)", probe)
 
     -- Exposure-surface probe: UDS's native exposure system (the engine.ini
     -- MethodOverride=3 cvar likely overrides it, and UDS's own PostProcess
@@ -140,7 +152,7 @@ local function runOnGameThread()
         local fn = uds["Current Exposure Bias"]
         if fn then expProbe.current_bias = tostring(fn(uds)) end
     end)
-    Log.Info(MODULE, "Exposure probe (stock)", expProbe)
+    Log.Debug(MODULE, "Exposure probe (stock)", expProbe)
 
     -- Source-light probe: the Layer 1 lever surface (available light). These
     -- stock values are the baselines the light-cycle rework scales from.
@@ -155,8 +167,140 @@ local function runOnGameThread()
         light_pollution = tostring(readProp(uds, "Light Pollution Intensity")),
         overcast_day    = tostring(readProp(uds, "Overcast Brightness Day")),
         overcast_night  = tostring(readProp(uds, "Overcast Brightness Night")),
+        skylight_mode   = tostring(readProp(uds, "Sky Light Mode")),
+        realtime_capture = tostring(readProp(uds, "Real Time Capture")),
     }
-    Log.Info(MODULE, "Light probe (stock)", lightProbe)
+    Log.Debug(MODULE, "Light probe (stock)", lightProbe)
+
+    -- Game PP-component probe: the course sky / course weather / HDR actors
+    -- carry their own composited PostProcess components - the devs' exposure
+    -- plumbing (Curve_ExposureCompensation lives in the same folder). Reads
+    -- each component's exposure-relevant settings once per course.
+    for _, cls in ipairs({"BP_CourseSky_C", "BP_CourseWeather_C", "BP_HDR_C"}) do
+        pcall(function()
+            local a = FindFirstOf(cls)
+            if not (a and a.IsValid and a:IsValid()) then return end
+            local pp = nil
+            pcall(function() pp = a.PostProcess end)
+            if not (pp and pp.IsValid and pp:IsValid()) then
+                Log.Debug(MODULE, "Game PP probe: " .. cls .. " has no PostProcess")
+                return
+            end
+            local info = {}
+            pcall(function() info.enabled = tostring(pp.bEnabled) end)
+            pcall(function() info.unbound = tostring(pp.bUnbound) end)
+            pcall(function() info.weight = tostring(pp.BlendWeight) end)
+            pcall(function()
+                local s = pp.Settings
+                info.ov_bias   = tostring(s.bOverride_AutoExposureBias)
+                info.bias      = tostring(s.AutoExposureBias)
+                info.ov_curve  = tostring(s.bOverride_AutoExposureBiasCurve)
+                pcall(function()
+                    local c = s.AutoExposureBiasCurve
+                    if c then info.curve = c:GetFullName():match("([^%.%s]+)$") or "set" end
+                end)
+                info.ov_minb   = tostring(s.bOverride_AutoExposureMinBrightness)
+                info.minb      = tostring(s.AutoExposureMinBrightness)
+                info.ov_maxb   = tostring(s.bOverride_AutoExposureMaxBrightness)
+                info.maxb      = tostring(s.AutoExposureMaxBrightness)
+                info.ov_method = tostring(s.bOverride_AutoExposureMethod)
+            end)
+            Log.Debug(MODULE, "Game PP probe: " .. cls, info)
+        end)
+    end
+
+    -- TXR post-process volume IDENTIFICATION (2026-07-08 v2): all volumes,
+    -- with world position + bounds (for mapping onto known tunnel locations
+    -- and for a future camera-containment signal: tunnel rain kill + tunnel
+    -- exposure trim) and a WIDE override sweep (reports which settings each
+    -- volume actually overrides - the authored purpose).
+    pcall(function()
+        local vols = FindAllOf("PostProcessVolume")
+        if not vols or #vols == 0 then
+            Log.Debug(MODULE, "PP volume probe: none found")
+            return
+        end
+        Log.Debug(MODULE, "PP volume probe", {count = #vols})
+        local FLAGS = {
+            "AutoExposureBias", "AutoExposureMinBrightness", "AutoExposureMaxBrightness",
+            "AutoExposureMethod", "AutoExposureBiasCurve", "BloomIntensity",
+            "VignetteIntensity", "ColorSaturation", "ColorContrast", "ColorGamma",
+            "SceneColorTint", "AmbientOcclusionIntensity", "MotionBlurAmount",
+            "DepthOfFieldFocalDistance", "SceneFringeIntensity", "FilmGrainIntensity",
+            "IndirectLightingIntensity", "WhiteTemp",
+        }
+        for i, v in ipairs(vols) do
+            local info = {}
+            pcall(function()
+                local fn = v:GetFullName() or ""
+                info.name = fn:match("PostProcessVolume_UAID_([^%s]+)$") or fn:match("PersistentLevel%.([^%s]+)") or "?"
+            end)
+            pcall(function()
+                local loc = v:K2_GetActorLocation()
+                if loc then info.loc = string.format("%.0f,%.0f,%.0f", loc.X, loc.Y, loc.Z) end
+            end)
+            -- Bounds v4: Origin/BoxExtent are OUT-PARAMS - UE4SS fills a
+            -- passed-in table keyed by param name (proven convention:
+            -- GetDisplayVehicle/out_vehicle in headlights.lua). The earlier
+            -- reads took Lua RETURN values that never existed. Same logic as
+            -- light_cycle's ppPollGT.
+            local function takeExtent(oT, xT)
+                if not xT then return end
+                -- Shapes probed in separate pcalls: a missing field on
+                -- userdata ERRORS rather than returning nil.
+                local extent
+                pcall(function() extent = xT.BoxExtent end)
+                if extent == nil then extent = xT end
+                pcall(function()
+                    info.extent = string.format("%.0f,%.0f,%.0f", extent.X, extent.Y, extent.Z)
+                end)
+            end
+            pcall(function()
+                local UEH = nil
+                pcall(function() UEH = require("UEHelpers") end)
+                local ksl = UEH and UEH.GetKismetSystemLibrary and UEH.GetKismetSystemLibrary()
+                if ksl then
+                    local oT, xT = {}, {}
+                    local r1, r2 = ksl:GetActorBounds(v, oT, xT)
+                    takeExtent(oT, xT)
+                    if not info.extent then takeExtent(r1, r2) end
+                end
+            end)
+            if not info.extent then
+                pcall(function()
+                    local oT, xT = {}, {}
+                    local r1, r2 = v:GetActorBounds(false, oT, xT, false)
+                    takeExtent(oT, xT)
+                    if not info.extent then takeExtent(r1, r2) end
+                end)
+            end
+            pcall(function() info.unbound = tostring(v.bUnbound) end)
+            pcall(function() info.enabled = tostring(v.bEnabled) end)
+            pcall(function()
+                local s = v.Settings
+                if s then
+                    local set = {}
+                    for _, flag in ipairs(FLAGS) do
+                        local on = nil
+                        pcall(function() on = s["bOverride_" .. flag] end)
+                        if on == true then
+                            local val = nil
+                            pcall(function() val = s[flag] end)
+                            if type(val) == "number" then
+                                set[#set + 1] = flag .. "=" .. string.format("%.3f", val)
+                            else
+                                set[#set + 1] = flag
+                            end
+                        end
+                    end
+                    info.overrides = (#set > 0) and table.concat(set, " ") or "NONE"
+                    -- always report the dormant authored bias too
+                    pcall(function() info.bias_authored = string.format("%.2f", s.AutoExposureBias) end)
+                end
+            end)
+            Log.Debug(MODULE, "PP volume [" .. i .. "]", info)
+        end
+    end)
 
     -- Date pin (user policy 2026-07-07: pinnable, default off = seasons drift).
     -- The game itself persists the drifting date across sessions, so unpinned
@@ -169,17 +313,10 @@ local function runOnGameThread()
         Log.Info(MODULE, "Date pinned", changes)
     end
 
-    -- Interior-system probe (TEMPORARY): stock ships Apply Interior
-    -- Adjustments=false - the occlusion cache may read 0.000 in tunnels simply
-    -- because the system never runs. Stock interior multipliers are all 1.0
-    -- and the interior bias is 0, so enabling it is visually a NO-OP even if
-    -- alive - a pure probe. Verdict comes from light_cycle's "Interior
-    -- occlusion" watcher while driving a tunnel with this on.
-    if cfg.EnableInteriorProbe then
-        local changes = {}
-        setAbs(uds, "Apply Interior Adjustments", true, changes)
-        Log.Info(MODULE, "Interior probe enabled", changes)
-    end
+    -- (Interior-system probe REMOVED 2026-07-09: verdict was final on
+    -- 2026-07-07 - UDS's interior/occlusion family is dead in TXR's cook,
+    -- the cache never moves even force-enabled. Tunnels are handled by the
+    -- PP-volume containment system in light_cycle instead.)
 
     if not enabled then return end
 

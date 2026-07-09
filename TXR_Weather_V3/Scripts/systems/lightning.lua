@@ -8,8 +8,6 @@ local Lightning = {}
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
 local Utils = require("core.utils")
-local State = require("core.state")
-local Config = require("config")
 local Actors = require("systems.actors")
 
 local MODULE = "Lightning"

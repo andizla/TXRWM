@@ -70,6 +70,7 @@ base.
 | `Alt+C` / `Alt+Shift+C` | Skylight tuning: raise / lower the skylight intensity |
 | `Alt+V` / `Alt+Shift+V` | Skylight tuning: log a datapoint (tag `SkylightTune`) / reset overrides back to the exposure curve |
 | `Alt+W` / `Alt+Shift+W` | Force wetness / force dry (only if the WIP wetness module is enabled) |
+| `Alt+J` | Toggle rain/snow particles off/on without changing the weather (the tunnel system drives the same mechanism automatically) |
 
 In **manual** headlight mode you can also use the car's own light button (keyboard or controller):
 a short press turns headlights on, a ~2-second hold turns them off.
@@ -94,7 +95,18 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Clouds and fog** (`clouds_fog.lua`): drift/jitter, day "mood", morning profiles, smooth
   preset ramps. **Enhanced fog** (`enhanced_fog.lua`) drives UDS `Scale Fog Density`.
 - **Lightning** (`lightning.lua`): flashes for thunderstorm presets.
-- **Dawn/dusk transitions** (`transitions.lua`): slow-time windows + a Tokyo tint.
+- **Dawn/dusk transitions** (`transitions.lua`): slow-time windows + a Tokyo tint. Since 3.4.0 the
+  windows are keyed to the sun's real elevation, so they follow the seasons.
+- **Seasons** - *new in 3.4.0.* The in-game calendar advances every in-game midnight (the game
+  saves it), so sunrise/sunset drift through the year like real Tokyo. Pin a fixed date with
+  `Config.RealSun.PinMonth` / `PinDay` if you prefer consistency.
+- **Tunnels** - *new in 3.4.0* (`light_cycle.lua` containment + `weather.lua` suppression). Driving
+  under covered road in daylight darkens the picture the way eyes would, and rain/snow stop
+  falling inside and return at the exit portal. Uses the course's own covered-road volume data.
+  Knobs in `Config.LightCycle` (`TunnelTrimScale`, `TunnelRainKill`, `TunnelAutoByBias`).
+- **Parking Area weather** - *new in 3.4.0.* The PA continues your course weather and time of day
+  with the clock running, instead of the canned always-night look. `Config.PA.Mode`:
+  `"continue"` (default) / `"freeze"` / `"stock"`.
 - **Weather sounds** (`audio.lua`) - *working since 3.2.0.* Rain and wind loops that follow the live
   weather intensity, plus distant/close thunder cracks on a randomized timer during thunderstorms.
   Played directly from the UDS sound assets (the weather system's own sound path is inert in TXR).
@@ -128,13 +140,15 @@ a short press turns headlights on, a ~2-second hold turns them off.
   intensity, easy to disable.
 
 ### Lighting and exposure
-- **Auto-exposure** (`exposure.lua`): a 144-slot (10-min) time-of-day curve pushing
-  `r.SkylightIntensityMultiplier`, `r.EyeAdaptation.LensAttenuation`, and the Lumen skylight-leak
-  cvar, interpolated continuously and marshalled to the game thread. Garage forces the night slot.
-  Since 3.3.0: **per-weather compensation** (`Config.Exposure.WeatherSkyMult` boosts skylight
-  brightness under overcast/rain/fog/snow, `WeatherLensMult` shapes adaptation as a secondary
-  lever; both smoothed over the clear-sky curve) and **live skylight tuning keybinds**
-  (`Alt+Z/X/C`, confirm with `Alt+V` - see Keybinds).
+- **Dynamic exposure** (`light_cycle.lua`) - *reworked in 3.4.0.* The game's own auto-exposure
+  stays in charge; the mod steers it through the sky system's native exposure-bias controls,
+  driven by the sun's REAL elevation (`Config.LightCycle.BiasCurve`, EV vs sun angle). Dusk and
+  dawn land wherever the sun actually is - any date, any season - and brightness self-normalizes
+  across weathers. Tunnel exposure trim rides the same system. Requires the 3.4 Engine.ini
+  (re-run the installer). Live **skylight tuning keybinds** still apply (`Alt+Z/X/C`, confirm
+  with `Alt+V` - see Keybinds). The pre-3.4 fixed 144-slot curve (`exposure.lua`) remains as a
+  config fallback (`Config.Exposure.Enabled` + `OutputMode = "cvars"`, needs the old
+  MethodOverride line back).
 - **Headlights** (`headlights.lua`): Auto mode follows the exposure brightness (with hysteresis) so
   the lamps track available light; manual mode (`Alt+Q`, the garage, and the light-button gesture);
   adjustable brightness; animated pop-ups via the game's native raise/lower.
@@ -174,11 +188,17 @@ place). General highlights:
 - `Config.Weather.Enabled = false` - time-of-day + visuals only, no weather (presets/rain/cycling off).
 - `Config.ModuleToggles` - hard on/off per module (the handle is nil-ed in `main.lua`, so the module's
   tick/setup never runs). Core modules (Actors/Presets/Keybinds) are not toggleable.
-- `Config.Exposure.Slots` - the 144-row day/night exposure curve. `sky` is the brightness lever;
-  `lens` tracks with it (both higher = brighter). Use the `Alt+D` / `Alt+Shift+D` feedback keys, then
-  grep the log for `ExposureTune` to see which slot to nudge. Every feedback keypress is also
-  appended to `Logs/tuning_feedback.log` - a small, session-marked file that is perfect to attach
-  when reporting exposure that looks wrong (no need to send full session logs).
+- `Config.LightCycle.BiasCurve` - the day/night exposure shaping: EV bias vs sun elevation
+  (negative = darker; anchors interpolate). Use the `Alt+D` / `Alt+Shift+D` feedback keys, then
+  grep the log for `ExposureTune` to see the sun elevation to nudge. Every feedback keypress is
+  also appended to `Logs/tuning_feedback.log` - a small, session-marked file that is perfect to
+  attach when reporting exposure that looks wrong (no need to send full session logs).
+- `Config.LightCycle.TunnelTrimScale` / `TunnelRainKill` / `TunnelAutoByBias` - tunnel handling:
+  how hard tunnels darken in daylight, whether rain cuts inside covered road, and whether the
+  course's own covered-road data picks the volumes (set `TunnelAutoByBias = false` to fall back
+  to the curated `TunnelVolumes` list only).
+- `Config.PA.Mode` - parking-area weather: `"continue"` (default), `"freeze"`, `"stock"`.
+- `Config.RealSun.PinMonth` / `PinDay` - pin the calendar to a fixed date (default: seasons drift).
 - `Config.Headlights.Mode` - `"auto"` (exposure-driven, untouchable at runtime), `"force_on"`, or
   `"force_off"` (manual; `Alt+Q` toggles). Manual on/off + brightness persist across restarts.
 
@@ -279,6 +299,14 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 
 See `CHANGELOG.md` for the full list. Most recent:
 
+- **3.4.0** - New exposure engine (rides the game's own auto-exposure, driven by the sun's real
+  elevation - re-run the installer); seasons (the calendar advances and sunrise/sunset drift like
+  real Tokyo, pinnable); tunnels handled properly (daylight exposure adaptation + rain stops under
+  covered road); the Parking Area continues your course weather with the clock running; sun-synced
+  dawn/dusk slow-time; cloudy-night city-glow floor; `Alt+J` manual rain toggle.
+- **3.3.1** - Transition crash hardening; course loads settle in seconds; headlight brightness
+  and auto-timing fixes; dawn/dusk exposure retune from feedback datapoints; exposure feedback
+  side-channel (`Logs/tuning_feedback.log`).
 - **3.3.0** - Night-only mode (dusk -> night -> dawn, repeat); debug short cycle
   (full dawn/dusk, ~1h day and night cores); cinematic daytime sky (cloud shading, cirrus, color
   grade, golden hour); god rays fixed (first time actually working); per-weather exposure

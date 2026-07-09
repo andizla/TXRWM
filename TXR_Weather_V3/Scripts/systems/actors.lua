@@ -330,10 +330,14 @@ function Actors.GetWorldTag()
     return State.GetWorldContext()
 end
 
---- Check if currently in PA (parking area)
+--- Check if we're in the PA scene. There is NO separate "pa" world: the PA
+--- lives in the same outgame world as the garage but has its OWN working
+--- UDS/UDW. Discovery succeeding there is the reliable signal - the garage's
+--- UDS never validates, so validated cached actors + outgame context = PA.
 --- @return boolean
-function Actors.IsInPA()
-    return State.GetWorldContext() == "pa"
+function Actors.IsInPAScene()
+    if State.GetWorldContext() ~= "outgame" then return false end
+    return validateCachedActors()
 end
 
 --- Check if in outgame (garage/menu)

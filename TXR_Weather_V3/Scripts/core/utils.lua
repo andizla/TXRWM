@@ -67,10 +67,10 @@ function Utils.SafeSetProperty(obj, propertyName, value)
         return false
     end
     
-    local success, err = pcall(function()
+    local success = pcall(function()
         obj[propertyName] = value
     end)
-    
+
     return success
 end
 

@@ -58,7 +58,6 @@ local reapplyOnLoad = true
 local debugRows = true
 
 -- ============== GAME OBJECT NAMES (v1.5) ==============
-local ALIMENT_CLASS = "WBP_OutGame_Setting_List_Aliment2_C"
 local GARAGE_MANAGER_CLASS = "BP_OutGameGarageManager_C"
 local USERINFO_CLASS = "UserInfoGameInstanceSubsystem"
 

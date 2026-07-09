@@ -33,8 +33,11 @@ $FogCvars = @(
 $AlwaysCvars = @(
     'r.DBuffer=1'   # DBuffer decals - required for the night-sky nebula (Space Layer)
 )
+# NOTE (3.4.0): r.EyeAdaptation.MethodOverride is GONE from the on-set - the
+# dynamic exposure now rides the game's own auto-exposure (UDS bias knobs).
+# It stays in $ManagedKeys below so upgrades STRIP it from existing files:
+# a leftover MethodOverride=3 breaks the whole 3.4+ exposure system.
 $ExpOnCvars = @(
-    'r.EyeAdaptation.MethodOverride=3',
     'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=1',
     'r.NGX.DLSS.AutoExposure=0'
 )
@@ -132,23 +135,26 @@ function Compose-Ini($baseLines, $exposureOn){
     return [string[]]$out
 }
 
-# Set Config.Exposure.Enabled in the installed mod's config.lua to match the
-# chosen exposure mode (the engine.ini and the module must agree).
+# Set Config.ModuleToggles.LightCycle in the installed mod's config.lua to
+# match the chosen exposure mode. LightCycle is the 3.4+ dynamic day/night
+# exposure module (sun-elevation bias on top of the game's auto-exposure);
+# "no exposure" = module off = vanilla brightness.
 function Set-ExposureFlag($modDst, $on){
     $cfg = Join-Path $modDst 'Scripts\config.lua'
     if(-not (Test-Path $cfg)){ return }
     $val = if($on){ 'true' } else { 'false' }
     $lines = @(Get-Content $cfg)
-    $inExp = $false
+    $inTog = $false
     for($i = 0; $i -lt $lines.Count; $i++){
-        if($lines[$i] -match '^\s*Config\.Exposure\s*=\s*\{'){ $inExp = $true; continue }
-        if($inExp -and $lines[$i] -match '^\s*Enabled\s*='){
-            $lines[$i] = $lines[$i] -replace 'Enabled\s*=\s*(true|false)', "Enabled = $val"
+        if($lines[$i] -match '^\s*Config\.ModuleToggles\s*=\s*\{'){ $inTog = $true; continue }
+        if($inTog -and $lines[$i] -match '^\s*\}'){ break }
+        if($inTog -and $lines[$i] -match '^\s*LightCycle\s*='){
+            $lines[$i] = $lines[$i] -replace 'LightCycle\s*=\s*(true|false)', "LightCycle = $val"
             break
         }
     }
     WriteLines $cfg $lines
-    Ok "Set Config.Exposure.Enabled = $val (matches the exposure choice)."
+    Ok "Set Config.ModuleToggles.LightCycle = $val (matches the exposure choice)."
 }
 
 # Set Config.Headlights.Mode in the installed mod's config.lua: "auto" (exposure

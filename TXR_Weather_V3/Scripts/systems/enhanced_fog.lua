@@ -12,8 +12,6 @@ local EnhancedFog = {}
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
 local Utils = require("core.utils")
-local State = require("core.state")
-local Config = require("config")
 local Actors = require("systems.actors")
 
 local MODULE = "EnhancedFog"
@@ -54,29 +52,8 @@ local UDS_PROPS = {
 }
 
 -- ============== CONFIGURATION ==============
--- Default baseline values for fog properties
-local BASELINE = {
-    -- Scale multiplier for fog density (this is the key!)
-    scaleFogDensity = 1.0,
-    
-    -- Base fog density
-    baseFogDensity = 0.02,
-    
-    -- How much the "Fog" value contributes to density
-    foggyDensityContribution = 0.8,
-    
-    -- Height fog falloff (lower = more spread, higher = concentrated at ground)
-    baseHeightFogFalloff = 0.2,
-    foggyHeightFogFalloff = 0.05,
-    
-    -- Volumetric settings
-    volumetricFogDistance = 6000.0,
-    volumetricFogExtinction = 2.0,
-    
-    -- Time multipliers (increase for more visible fog)
-    daytimeMultiplier = 1.0,
-    nighttimeMultiplier = 1.2,
-}
+-- (Unused BASELINE defaults table removed 2026-07-09 - the profiles below
+-- are the only values ever applied.)
 
 -- Enhanced fog presets for different fog intensities
 -- Values tuned down - volumetric fog required for all presets for weather system
