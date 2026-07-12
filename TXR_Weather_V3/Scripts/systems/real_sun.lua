@@ -1,16 +1,16 @@
 -- TXR Weather Mod v3.0
 -- systems/real_sun.lua
 -- Real-world solar simulation experiment.
--- Phase 0 (always on): probe - logs the sky's stock Simulation-category values
+-- Phase 0 (always on): probe; logs the sky's stock Simulation-category values
 -- once per course (grep "RealSun"), so we know what TXR ships before writing.
 -- Phase 1 (Config.RealSun.Enabled): switch UDS to Simulate Real Sun/Moon with
--- Tokyo coordinates and a pinned date - astronomically correct sunrise/sunset
+-- Tokyo coordinates and a pinned date: astronomically correct sunrise/sunset
 -- times and sun path for that date. Settle-gated one-shot per course on the
 -- game thread (the proven recipe). The sky actor is recreated every course, so
 -- disabling the experiment needs no revert.
 --
 -- Property names verified against the v1.5 dump (shared/types/Ultra_Dynamic_Sky.lua).
--- Deliberately does NOT touch "Simulate Real Stars" - the Stars module owns it.
+-- Deliberately does NOT touch "Simulate Real Stars"; the Stars module owns it.
 
 local RealSun = {}
 
@@ -121,10 +121,10 @@ local function runOnGameThread()
     lastProbe = probe
     Log.Debug(MODULE, "Sim probe (stock)", probe)
 
-    -- Exposure-surface probe: UDS's native exposure system (the engine.ini
-    -- MethodOverride=3 cvar likely overrides it, and UDS's own PostProcess
-    -- component is not composited by TXR - these stock values + a later bias
-    -- liveness test decide whether any of it is usable as Layer 2).
+    -- Exposure-surface probe: UDS's native exposure system. Since 3.4.0 the
+    -- Exposure Bias knobs ARE the live output path (light_cycle bias mode,
+    -- MethodOverride removed from engine.ini); this probe records the stock
+    -- values per course as the reference baseline.
     local expProbe = {
         apply_exposure = tostring(readProp(uds, "Apply Exposure Settings")),
         metering_mode  = tostring(readProp(uds, "Exposure Metering Mode")),
@@ -173,7 +173,7 @@ local function runOnGameThread()
     Log.Debug(MODULE, "Light probe (stock)", lightProbe)
 
     -- Game PP-component probe: the course sky / course weather / HDR actors
-    -- carry their own composited PostProcess components - the devs' exposure
+    -- carry their own composited PostProcess components, the devs' exposure
     -- plumbing (Curve_ExposureCompensation lives in the same folder). Reads
     -- each component's exposure-relevant settings once per course.
     for _, cls in ipairs({"BP_CourseSky_C", "BP_CourseWeather_C", "BP_HDR_C"}) do
@@ -213,7 +213,7 @@ local function runOnGameThread()
     -- with world position + bounds (for mapping onto known tunnel locations
     -- and for a future camera-containment signal: tunnel rain kill + tunnel
     -- exposure trim) and a WIDE override sweep (reports which settings each
-    -- volume actually overrides - the authored purpose).
+    -- volume actually overrides, the authored purpose).
     pcall(function()
         local vols = FindAllOf("PostProcessVolume")
         if not vols or #vols == 0 then
@@ -239,7 +239,7 @@ local function runOnGameThread()
                 local loc = v:K2_GetActorLocation()
                 if loc then info.loc = string.format("%.0f,%.0f,%.0f", loc.X, loc.Y, loc.Z) end
             end)
-            -- Bounds v4: Origin/BoxExtent are OUT-PARAMS - UE4SS fills a
+            -- Bounds v4: Origin/BoxExtent are OUT-PARAMS; UE4SS fills a
             -- passed-in table keyed by param name (proven convention:
             -- GetDisplayVehicle/out_vehicle in headlights.lua). The earlier
             -- reads took Lua RETURN values that never existed. Same logic as
@@ -314,7 +314,7 @@ local function runOnGameThread()
     end
 
     -- (Interior-system probe REMOVED 2026-07-09: verdict was final on
-    -- 2026-07-07 - UDS's interior/occlusion family is dead in TXR's cook,
+    -- 2026-07-07: UDS's interior/occlusion family is dead in TXR's cook,
     -- the cache never moves even force-enabled. Tunnels are handled by the
     -- PP-volume containment system in light_cycle instead.)
 

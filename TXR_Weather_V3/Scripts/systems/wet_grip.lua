@@ -4,8 +4,8 @@
 -- dries. Reads live precipitation from Ultra Dynamic Weather and drives it into the
 -- GLOBAL tire degradation table (DT_TireDegradationInfo). Because every car's tire model
 -- reads that table, this:
---   - affects ALL cars, the player AND the AI rivals, and
---   - works in PA rival battles.
+--  , affects ALL cars, the player AND the AI rivals, and
+--  , works in PA rival battles.
 -- The global-tire-table grip approach is credited to Chrystales.
 --
 -- How it works: each update it reads UDW "Rain" (0-10), smooths it into a wetness value
@@ -14,7 +14,7 @@
 -- the bone-dry baseline and never compounds; at wetness 0 the originals are written back.
 --
 -- Only the grip rates are touched (longitudinal: Max/Cliff/MinGripRate; lateral:
--- Max/Cliff/MinSideGripRate). Tire life and braking are left alone - the degradation
+-- Max/Cliff/MinSideGripRate). Tire life and braking are left alone; the degradation
 -- table has no braking entry, so wet braking isn't part of this method.
 --
 -- Threading: precip read + smoothing run on the async loop thread; resolving the data
@@ -213,7 +213,7 @@ function WetGrip.Tick()
                         mainF, sideF, wet_current))
                 end
             elseif cfg.Debug then
-                Log.Info(MODULE, "DBG table not found yet - will retry")
+                Log.Info(MODULE, "DBG table not found yet: will retry")
             end
         end)
     end

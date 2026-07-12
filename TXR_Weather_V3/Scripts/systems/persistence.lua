@@ -33,7 +33,8 @@ local function getModRoot()
 end
 
 local function getSaveFilePath()
-    return getModRoot() .. "\\last_state.txt"
+    local name = (Config.Persistence and Config.Persistence.SaveFileName) or "last_state.txt"
+    return getModRoot() .. "\\" .. name
 end
 
 -- ============== SAVE ==============
@@ -65,9 +66,9 @@ function Persistence.Save(reason)
     cloud = Utils.ToNumber(cloud, -1)
     fog = Utils.ToNumber(fog, -1)
     
-    -- CRITICAL: Don't save invalid values - they corrupt the file for next session
+    -- CRITICAL: Don't save invalid values; they corrupt the file for next session
     if tod < 0 or tod > 2400 then
-        Log.Debug(MODULE, string.format("Skipping save (%s) - invalid TOD: %.2f", reason or "auto", tod))
+        Log.Debug(MODULE, string.format("Skipping save (%s): invalid TOD: %.2f", reason or "auto", tod))
         -- Still update lastSaveTime to prevent spam retries
         lastSaveTime = os.time()
         return false
@@ -182,7 +183,7 @@ function Persistence.Restore()
                 local fast = Config.TimeOfDay.FastSpeed
                 if math.abs(speed - def) >= 1
                    and not (fast and math.abs(speed - fast) < 1) then
-                    Log.Info(MODULE, "Persisted speed stale - using default",
+                    Log.Info(MODULE, "Persisted speed stale: using default",
                         {saved = speed, default = def})
                     speed = def
                 end

@@ -21,14 +21,14 @@ local ENABLE_CLOUD_SHADOWS = true
 local ENABLE_GOD_RAYS = true
 -- Auroras are a confirmed dead end in TXR: the Aurora_Clouds texture is not in
 -- the game's cook (runtime StaticLoadObject fails), so the 2D aurora shader has
--- nothing to sample - UDS computes intensity happily but nothing renders. The
+-- nothing to sample; UDS computes intensity happily but nothing renders. The
 -- machinery below is kept for a future content-pipeline route. Default OFF.
 local ENABLE_AURORA = false
 local ENABLE_SECOND_CLOUD_LAYER = true
 
 -- Aurora timing (TOD values)
-local AURORA_NIGHT_START = 1950  -- 19:30 - aurora becomes visible
-local AURORA_NIGHT_END = 550     -- 05:30 - aurora fades out
+local AURORA_NIGHT_START = 1950  -- 19:30, aurora becomes visible
+local AURORA_NIGHT_END = 550     -- 05:30, aurora fades out
 local AURORA_MAX_INTENSITY = 1.5
 
 -- City glow (Tokyo night ambiance): light pollution + night sky glow, ramped in
@@ -72,7 +72,7 @@ local PROP_CLOUD_SHADOWS_SOFTNESS_OVERCAST = "Cloud Shadows Softness When Overca
 
 -- God rays = the sun's screen-space light-shaft bloom. The names this module
 -- used before 3.2.x ("Use Sun Light Shafts" / "Light Shaft Intensity") do NOT
--- exist in v1.5's UDS - those writes were silent no-ops. The real controls are
+-- exist in v1.5's UDS; those writes were silent no-ops. The real controls are
 -- an enable bool, a (clear, overcast) FVector2D max-brightness pair, and a tint.
 -- UDS fades the shafts with sun occlusion itself, so no per-tick drive is needed.
 local PROP_SUN_SHAFT_BLOOM = "Enable Sun Light Shaft Bloom"
@@ -110,7 +110,7 @@ local auroraSettleTicks = 0
 -- In-game verify 2026-07-01: construct + night_on both succeeded but nothing
 -- rendered. Two suspects: (a) the sky material bakes "Aurora Intensity" at
 -- static-apply time (the night_on call fired at ~0.02, i.e. invisible), so we
--- now re-bake as the ramp climbs; (b) the aurora texture / sky mode - the
+-- now re-bake as the ramp climbs; (b) the aurora texture / sky mode; the
 -- diagnostics readback below settles that from the log.
 local lastStaticIntensity = 0.0
 local auroraDiagTicks = 0
@@ -223,7 +223,7 @@ local AURORA_TEXTURE_PATH = "/Game/UltraDynamicSky/Textures/Clouds/Aurora_Clouds
 --- One-shot readback of everything that could gate the aurora, for the log
 --- (2026-07-01 run: writes land, UDS computes 0.89, skyMode 0, still invisible).
 --- Now also force-loads the aurora texture: if the load succeeds, re-apply the
---- static properties with the texture guaranteed in memory - if UDS's own
+--- static properties with the texture guaranteed in memory; if UDS's own
 --- soft-ref resolve was failing quietly, this IS the fix, not just a probe.
 local function logAuroraDiagnostics()
     local function doDiag()
@@ -273,7 +273,7 @@ local function logAuroraDiagnostics()
                 Log.Info(MODULE, "Static Properties - Aurora re-applied after texture preload")
             end
         else
-            Log.Warn(MODULE, "Aurora texture NOT in TXR's cook - 2D aurora cannot render", {asset = AURORA_TEXTURE_PATH})
+            Log.Warn(MODULE, "Aurora texture NOT in TXR's cook: 2D aurora cannot render", {asset = AURORA_TEXTURE_PATH})
         end
     end
 
@@ -424,7 +424,7 @@ function Atmosphere.Setup()
     end
 
     -- God rays: enable the sun's light-shaft bloom, brighten it from stock and
-    -- tint it warm. One-shot - UDS drives shaft visibility with sun occlusion.
+    -- tint it warm. One-shot; UDS drives shaft visibility with sun occlusion.
     if ENABLE_GOD_RAYS then
         writeUDS(PROP_SUN_SHAFT_BLOOM, true)
         local maxB = readUDS(PROP_SUN_SHAFT_MAX)
@@ -538,8 +538,8 @@ function Atmosphere.Tick()
     end
 
     -- (God rays are one-shot in Setup now: UDS fades the shaft bloom with sun
-    -- occlusion itself, so the old per-tick intensity drive - which wrote a
-    -- nonexistent property anyway - is gone.)
+    -- occlusion itself, so the old per-tick intensity drive (which wrote a
+    -- nonexistent property anyway) is gone.)
 
     -- City glow: light pollution + night sky glow, ramped in at night
     if ENABLE_CITY_GLOW then

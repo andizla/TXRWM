@@ -2,7 +2,7 @@
 -- systems/rainbow.lua
 -- Enables UDW's rainbow effect. The rainbow is rendered on a world MESH (UDW's
 -- "Rainbow Mesh" static-mesh component, drawn with "Rainbow Material 2D" /
--- "Rainbow Material Volumetric"), NOT as a post-process weighted blendable - so
+-- "Rainbow Material Volumetric"), NOT as a post-process weighted blendable, so
 -- unlike Screen Droplets / Frost / Heat Distortion / Sun Lens Flare it renders in
 -- TXR. (Screening rule: a feature with a "... MID" + a "... WB"/WeightedBlendable
 -- is post-process and dead in TXR; rainbow has the MID but no WB, and has a Mesh
@@ -10,12 +10,13 @@
 --
 -- UDW decides WHEN a rainbow is visible from the weather state: there must be rain
 -- (or fog) feeding it, the camera must be in direct sun (not under overcast), and
--- the sun must be low enough. So this won't show in every weather - it appears
+-- the sun must be low enough. So this won't show in every weather; it appears
 -- naturally as rain clears toward sun, which is exactly the intended behaviour.
 --
--- We just enable it + set the strength caps and call UDW's "Static Properties -
--- Rainbow" on the game thread, deferred past BeginPlay by a settle gate (the proven
--- Stars / WindDebris / Moon / LightRays pattern). UDW drives the actual strength.
+-- We just enable it + set the strength caps and call UDW's
+-- "Static Properties - Rainbow" on the game thread, deferred past BeginPlay by
+-- a settle gate (the proven Stars / WindDebris / Moon / LightRays pattern).
+-- UDW drives the actual strength.
 
 local Rainbow = {}
 

@@ -14,7 +14,7 @@
 -- LOAD-BEARING: calling "Static Properties - Sound Effects" / "Instant Sound
 -- Update" makes UDW async-load its soft-referenced sound assets into memory,
 -- and that is what makes our StaticFindObject/StaticLoadObject on those assets
--- succeed (StaticLoadObject alone fails for them in TXR - removing the native
+-- succeed (StaticLoadObject alone fails for them in TXR; removing the native
 -- kick in the 3.2.0 cleanup silenced everything). So the native apply stays as
 -- the ASSET LOADER, one-shot per course, and the audible path is the spawns.
 
@@ -107,7 +107,7 @@ end
 
 --- True while a map teardown is in progress. Game-thread jobs are scheduled
 --- from the async tick, so the world can start dying between schedule time and
---- run time - every GT entry point must re-check this at RUN time (a spawn or
+--- run time; every GT entry point must re-check this at RUN time (a spawn or
 --- native call against a dying world is an uncatchable access violation).
 local function teardownActiveGT()
     local actors = getActors()
@@ -140,13 +140,13 @@ end
 local function getGameplayStaticsGT()
     if not UEH then pcall(function() UEH = require("UEHelpers") end) end
     if not UEH then
-        warnOnce("UEHelpers", "UEHelpers not available - direct sound spawning disabled")
+        warnOnce("UEHelpers", "UEHelpers not available: direct sound spawning disabled")
         return nil
     end
     local gs = nil
     pcall(function() gs = UEH.GetGameplayStatics() end)
     if gs and gs.IsValid and gs:IsValid() then return gs end
-    warnOnce("GameplayStatics", "GameplayStatics not available - direct sound spawning disabled")
+    warnOnce("GameplayStatics", "GameplayStatics not available: direct sound spawning disabled")
     return nil
 end
 
@@ -156,7 +156,7 @@ local function countSpawnFail(path)
     spawnFails[path] = (spawnFails[path] or 0) + 1
     if spawnFails[path] >= MAX_SPAWN_FAILS then
         deadAssets[path] = true
-        warnOnce("dead_" .. path, "Sound never became playable - giving up for this course",
+        warnOnce("dead_" .. path, "Sound never became playable: giving up for this course",
             {asset = path, attempts = spawnFails[path]})
     end
 end
@@ -207,7 +207,7 @@ local function updateLoopGT(ac, path, vol, label)
         return ac
     end
     -- Not spawned yet, invalidated by a level change, or a non-looping wave that
-    -- finished - (re)spawn it
+    -- finished: (re)spawn it
     return spawn2DGT(path, vol, label)
 end
 

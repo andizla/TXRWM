@@ -165,10 +165,10 @@ end
 --- @return boolean New state with hysteresis applied
 local function applyHysteresis(currentState, value, enableThreshold)
     if currentState then
-        -- Currently ON - use lower threshold to turn OFF (sticky)
+        -- Currently ON: use lower threshold to turn OFF (sticky)
         return value > PERF_CONFIG.hysteresisOff
     else
-        -- Currently OFF - use higher threshold to turn ON
+        -- Currently OFF: use higher threshold to turn ON
         return value > enableThreshold + PERF_CONFIG.hysteresisOn
     end
 end
@@ -412,7 +412,7 @@ local function writeToUDW(wetness, puddle, sharpness, waterLevel)
                     Log.Debug(MODULE, "Called Material State Manager Apply New State")
                 end
                 
-                -- NOTE: Increment Material State has OUT params - removed
+                -- NOTE: Increment Material State has OUT params; removed
                 
                 -- Update Replicated State
                 local updateReplicated = msm["Update Replicated State"]
@@ -479,7 +479,7 @@ local function writeToUDW(wetness, puddle, sharpness, waterLevel)
         end)
         
         -- NOTE: Apply Max to Material Effects and Dynamic Landscape Weather Effects_ 
-        -- have OUT parameters that cause errors - removed to reduce log spam.
+        -- have OUT parameters that cause errors; removed to reduce log spam.
         -- The basic property writes + MSM Apply New State seem to be the correct approach.
         
         Log.Info(MODULE, "Wrote wetness properties", {
@@ -590,7 +590,7 @@ function Wetness.Init()
     return true
 end
 
---- Tick function - runs the simulation
+--- Tick function; runs the simulation
 --- Called from main loop
 function Wetness.Tick()
     if not internalState.initialized then return end
@@ -599,7 +599,7 @@ function Wetness.Tick()
     
     -- CRITICAL: Ensure DLWE is initialized (fallback if OnActorsReady wasn't called by main)
     if not internalState.dlweInitialized then
-        Log.Info(MODULE, "Tick: DLWE not initialized yet - calling OnActorsReady")
+        Log.Info(MODULE, "Tick: DLWE not initialized yet: calling OnActorsReady")
         if Wetness.OnActorsReady() then
             internalState.dlweInitialized = true
         end
@@ -621,7 +621,7 @@ function Wetness.Tick()
     
     -- Ensure manual override is set
     if not ensureManualOverride() then
-        Log.Debug(MODULE, "Failed to set manual override - UDW not available")
+        Log.Debug(MODULE, "Failed to set manual override: UDW not available")
         return
     end
     
@@ -847,13 +847,13 @@ function Wetness.OnCourseLoad()
     internalState.lastWrittenSharpness = -1
     internalState.lastWrittenWaterLevel = -1
     
-    Log.Info(MODULE, "Course load - wetness state preserved", {
+    Log.Info(MODULE, "Course load: wetness state preserved", {
         wetness = string.format("%.3f", internalState.wetness),
         puddleCoverage = string.format("%.3f", internalState.puddleCoverage)
     })
 end
 
---- Called when actors are first discovered - initialize DLWE early
+--- Called when actors are first discovered; initialize DLWE early
 function Wetness.OnActorsReady()
     local udw = Actors.GetUDW()
     if not udw then
@@ -925,7 +925,7 @@ function Wetness.OnActorsReady()
             Log.Debug(MODULE, "OnActorsReady: Update Change Speeds error", {err = tostring(updateSpeedsErr)})
         end
         
-        -- NOTE: Increment Material State has OUT params that cause UE4SS errors - removed
+        -- NOTE: Increment Material State has OUT params that cause UE4SS errors; removed
     else
         Log.Debug(MODULE, "OnActorsReady: Material State Manager not available", {err = tostring(msmErr)})
     end
@@ -1000,10 +1000,10 @@ function Wetness.OnActorsReady()
     end)
     
     -- NOTE: Dynamic Landscape Weather Effects_ and Apply Max to Material Effects
-    -- have OUT parameters that cause errors in UE4SS - removed.
+    -- have OUT parameters that cause errors in UE4SS; removed.
     -- The property writes + MSM functions should handle wetness state.
     
-    -- Note: Check Point for Puddles Snow Or Dust requires Location/GroundNormal structs - skipped
+    -- Note: Check Point for Puddles Snow Or Dust requires Location/GroundNormal structs; skipped
     
     Log.Info(MODULE, "OnActorsReady: DLWE initialization complete")
     internalState.dlweInitialized = true

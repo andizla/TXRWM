@@ -3,7 +3,53 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [3.4.0] - 2026-07-09
+## [3.5.0]: 2026-07-13
+
+### Changed
+- **Covered-road lighting fixed at the root.** The course's covered-road volumes ship
+  with a skylight-leak override that flooded tunnels and covered sections with flat
+  sky ambient, and made the whole world's lighting visibly jump at every volume edge.
+  The mod now clears it per course: interiors keep their true lighting (sun bounce +
+  tunnel lamps), and portals no longer flip the picture. This turned out to be the
+  root cause behind most historical "tunnel exposure" complaints.
+- **Exposure runs stock.** With the lighting fixed, the game's own exposure pipeline
+  reads right, so the mod's exposure shaping ships neutral (the sun-elevation bias
+  curve is still there for tuning). Auto-exposure adaptation is slowed to a third of
+  stock, eyes do not adapt at three stops per second.
+- **A new look layer.** The mod now applies a small set of post-process refinements
+  per course, each verified in the log: less bloom, no vignette, higher screen-space
+  reflection quality, finer interior global illumination, and neutralized shadow
+  lifting (film toe + local exposure) so unlit areas keep real contrast. All of it is
+  configurable through `Config.LightCycle.PostProcess`, which accepts any of the
+  engine's 246 post-process fields.
+- **Covered-road detection rebuilt on the game's own road data.** Every vehicle tracks
+  a per-road-point "roofed" attribute; the mod now reads it directly. Boundaries are
+  exact at the portal, and every real bore is covered, including the short tunnels
+  the previous volume/trace detection missed. A roof trace remains for lone overpasses,
+  which the road data does not mark.
+- **Rain under cover is now hidden, not stopped.** The rain keeps simulating invisibly
+  while you are under a roof, so it returns instantly at full density the moment you
+  exit, no more dry seconds after a tunnel. Weather state, wetness and grip are
+  untouched throughout.
+- **No fog under roofs.** Global fog is blind to ceilings, so foggy weather used to
+  read as a white wall inside every bore. Fog is now removed while the road data says
+  you are under a roof (`Config.Tunnels.CoveredFogMult`).
+- **Less Lumen shimmer.** The bundled Engine.ini now clamps per-ray GI radiance and
+  restores proper spatial/temporal filtering, the flickering bright specks on dark
+  tunnel ceilings are largely gone.
+
+### Removed
+- The legacy 144-slot time-of-day exposure table and its module, fully superseded
+  since 3.4.0 and no longer functional on the current pipeline.
+- The headlight lens-proxy fallback; auto headlights key on sun elevation with a
+  plain clock fallback.
+
+### Fixed
+- Rain restarting several seconds late after tunnels and overpasses.
+- Rain falling inside short tunnels with unusual geometry.
+- Fog and rain state after mid-tunnel weather changes.
+
+## [3.4.0]: 2026-07-09
 
 ### Changed
 - **New exposure engine.** The mod no longer replaces the game's auto-exposure with a
@@ -12,14 +58,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   land wherever the sun actually is, brightness self-normalizes across weathers, and
   menus/cutscenes can no longer catch an unmanaged exposure state.
   **Re-run the installer:** the old `r.EyeAdaptation.MethodOverride=3` line must be gone
-  from Engine.ini for 3.4+ to look right - the updated installer strips it automatically.
+  from Engine.ini for 3.4+ to look right, the updated installer strips it automatically.
 - **Seasons.** The in-game calendar advances every in-game midnight (the game saves it),
-  so sunrise and sunset times drift through the year like real Tokyo - long summer
+  so sunrise and sunset times drift through the year like real Tokyo, long summer
   evenings, early winter nights. Prefer a fixed date? Set `Config.RealSun.PinMonth` /
   `PinDay`.
 - **Tunnels handled properly.** Entering a tunnel in daylight now darkens the picture
   the way eyes would (nights were already right), and rain/snow stop falling under
-  covered road and return at the exit portal - it keeps raining outside. Detection uses
+  covered road and return at the exit portal, it keeps raining outside. Detection uses
   the course's own covered-road volume data, so it covers every tunnel without a
   hand-made list.
 - **The Parking Area continues your weather.** No more canned always-night PA: your
@@ -33,7 +79,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   nights are the brightest).
 
 ### Added
-- `Alt+J` - manually toggle rain/snow particles off/on without changing the weather.
+- `Alt+J`: manually toggle rain/snow particles off/on without changing the weather.
 - **Installer: updates keep your data.** Re-running the installer over an existing
   install now preserves the saved time-of-day/weather state, headlight settings and
   `Logs/tuning_feedback.log` (`config.lua` still intentionally resets to the new
@@ -44,20 +90,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   fast-forward mode.
 - Changing the weather while inside a tunnel no longer makes it rain in the tunnel.
 
-## [3.3.1] - 2026-07-06
+## [3.3.1]: 2026-07-06
 
 ### Fixed
 - **Transition crash hardening.** The weather-audio, photo-mode and HUD-vignette systems
-  no longer touch game objects while a world is being torn down - the cause of rare hard
+  no longer touch game objects while a world is being torn down, the cause of rare hard
   crashes during garage/course transitions reported on some installs. If a sound asset
   never becomes playable (older game versions are missing some), the mod now gives up
   after ~30 seconds instead of retrying forever.
 - **Course loads settle in seconds.** New-world detection was broken, so every course
   load waited out a 15-second failsafe before time-of-day, weather and exposure snapped
-  in. Loads now settle in about 2 seconds - this also covers the pre-race camera
+  in. Loads now settle in about 2 seconds, this also covers the pre-race camera
   sweeps, which used to play with unmanaged exposure ("auto exposure off in cutscenes").
 - **Garage brightness applies immediately** after leaving a course (was up to 15 seconds
-  of leftover on-course exposure - very dark after a dusk drive).
+  of leftover on-course exposure, very dark after a dusk drive).
 - **Headlight brightness survives hi-beam flashes.** The chosen brightness level is now
   baked into the lamp source values and re-asserted after a flash instead of snapping
   back to stock. Deferred brightness application also now works in the manual force
@@ -83,14 +129,14 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 - **Tuning feedback file.** Every exposure/skylight feedback keypress (`Alt+D`,
   `Alt+Shift+D`, `Alt+V`, and the skylight nudge keys) is now also appended to
-  `Logs/tuning_feedback.log` - one small, session-marked file you can attach to a
+  `Logs/tuning_feedback.log`, one small, session-marked file you can attach to a
   feedback report instead of digging through full session logs.
 
-## [3.3.0] - 2026-07-04
+## [3.3.0]: 2026-07-04
 
 ### Added
 - **Night-only mode.** The time cycle runs dusk, night, dawn, then jumps straight back to
-  dusk - the day is skipped entirely, and dawn plays out in full before the jump. For
+  dusk, the day is skipped entirely, and dawn plays out in full before the jump. For
   night drivers who still want the golden-hour bookends. Off by default
   (`Config.TimeOfDay.NightOnly`), and offered as an installer option.
 - **Cinematic sky.** A new daytime look pass (`cinematic_sky.lua` / `Config.CinematicSky`):
@@ -104,18 +150,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   (grep `CinematicSky`) so retuning is data-driven.
 - **Skylight tuning keybinds.** Live-tune the skylight look while driving:
   `Alt+Z` / `Alt+X` / `Alt+C` raise skylight leak albedo / leak roughness / intensity
-  (`Alt+Shift` lowers), `Alt+V` logs a datapoint (time, weather, values - grep
+  (`Alt+Shift` lowers), `Alt+V` logs a datapoint (time, weather, values, grep
   `SkylightTune`), `Alt+Shift+V` resets to the exposure curve.
 - **Per-weather exposure compensation.** The exposure curve is tuned for clear skies;
   overcast, rain, fog and snow scenes now get a brightness boost on top of it, smoothed so
   weather changes never pop the exposure. Two tables: `Config.Exposure.WeatherSkyMult`
-  (skylight intensity - the effective brightness lever, since heavy cloud is exactly what
+  (skylight intensity, the effective brightness lever, since heavy cloud is exactly what
   takes that light away) and `WeatherLensMult` (a secondary eye-adaptation shaping lever). The `Alt+D`
   feedback log records the active multiplier, so curve feedback and weather feedback stay
-  separable. Headlight auto mode inherits it - lamps come on earlier under gloomy skies.
+  separable. Headlight auto mode inherits it, lamps come on earlier under gloomy skies.
 - **Debug short time cycle** (`Config.TimeOfDay.DebugShortCycle`, off by default). Dawn
   and dusk play at full length, but the flat midday and deep-night stretches are cut to
-  about an hour each - a complete lighting cycle in minutes, for exposure tuning or for
+  about an hour each, a complete lighting cycle in minutes, for exposure tuning or for
   anyone who mostly wants the golden-hour bookends. Takes precedence over night-only mode
   if both are enabled.
 
@@ -128,13 +174,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   for reflections and GI. The Optimizations-only profile was cleaned out: debug and logging
   switches removed, inert settings dropped (over a third of the old file sat in config
   sections the engine never reads), and it picks up the car-paint reflection fix too.
-  **Re-run the installer and pick a profile to get the update** - Engine.ini is only
+  **Re-run the installer and pick a profile to get the update**: Engine.ini is only
   written at install time.
 - **God rays now actually work.** The module had been writing sun light-shaft property
   names that do not exist in this game version, so god rays were silently doing nothing.
   It now drives the real controls: the sun's screen-space light-shaft bloom, brightened
   from stock and warm-tinted.
-- **Softer cloud shadows** - dappled light rolling over the track instead of hard-edged
+- **Softer cloud shadows**, dappled light rolling over the track instead of hard-edged
   blotches (`Config.Atmosphere.CloudShadowSoftnessMult`).
 - **Bigger daytime skies.** The automatic cloud-coverage ceiling was raised (3.0 to 4.5 of
   10) so real cumulus fields can build instead of the near-clear bias.
@@ -143,13 +189,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   baseline was raised); the daytime exposure is re-anchored; the dusk ramp starts earlier
   (16:50) and runs about twice as bright through the evening; the dawn descent was
   lifted. All values retuned from in-game feedback datapoints.
-- **Faster fast-forward.** `Alt+T` fast mode is twice as fast - a full day in roughly two
+- **Faster fast-forward.** `Alt+T` fast mode is twice as fast, a full day in roughly two
   minutes.
 
 ### Fixed
 - **The garage-transition crash.** The alignment-slider module's menu scans could run
   during map transitions (and in parking areas), walking UI widgets on the game thread
-  while the old world was being destroyed - an intermittent access-violation crash, most
+  while the old world was being destroyed, an intermittent access-violation crash, most
   often when entering the garage from a course. Scans now run only while the garage is
   positively detected and never during a map transition. The same hardening pass also
   made the whole mod quieter during transitions: the sky-actor search fully pauses while
@@ -161,10 +207,10 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   significantly and is under stability observation (`Config.Atmosphere.EnableSecondCloudLayer`).
 - The skylight tuning keys no longer emit no-op console pushes when held at their limit.
 - Cloud render-quality sample scales exist in `Config.CinematicSky` but ship at stock
-  (1.0) pending GPU-stability testing - raise `ViewSampleQualityMult` deliberately if you
+  (1.0) pending GPU-stability testing, raise `ViewSampleQualityMult` deliberately if you
   want cleaner clouds up close in photo mode.
 
-## [3.2.0] - 2026-07-02
+## [3.2.0]: 2026-07-02
 
 ### Added
 - **Weather sounds.** Rain, wind, and thunder are audible for the first time: a rain
@@ -176,18 +222,18 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   width now run to 3x their stock range (configurable via `Config.Tuning.RangeMultiplier`),
   the garage car previews out-of-range values live, and saved extremes are re-applied to
   the car on spawn, so the stance you set is the stance you drive. Locked settings stay
-  locked - nothing is unlocked by this. Slider-widening approach credited to NadzW and
+  locked, nothing is unlocked by this. Slider-widening approach credited to NadzW and
   FenderBender (WheelOffsetUnlocker).
 
 ### Fixed
 - The weather audio module addressed the weather system with property names that do
-  not exist in this game version, so it had always been silent - rewritten (see Added).
+  not exist in this game version, so it had always been silent, rewritten (see Added).
 - The headlight light-button gesture log now says when a press is ignored because
   headlights are in auto mode (auto remains deliberately config-only).
 
 ### Removed
 - **Auroras retired.** The aurora texture is not part of TXR's cooked game content, so
-  the sky shader has nothing to draw - auroras cannot render in this game. The option
+  the sky shader has nothing to draw, auroras cannot render in this game. The option
   remains in config (`Config.Atmosphere.EnableAurora`, off) in case a future content
   route makes the texture loadable.
 
@@ -195,7 +241,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - Release builds now cap log verbosity at INFO (`Config.IS_RELEASE_BUILD`).
 - Full code review pass across all modules; the tuning menu scan pauses while driving.
 
-## [3.1.0] - 2026-07-01
+## [3.1.0]: 2026-07-01
 
 ### Added
 - **Photo mode camera unlocked.** The Advanced Photo Mode free camera is freed up for
@@ -213,7 +259,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   On by default. `Config.WetGrip`. The global tire-table grip approach is credited to
   Chrystales.
 
-## [3.0.20] - 2026-06-30
+## [3.0.20]: 2026-06-30
 
 ### Added
 - **Rainbows.** After a careful re-check of the UDS/UDW data, the rainbow turned out
@@ -225,7 +271,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   On by default. `Config.Rainbow`.
 - **Night-sky nebula (Space Layer).** A faint nebula band rendered into the sky the
   same way as the stars and moon, fading in only at night. It is a stylistic touch (real
-  Tokyo skies are light-polluted) - keep it subtle, or turn it off for a plain night
+  Tokyo skies are light-polluted), keep it subtle, or turn it off for a plain night
   sky. On by default at a modest intensity. `Config.SpaceLayer`.
 - **Hide HUD vignette (opt-in).** Removes the darkened corner vignette the game draws
   over the screen during normal play (it's a HUD overlay, so Engine.ini can't disable
@@ -247,7 +293,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - No new game files are added or edited; everything is driven at runtime on the
   Ultra Dynamic Sky / Weather actors (and TXR's own HUD widget for the vignette).
 
-## [3.0.19] - 2026-06-30
+## [3.0.19]: 2026-06-30
 
 ### Added
 - **Pop-up (retractable) headlights now animate** when the lights switch on/off,
@@ -277,7 +323,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - Dropped the experimental high-beam latch (it could not be driven reliably from
   script in this build).
 
-## [3.0.18] - 2026-06-27
+## [3.0.18]: 2026-06-27
 
 ### Changed
 - **Auto headlights are more reliable.** They reconcile to the correct on/off state
@@ -291,7 +337,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 ### Internal
 - Removed unused modules and dead code.
 
-## [3.0.17] - 2026-06-26
+## [3.0.17]: 2026-06-26
 
 ### Changed
 - **Headlights follow the exposure brightness in Auto mode** instead of a fixed
@@ -320,7 +366,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - Flashing the high-beams resets the headlight brightness back to default until the
   next brightness change (the game recomputes intensity on its own hi-beam path).
 
-## [3.0.16] - 2026-06-25
+## [3.0.16]: 2026-06-25
 
 ### Added
 - **Wind Debris**: UDW Niagara debris (leaves/dust) blowing through the air, scaled
@@ -342,11 +388,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   Not fixable from the mod; would need cooked content.
 - **Tunnel rain** is not fixable from Lua (tunnels have no overhead collision to occlude
   against).
-- **Auto-headlights** - on/off timing works, but on some cars lamp meshes stay lit and
+- **Auto-headlights**, on/off timing works, but on some cars lamp meshes stay lit and
   pop-ups (e.g. AE86) don't actuate. Fix pending.
 - **Pick an Engine.ini profile in the installer** for correct brightness/shadows/reflections.
 
-## [3.0.15] - 2026-06-24
+## [3.0.15]: 2026-06-24
 
 ### Added
 - **Random weather scheduler** (`systems/scheduler.lua`, Phase 11): auto-changes
@@ -394,15 +440,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Tunnel rain** is not fixable from Lua: tunnels have no overhead collision on any
   query channel, so UDW's particle occlusion has nothing to trace against. Would
   require placed occlusion volumes via a content pak.
-- **Auto-headlights** - on/off timing works, but on some cars the lamp meshes stay
+- **Auto-headlights**, on/off timing works, but on some cars the lamp meshes stay
   lit and pop-up headlights (e.g. AE86) don't actuate. Light-actuation fix pending.
 - **Pick an Engine.ini profile in the installer.** Brightness, shadow, and
   glass-reflection issues are almost always a skipped Engine.ini step, not the mod.
 
-## [3.0.14] - 2026-06-23
+## [3.0.14]: 2026-06-23
 
 ### Added
-- **`Config.Weather.Enabled`** master switch - set `false` for time-of-day +
+- **`Config.Weather.Enabled`** master switch, set `false` for time-of-day +
   visuals only (no weather presets, rain, or cycling). For "ToD only" setups.
 - **Installer** (`install.bat` + `install.ps1`): detects the game via Steam,
   downloads UE4SS and the mod, sets up `Engine.ini` from a chosen graphics profile,
@@ -424,7 +470,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `Config.Visuals` (unbuilt-feature stubs).
 
 ### Fixed
-- **Alt+L / Alt+Shift+L** no longer error - rewired from the removed calibration
+- **Alt+L / Alt+Shift+L** no longer error, rewired from the removed calibration
   nudge to `Shadows.Apply` (force re-apply shadow distance). Resolves the 3.0.13
   orphaned-keybind issue.
 
@@ -432,13 +478,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Pick an Engine.ini profile in the installer.** Brightness, shadow-resolution/distance,
   and glass-reflection problems are almost always a skipped Engine.ini step or a
   custom/outdated file, not the mod.
-- **Stars disabled by default** - course-load crash (`0xC0000005`); fix pending.
-- **Auto-headlights** - on/off timing works, but on some cars the lamp meshes stay
+- **Stars disabled by default**, course-load crash (`0xC0000005`); fix pending.
+- **Auto-headlights**, on/off timing works, but on some cars the lamp meshes stay
   lit and pop-up headlights (e.g. AE86) don't actuate. Light-actuation fix pending.
-- **Tunnels** - rain and lighting are wrong indoors (broken game map meshes; not fixable).
-- **Wetness** (WIP) - only road markings get wet, not the road surface (missing material).
+- **Tunnels**, rain and lighting are wrong indoors (broken game map meshes; not fixable).
+- **Wetness** (WIP), only road markings get wet, not the road surface (missing material).
 
-## [3.0.13] - 2026-06-18
+## [3.0.13]: 2026-06-18
 
 ### Added
 - **Exposure module** (`systems/exposure.lua`, Phase 13): the standalone VEAO
@@ -472,13 +518,13 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - **Stars module disabled** pending the proper game-thread / preload fix.
 - **Runtime engine-CVAR migration not yet applying.** Moving the Engine.ini
   exposure/fog CVARs (`r.EyeAdaptation.MethodOverride`, `r.fog`, `r.Lumen.SampleFog`,
-  etc.) into the modules does not take effect in-game yet - keep those in Engine.ini
+  etc.) into the modules does not take effect in-game yet, keep those in Engine.ini
   for now. (Code is in place behind `Config.Exposure.SetupCvars` /
   `Config.EnhancedFog.SetupCvars`; investigation continues.)
-- **Alt+L / Alt+Shift+L shadow keybinds are orphaned** after the shadow revert -
+- **Alt+L / Alt+Shift+L shadow keybinds are orphaned** after the shadow revert:
   they call calibration functions that no longer exist and log an error if pressed.
 
-## [3.0.12] - 2026-06-17
+## [3.0.12]: 2026-06-17
 
 ### Added
 - **Stars module** (`systems/stars.lua`, Phase 12): high-resolution real-stars night sky.
@@ -518,7 +564,7 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
   `DirectionalLightComponent`s, and writes the underlying properties directly when
   the setter methods are absent.
 - **Invalid FOV reads** (`GetFOVAngle` returning 0 during camera transitions /
-  course load) no longer spike shadow distance to maximum for a frame - non-positive
+  course load) no longer spike shadow distance to maximum for a frame, non-positive
   reads are now rejected and the last good distance is kept.
 
 ### Known issues / in progress
@@ -530,21 +576,21 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ---
 
-## [3.0.11] - prior
+## [3.0.11], prior
 - Phase 9 & 10: Atmospheric enhancements (god rays, aurora, cloud shadows), auto
   headlights and brightness control.
 
-## [3.0.10] - prior
+## [3.0.10], prior
 - Phase 8: Dawn/Dusk transitions (slow time, Tokyo tint).
 
-## [3.0.9] - prior
+## [3.0.9], prior
 - Phase 6.5: Shadow FOV scaling system with lookup table.
 
-## [3.0.8] - prior
+## [3.0.8], prior
 - Phase 7: Lightning & Enhanced Fog systems.
 
-## [3.0.7] - prior
+## [3.0.7], prior
 - PA persistence fixes (Fix7), fresh file reads, invalid TOD validation.
 
-## [3.0.0] - prior
+## [3.0.0], prior
 - Initial modular rewrite of Ultradynamic TXR V1.34.

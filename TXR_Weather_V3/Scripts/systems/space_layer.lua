@@ -2,12 +2,12 @@
 -- systems/space_layer.lua
 -- UDS Space Layer: a layer of Nebula (plus the space-glow brightness control)
 -- rendered INTO the sky material, the same way the stars and moon are. So it works
--- in TXR like the stars/moon - it is not a post-process effect.
+-- in TXR like the stars/moon; it is not a post-process effect.
 --
 -- The space layer composites using DBuffer Decals (r.DBuffer 1). The installer's
 -- Engine.ini profile sets that cvar; this module also requests it on the game thread
 -- (the safe console path in core/utils) as a fallback for manual installs. Setting it
--- at runtime is best-effort - if the renderer initialised without DBuffer support the
+-- at runtime is best-effort; if the renderer initialised without DBuffer support the
 -- nebula just won't render until the cvar is set in Engine.ini. No crash either way.
 --
 -- We set the nebula/glow properties + call UDS's "Static Properties - Space Layer"

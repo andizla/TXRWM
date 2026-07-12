@@ -16,7 +16,6 @@ local Wetness = nil
 local Shadows = nil
 local Headlights = nil
 local Scheduler = nil
-local Exposure = nil
 
 local MODULE = "Keybinds"
 
@@ -110,10 +109,8 @@ local function getScheduler()
     return Scheduler
 end
 
--- Active exposure provider: the LightCycle module (sun-elevation system) when
--- it is enabled, else the legacy slot-table Exposure module. Both expose the
--- same feedback/tuning API (LogFeedback / NudgeSkylight / LogSkylightConfirm /
--- ResetSkylightTune), so the Alt+D family routes to whichever is live.
+-- Exposure provider for the Alt+D feedback/tuning family (LogFeedback /
+-- NudgeSkylight / LogSkylightConfirm / ResetSkylightTune).
 local LightCycleMod = nil
 local function getExposure()
     if not LightCycleMod then
@@ -123,11 +120,7 @@ local function getExposure()
     if LightCycleMod and LightCycleMod.IsActive and LightCycleMod.IsActive() then
         return LightCycleMod
     end
-    if not Exposure then
-        local success, mod = pcall(require, "systems.exposure")
-        if success then Exposure = mod end
-    end
-    return Exposure
+    return nil
 end
 
 --- Convert modifier array to flags
@@ -429,9 +422,9 @@ local function onExposureTooBright()
     exposure.LogFeedback("bright")
 end
 
---- Toggle the engine's eye-adaptation debug overlay (live histogram + applied
---- EV + exposure compensation; shows any PP-volume bias actually in effect).
---- Silently does nothing if the shipping build stripped the visualizer.
+--- DEV: UDS exposure-bias liveness test (+2 EV on all five Exposure Bias
+--- knobs, press again to restore). The handler name and ToggleHDRDebug are
+--- historical; the keybind ships unbound (see Config.Keybinds).
 local function onExposureDebugOverlay()
     local exposure = getExposure()
     if not exposure or not exposure.ToggleHDRDebug then
@@ -443,8 +436,8 @@ end
 
 --- Manual test for the tunnel precip suppression mechanism (Alt+J): toggles
 --- Weather.SetPrecipSuppressed. Use in rain: particles should vanish
---- immediately and return on the second press. The volume-containment signal
---- will drive this automatically once tunnel volumes are identified.
+--- immediately and return on the second press. The tunnel containment poll
+--- (light_cycle) drives the same mechanism automatically.
 local precipTestOn = false
 local function onPrecipSuppressTest()
     local ok, Weather = pcall(require, "systems.weather")
@@ -457,7 +450,7 @@ local function onPrecipSuppressTest()
 end
 
 --- Skylight tuning session: Alt+Z/X/C nudge albedo/roughness/multiplier up,
---- Alt+Shift lowers; Alt+V logs the datapoint, Alt+Shift+V resets to slot curve.
+--- Alt+Shift lowers; Alt+V logs the datapoint, Alt+Shift+V resets to the curve.
 local function nudgeSkylight(which, dir)
     local exposure = getExposure()
     if not exposure or not exposure.NudgeSkylight then
@@ -512,12 +505,12 @@ function Keybinds.Init(config)
     
     -- Check if UE4SS keybind API is available
     if not RegisterKeyBind then
-        Log.Warn(MODULE, "RegisterKeyBind not available - keybinds disabled")
+        Log.Warn(MODULE, "RegisterKeyBind not available: keybinds disabled")
         return false
     end
     
     if not Key then
-        Log.Warn(MODULE, "Key table not available - keybinds disabled")
+        Log.Warn(MODULE, "Key table not available: keybinds disabled")
         return false
     end
     

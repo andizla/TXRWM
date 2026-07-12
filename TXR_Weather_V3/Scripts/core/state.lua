@@ -1,6 +1,6 @@
 -- TXR Weather Mod v3.0
 -- core/state.lua
--- Centralized state management - single source of truth for mod state
+-- Centralized state management: single source of truth for mod state
 
 local State = {}
 
@@ -17,7 +17,7 @@ local state = {
     
     -- World context
     world = {
-        context = "unknown",  -- "course", "pa", "outgame", "unknown"
+        context = "unknown",  -- "course", "outgame", "unknown"
         lastContext = "unknown",  -- Previous context for transition detection
         mapName = nil,
         isOnCourse = false,
@@ -138,7 +138,7 @@ end
 -- ============== WORLD CONTEXT ==============
 
 --- Set world context
---- @param context string "course", "pa", "outgame", "unknown"
+--- @param context string "course", "outgame", "unknown"
 --- @param mapName string|nil Optional map name
 function State.SetWorldContext(context, mapName)
     state.world.lastContext = state.world.context

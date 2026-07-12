@@ -219,7 +219,7 @@ function TimeOfDay.CycleSpeed()
     return newMode
 end
 
---- Get fraction of day (0.0 - 1.0)
+--- Get fraction of day (0.0-1.0)
 --- @return number
 function TimeOfDay.GetFracDay()
     local tod = TimeOfDay.GetCurrentTOD()
@@ -334,7 +334,7 @@ function TimeOfDay.ShortCycleEnforce(tod)
     end
 end
 
---- Baseline enforcement tick - ensures time keeps advancing correctly
+--- Baseline enforcement tick: ensures time keeps advancing correctly
 --- @param dt number Delta time in seconds
 function TimeOfDay.BaselineEnforceTick(dt)
     if not Actors.IsOnCourse() then return end
@@ -349,7 +349,7 @@ function TimeOfDay.BaselineEnforceTick(dt)
     -- is exempt by design), so deferring unconditionally left NOBODY writing
     -- speed when a course loaded INTO a slow window in fast mode: the sky kept
     -- its spawn-default Simulation Speed (~1.0 = real-time crawl) until a
-    -- manual Alt+T - the "stuck clock" bug (2026-07-06/07 episodes, TOD frozen
+    -- manual Alt+T, the "stuck clock" bug (2026-07-06/07 episodes, TOD frozen
     -- at 1739 and 530 for 70-90s).
     if currentSpeedMode == "normal" then
         local Transitions = nil

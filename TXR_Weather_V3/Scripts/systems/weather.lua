@@ -1,7 +1,7 @@
 -- TXR Weather Mod v3.0
 -- systems/weather.lua
 -- Weather control using UDW's Change Weather API
--- THIS IS THE CRITICAL MODULE - Uses the proper UDW API instead of property manipulation
+-- THIS IS THE CRITICAL MODULE: Uses the proper UDW API instead of property manipulation
 
 local Weather = {}
 
@@ -47,7 +47,7 @@ local function loadPresetAsset(presetName)
     
     -- Check if StaticFindObject is available
     if not StaticFindObject then
-        Log.Error(MODULE, "StaticFindObject not available - not running in UE4SS?")
+        Log.Error(MODULE, "StaticFindObject not available: not running in UE4SS?")
         return nil
     end
     
@@ -158,7 +158,7 @@ local function callChangeWeather(presetAsset, transitionTime)
     return true
 end
 
--- (Two unused Niagara helpers - setNiagaraParameter / setNiagaraActive -
+-- (Two unused Niagara helpers, setNiagaraParameter / setNiagaraActive,
 -- removed 2026-07-09: relics of a pre-3.0 rain-control approach, never
 -- called. The live paths use direct component calls; see _SuppressKill and
 -- the dry-kill section.)
@@ -186,22 +186,20 @@ end
 local precipSuppressed = false
 local suppressedComps = nil
 local suppressEnforceClock = 0
-local suppressSaved = nil    -- stock UDW particle-switch values while suppressed
 
 function Weather.Apply(presetName, transitionTime)
     -- Master switch: when disabled, the mod applies no weather (ToD/visuals only).
     -- Covers default-on-load, cycling, and reset since they all route through here.
     if not enabled then
-        Log.Debug(MODULE, "Weather disabled - skipping apply", {preset = presetName})
+        Log.Debug(MODULE, "Weather disabled: skipping apply", {preset = presetName})
         return false
     end
 
     -- A weather (re)apply re-establishes particles, so any transient tunnel
     -- suppression is void. Full restore path (NOT just a state clear): it
-    -- puts the saved UDW particle switches back AND un-hides/re-activates
-    -- the suppressed components - a bare clear would leave them hidden
-    -- forever. Table-field call resolves at run time (defined later in the
-    -- file); no-op when not suppressed.
+    -- un-hides the suppressed components; a bare clear would leave them
+    -- hidden forever. Table-field call resolves at run time (defined later
+    -- in the file); no-op when not suppressed.
     if precipSuppressed and Weather.SetPrecipSuppressed then
         Weather.SetPrecipSuppressed(false)
     end
@@ -215,10 +213,10 @@ function Weather.Apply(presetName, transitionTime)
     end
     
     -- Check if we have actors: a real course, or the PA scene (its own
-    -- UDS/UDW validated - the garage never gets that far). PA continue mode
+    -- UDS/UDW validated; the garage never gets that far). PA continue mode
     -- re-applies the captured course preset there (Config.PA.Mode).
     if not Actors.IsOnCourse() and not (Actors.IsInPAScene and Actors.IsInPAScene()) then
-        Log.Warn(MODULE, "Cannot apply weather - not on course")
+        Log.Warn(MODULE, "Cannot apply weather: not on course")
         return false
     end
     
@@ -388,7 +386,9 @@ function Weather.Apply(presetName, transitionTime)
                     end)
                     if updateRainParams then
                         pcall(function()
-                            updateRainParams()  -- Takes 0 params, reads from properties (v2 style)
+                            -- UFunction: self is required even with no params
+                            -- (the old bare call errored silently in pcall)
+                            updateRainParams(udw)
                         end)
                         Log.Debug(MODULE, "Update Active Rain Parameters called (enable)")
                     end
@@ -450,7 +450,7 @@ function Weather.Apply(presetName, transitionTime)
                 if activatedCount == 0 then
                     pendingRainActivation = true
                     pendingRainRetryCount = 0
-                    Log.Debug(MODULE, "Rain activation pending - will retry in tick loop")
+                    Log.Debug(MODULE, "Rain activation pending: will retry in tick loop")
                 else
                     pendingRainActivation = false
                 end
@@ -912,10 +912,10 @@ function Weather.Tick()
     -- Tunnel precip suppression ENFORCEMENT (2026-07-08): while suppressed,
     -- UDW's respawn behaviors and our own pending-rain retry below resurrect
     -- the particles ("Alt+J works, but reapplies shortly after"). Re-kill on
-    -- a ~1s cadence (rescan included - respawned components are NEW
+    -- a ~1s cadence (rescan included; respawned components are NEW
     -- instances) and short-circuit the retry entirely.
     -- Weather._SuppressKill is a table field (defined at the end of this
-    -- file), resolved at CALL time - a forward local here would silently
+    -- file), resolved at CALL time; a forward local here would silently
     -- split into a nil global (the ppWatchTick lesson).
     if precipSuppressed then
         local nowS = os.clock()
@@ -993,7 +993,7 @@ end
 --- Apply weather on course load if enabled
 function Weather.OnCourseLoad()
     if Config.Weather.ApplyDefaultOnLoad then
-        Log.Info(MODULE, "Course loaded - applying default weather")
+        Log.Info(MODULE, "Course loaded: applying default weather")
         -- Small delay to let UDW initialize
         -- The main loop will handle this through the Tick
         Weather.ApplyDefault()
@@ -1003,7 +1003,7 @@ end
 -- ============== TUNNEL PRECIP SUPPRESSION (2026-07-08) ==============
 -- Pause the precipitation Niagara components while the car is inside a tunnel
 -- (or any covered volume), restore them on exit. Deliberately does NOT touch
--- the weather STATE: UDW keeps raining - it IS raining outside the tunnel.
+-- the weather STATE: UDW keeps raining (it IS raining outside the tunnel).
 -- Pure component-level Activate/Deactivate, the same calls the stable dry-kill
 -- path uses. Components are cached on first suppress and revalidated per use;
 -- any weather (re)apply clears the suppression (Weather.Apply resets it).
@@ -1039,40 +1039,35 @@ local function findPrecipComponents()
     return found
 end
 
---- Kill all live precip components (rescans - respawned components are new
+--- Hide all live precip components (rescans; respawned components are new
 --- instances). Used by SetPrecipSuppressed and re-run ~1s from Weather.Tick
 --- while suppression holds (table field so Tick, defined earlier in the file,
 --- can resolve it at call time).
---- @return number killed
+---
+--- HIDE-ONLY v2 (2026-07-12): suppression no longer deactivates anything or
+--- touches the UDW master switches. The components keep SIMULATING and
+--- SPAWNING invisibly (one hidden Niagara system, negligible cost), so the
+--- restore is a pure unhide and the sky is mid-rain the same frame, the
+--- kill/restore asymmetry that three revive-side fixes (master restore,
+--- Static Properties push, AdvanceSimulationByTime warmup) never closed,
+--- because a re-activated system always restarts from an empty sky. UDW's
+--- periodic particle update may freely re-Activate the components (they are
+--- already active); the ~1s enforcement rescan re-hides anything it
+--- respawns fresh (e.g. a weather change mid-tunnel).
+--- @return number hidden
 function Weather._SuppressKill()
     suppressedComps = findPrecipComponents()
     local n = 0
     for _, comp in ipairs(suppressedComps) do
-        local ok = pcall(function() comp:DeactivateImmediate() end)
-        if not ok then ok = pcall(function() comp:Deactivate() end) end
-        -- Hide as well: deactivation stops SPAWNING but drops already in the
-        -- air live out their lifetime (~1-2s of visible rain inside the
-        -- portal - the reported kill delay). Hidden components render
-        -- nothing, in-flight particles included.
-        pcall(function() comp:SetHiddenInGame(true, true) end)
+        local ok = pcall(function() comp:SetHiddenInGame(true, true) end)
         if ok then n = n + 1 end
     end
     return n
 end
 
---- Restore the UDW particle master switches saved at suppress time. Table
---- field so the reset at the top of Weather.Apply (defined earlier in the
---- file) resolves it at call time - same pattern as _SuppressKill.
-function Weather._SuppressRestoreProps()
-    if not suppressSaved then return end
-    if suppressSaved.rainEnable ~= nil then Actors.SetUDWProperty("Enable Rain Particles", suppressSaved.rainEnable) end
-    if suppressSaved.snowEnable ~= nil then Actors.SetUDWProperty("Enable Snow Particles", suppressSaved.snowEnable) end
-    if suppressSaved.rainSpawn ~= nil then Actors.SetUDWProperty("Rain Particle Spawn Count", suppressSaved.rainSpawn) end
-    if suppressSaved.snowSpawn ~= nil then Actors.SetUDWProperty("Snow Particle Spawn Count", suppressSaved.snowSpawn) end
-    suppressSaved = nil
-end
-
---- Suppress (true) or restore (false) precipitation particles. Idempotent.
+--- Suppress (true) or restore (false) precipitation VISIBILITY. Idempotent.
+--- Weather state, wetness, sound and the UDW particle switches all stay
+--- untouched: it IS still raining, just not visibly under cover.
 --- @param on boolean
 function Weather.SetPrecipSuppressed(on)
     on = on and true or false
@@ -1080,51 +1075,30 @@ function Weather.SetPrecipSuppressed(on)
     precipSuppressed = on
 
     if on then
-        -- Kill the resurrector at the source, not just its output: UDW's
-        -- periodic (~5s) particle update re-Activates the components while
-        -- the weather state says rain - the deactivate-only v1 showed a
-        -- 5-second rain blink on capture. Flip the same master switches the
-        -- proven dry-kill path uses (enable bools + spawn counts), but SAVE
-        -- the stock values; Rain intensity/wetness/sound state stay untouched
-        -- (it IS still raining outside the tunnel).
-        suppressSaved = {}
-        pcall(function()
-            local v, ok
-            v, ok = Actors.GetUDWProperty("Enable Rain Particles", nil)
-            if ok then suppressSaved.rainEnable = (v and true or false) end
-            v, ok = Actors.GetUDWProperty("Enable Snow Particles", nil)
-            if ok then suppressSaved.snowEnable = (v and true or false) end
-            v, ok = Actors.GetUDWProperty("Rain Particle Spawn Count", nil)
-            if ok then suppressSaved.rainSpawn = v end
-            v, ok = Actors.GetUDWProperty("Snow Particle Spawn Count", nil)
-            if ok then suppressSaved.snowSpawn = v end
-        end)
-        Actors.SetUDWProperty("Enable Rain Particles", false)
-        Actors.SetUDWProperty("Enable Snow Particles", false)
-        Actors.SetUDWProperty("Rain Particle Spawn Count", 0.0)
-        Actors.SetUDWProperty("Snow Particle Spawn Count", 0.0)
         suppressEnforceClock = os.clock()
         local n = Weather._SuppressKill()
-        Log.Info(MODULE, "Precip suppressed (tunnel)", {components = n, masters_off = true})
+        Log.Info(MODULE, "Precip suppressed (tunnel)", {components = n, mode = "hidden"})
     else
-        Weather._SuppressRestoreProps()
+        -- Unhide a FRESH scan (the suppress-time cache can be stale) plus
+        -- the cached list. Nothing was ever stopped, so this is the whole
+        -- restore.
         local n = 0
-        if suppressedComps then
-            for _, comp in ipairs(suppressedComps) do
+        local seen = {}
+        local function unhideList(list)
+            if not list then return end
+            for _, comp in ipairs(list) do
                 pcall(function()
-                    if comp:IsValid() then
+                    if not seen[comp] and comp:IsValid() then
+                        seen[comp] = true
                         comp:SetHiddenInGame(false, true)
-                        comp:Activate(true)
                         n = n + 1
                     end
                 end)
             end
         end
+        unhideList(findPrecipComponents())
+        unhideList(suppressedComps)
         suppressedComps = nil
-        -- UDW-sanctioned kick (same call the force-rain path uses) so UDW
-        -- re-establishes its particles promptly instead of on its next
-        -- periodic update.
-        Actors.SetUDWProperty("Refresh Settings", true)
         Log.Info(MODULE, "Precip restored (tunnel exit)", {components = n})
     end
 end

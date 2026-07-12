@@ -1,5 +1,5 @@
 -- TXR Weather Mod v3.0
--- config.lua - all user-configurable settings
+-- config.lua: all user-configurable settings
 -- See readme.md for full explanations; comments here are kept brief.
 
 local Config = {}
@@ -48,8 +48,8 @@ Config.Scheduler = {
     TransitionSeconds = 40.0,   -- blend time for scheduled changes (smooth)
 
     -- Set false to keep the scheduler from ever picking precipitation presets
-    -- (rain/snow/dust). Useful while the in-tunnel rain issue persists. Does not
-    -- affect manual Alt+S cycling - only the auto scheduler and Alt+P.
+    -- (rain/snow/dust). Does not affect manual Alt+S cycling, only the auto
+    -- scheduler and Alt+P.
     AllowPrecipitation = true,
 
     -- Base weighted pool. Higher = more likely. Any PRESET_DATA name is valid;
@@ -87,8 +87,8 @@ Config.TimeOfDay = {
     DefaultSpeed = 53.333,  -- normal speed (~30 min day cycle)
     FastSpeed = 640.0,      -- Alt+T fast-forward (~2.2 min full day; was 320)
     StartingTOD = nil,      -- 0-2400, or nil to not override
-    DawnStart = 600, DawnEnd = 800,    -- 06:00 - 08:00
-    DuskStart = 1800, DuskEnd = 2000,  -- 18:00 - 20:00
+    DawnStart = 600, DawnEnd = 800,    -- 06:00-08:00
+    DuskStart = 1800, DuskEnd = 2000,  -- 18:00-20:00
 
     -- Night-only cycle: dusk -> night -> dawn -> straight back to dusk, skipping
     -- the day entirely. Once time passes NightOnlySkipFrom (dawn has played out),
@@ -140,7 +140,7 @@ Config.WetGrip = {
     SnowCounts = false,      -- treat snow as slippery too (uses max of rain and snow)
     SnowWeight = 1.0,        -- scale snow's contribution (1.0 = same as rain, 0 = ignore)
 
-    -- Wet up fast, dry slowly - the road stays slick a while after the rain stops.
+    -- Wet up fast, dry slowly: the road stays slick a while after the rain stops.
     -- Rough seconds to reach most of the way to the new wetness target.
     WetRiseSeconds = 8.0,
     DrySeconds     = 45.0,
@@ -179,13 +179,13 @@ Config.Moon = {
     RenderPhases = true,    -- realistic phases instead of a full disc
     PhaseOverTime = true,   -- phase advances night to night (set false to pin Phase)
     Phase = nil,            -- 0-1 to force a phase (e.g. 0.2 crescent); needs PhaseOverTime=false
-    Scale = 1.5,            -- nil = UDS default; bump (e.g. 1.5) for a bigger atmospheric moon
+    Scale = 1.25,            -- nil = UDS default; bump (e.g. 1.5) for a bigger atmospheric moon
     Contrast = nil,         -- nil = UDS default
 }
 
 -- ============== VOLUMETRIC LIGHT RAYS ==============
 -- UDS god-ray shafts through gaps in the cloud cover (Niagara additive cards, like
--- rain - renders in TXR). Shows in daytime under broken/overcast cloud. IndividualClouds
+-- rain, so it renders in TXR). Shows in daytime under broken/overcast cloud. IndividualClouds
 -- > 0 casts rays through NATURAL gaps so they show without painting cloud coverage.
 Config.LightRays = {
     Enabled = true,
@@ -202,17 +202,17 @@ Config.Transitions = {
     -- Slow window keyed to the SUN (2026-07-07): active while the sun's
     -- elevation is inside [SlowElevMin, SlowElevMax] degrees, so it stays
     -- centered on the actual sunrise/sunset wherever the drifting in-game date
-    -- puts them (the date advances every in-game midnight - fixed clock
+    -- puts them (the date advances every in-game midnight; fixed clock
     -- windows aim at the wrong sky within days of play). +/-8 deg is roughly
-    -- 40-45 real minutes either side of the sun event - it covers the whole
+    -- 40-45 real minutes either side of the sun event; it covers the whole
     -- measured light collapse (which the old 17:30-19:30 window ENDED at).
     SlowElevMax = 8.0,
     SlowElevMin = -8.0,
 
     -- Clock-window FALLBACK, used only when sun elevation is unavailable
     -- (LightCycle module off, or the first seconds after a course load).
-    SlowDawnStart = 500, SlowDawnEnd = 700,    -- 05:00 - 07:00
-    SlowDuskStart = 1730, SlowDuskEnd = 1930,  -- 17:30 - 19:30
+    SlowDawnStart = 500, SlowDawnEnd = 700,    -- 05:00-07:00
+    SlowDuskStart = 1730, SlowDuskEnd = 1930,  -- 17:30-19:30
 
     -- Time speed during dawn/dusk as a FRACTION of normal. Lower = slower, so the
     -- window lingers longer in real time. 0.40 = original feel (~5.7 min dusk).
@@ -237,11 +237,11 @@ Config.Keybinds = {
     BrightnessUp     = { Key = "B", Modifiers = {"Alt"} },
     BrightnessDown   = { Key = "B", Modifiers = {"Alt", "Shift"} },
     -- DEV: UDS exposure-bias liveness test (+2 EV on all five knobs, press
-    -- again to restore). Unbound for release - uncomment to re-enable.
+    -- again to restore). Unbound for release; uncomment to re-enable.
     -- ExposureDebugOverlay = { Key = "H", Modifiers = {"Alt"} },
 
     -- Manual rain suppression: toggles the rain/snow particles off/on at the
-    -- component level (weather state untouched - it keeps "raining"). The
+    -- component level (weather state untouched; it keeps "raining"). The
     -- tunnel system drives the same mechanism automatically.
     PrecipSuppressTest = { Key = "J", Modifiers = {"Alt"} },
 
@@ -265,10 +265,10 @@ Config.Keybinds = {
 -- ============== PA (PARKING AREA) ==============
 -- The PA scene lives inside the outgame world but has its own working sky
 -- and weather. Stock, it is CANNED: always night (TOD 19:50, heavy cloud).
---   "continue" - carry your course weather and time of day into the PA and
---                keep the clock running at your course time speed (default)
---   "freeze"   - carry the course state, then freeze time while in the PA
---   "stock"    - leave the canned PA night alone (pre-3.4 behavior)
+--   "continue": carry your course weather and time of day into the PA and
+--               keep the clock running at your course time speed (default)
+--   "freeze":   carry the course state, then freeze time while in the PA
+--   "stock":    leave the canned PA night alone (pre-3.4 behavior)
 Config.PA = {
     Mode = "continue",
 }
@@ -278,7 +278,6 @@ Config.Persistence = {
     Enabled = true,
     AutoSaveInterval = 30,  -- seconds; 0 to disable
     RestoreOnLoad = true,
-    ForceReloadStateOnCourseEnter = true,  -- restore exact snapshot on course enter
     SaveFileName = "last_state.txt",
 }
 
@@ -379,7 +378,7 @@ Config.Atmosphere = {
 -- UDW's rainbow. Rendered on a world MESH (not a post-process), so it shows in TXR.
 -- UDW decides WHEN it's visible from the live weather state: there must be rain (or
 -- fog) feeding it, the camera must be in direct sun (not under overcast), and the
--- sun low enough. So it appears naturally as rain clears toward the sun - you won't
+-- sun low enough. So it appears naturally as rain clears toward the sun; you won't
 -- see it in every weather, which is intended. We just enable it; UDW drives strength.
 Config.Rainbow = {
     Enabled = true,
@@ -413,7 +412,7 @@ Config.SpaceLayer = {
 -- Cinematic daytime: richer volumetric-cloud shading, stronger golden hour,
 -- visible cirrus wisps, higher cloud render quality (photo-mode zoom) and a lazier
 -- cloud drift. Applied once per course (settle-gated, game thread) then baked with
--- UDS's own Static Properties calls - the proven stars/nebula/moon pattern.
+-- UDS's own Static Properties calls, the proven stars/nebula/moon pattern.
 --
 -- Knobs whose internal scale is undocumented are MULTIPLIERS on the value UDS
 -- spawned with (the sky actor is recreated per course, so this never compounds);
@@ -424,7 +423,7 @@ Config.CinematicSky = {
 
     -- Global sky/lighting grade. Saturation is absolute (stock confirmed 1.0 in
     -- the apply log). Contrast is a MULTIPLIER: its stock is 0.1, NOT 1.0-centered
-    -- (an absolute 1.06 here meant ~10x contrast - the 2026-07-03 blowout bug).
+    -- (an absolute 1.06 here meant ~10x contrast, the 2026-07-03 blowout bug).
     Saturation   = 1.15,  -- richer sky + lighting color
     ContrastMult = 1.10,  -- 0.1 -> 0.11; keep subtle, exposure does the heavy lifting
 
@@ -462,14 +461,14 @@ Config.CinematicSky = {
 
 -- ============== REAL SUN (EXPERIMENT) ==============
 -- Real-world solar simulation. The module ALWAYS logs the sky's stock
--- Simulation values once per course (grep "RealSun" - the Phase 0 probe).
+-- Simulation values once per course (grep "RealSun", the Phase 0 probe).
 -- With Enabled=true it also switches UDS to Simulate Real Sun/Moon for the
 -- coordinates and pinned date below: astronomically correct sunrise/sunset
 -- times and sun path. NOTE: the exposure slot curve is tuned for the stock
--- sun path - expect dawn/dusk timing shifts on dates far from late July
+-- sun path; expect dawn/dusk timing shifts on dates far from late July
 -- (Tokyo sunset ~18:50, the closest match to the current curve).
 Config.RealSun = {
-    Enabled = false,       -- flip true to run the experiment
+    Enabled = true,       -- flip true to run the experiment
 
     Latitude  = 35.676,    -- Tokyo
     Longitude = 139.650,
@@ -485,7 +484,7 @@ Config.RealSun = {
 
     -- ---- Date policy (independent of Enabled above) ----
     -- The stock game advances the calendar every in-game midnight, so the
-    -- season - and sunrise/sunset times - drift as you play (the game persists
+    -- season (and sunrise/sunset times) drift as you play (the game persists
     -- this across sessions itself). Set PinMonth+PinDay to force a fixed date
     -- once per course instead (PinYear optional). nil = let the seasons drift.
     PinYear = nil, PinMonth = nil, PinDay = nil,
@@ -495,7 +494,7 @@ Config.RealSun = {
 -- ============== VIGNETTE (hide HUD vignette, opt-in) ==============
 -- Hide TXR's in-game HUD vignette (the darkened corner frame) for a cleaner,
 -- photographic look. Pure UI-widget toggle on TXR's own HUD (no game files). Default
--- OFF - it removes a vanilla HUD element, so it's opt-in.
+-- OFF: it removes a vanilla HUD element, so it's opt-in.
 Config.Vignette = {
     Enabled = true,
     Hide = true,    -- true = hide the vignette (set false to force it visible)
@@ -504,7 +503,7 @@ Config.Vignette = {
 -- ============== PHOTO MODE UNLOCKER ==============
 -- Removes the restrictions on TXR's Advanced Photo Mode free camera (folded in from
 -- the standalone PhotoModeUnlocked mod, which is kept on disk but disabled). Pure
--- runtime reflection - no game files touched. Only does anything while photo mode is
+-- runtime reflection, no game files touched. Only does anything while photo mode is
 -- open. ON by default (it's purely additive and self-gating).
 Config.PhotoMode = {
     Enabled = true,
@@ -549,7 +548,7 @@ Config.PhotoMode = {
     -- Free-camera fly speed (vanilla is very slow). Vanilla is cached once so the
     -- multiplier never compounds across camera respawns. 1.0 = vanilla.
     SetMovementSpeed = true,
-    MovementSpeedMult = 2.0,
+    MovementSpeedMult = 2.5,
 
     -- Camera rotation gets twitchy zoomed in (a tiny FOV magnifies every wobble), so
     -- scale rotation sensitivity with FOV: full speed at/above RotationRefFov,
@@ -580,14 +579,13 @@ Config.Headlights = {
     -- displayed car's lights (pop-ups animate there too).
     Mode = "auto",
 
-    -- Auto mode tracks the Exposure module's interpolated brightness (lens proxy:
-    -- ~0.78 bright day .. ~30 deep night) instead of a fixed clock, so the lamps
-    -- follow available light and stay in sync if you retune exposure. The On/Off
-    -- pair is a hysteresis band (On > Off) to stop flicker around the threshold.
-    OnLens  = 4.5,   -- turn ON once brightness-lens rises above this (getting dark)
-                     -- (4.5 ~ the dusk point where TXR's own auto lights up;
-                     -- the old 6.0 lagged native by ~half the dusk window)
-    OffLens = 3.5,   -- turn OFF once it falls below this (getting light)
+    -- Auto mode keys on the SUN'S ELEVATION in degrees (season-proof; the
+    -- game's date drifts, so a clock would aim wrong within days). Lamps come
+    -- ON once the sun sinks to OnElev (dusk) and go OFF once it climbs past
+    -- OffElev (dawn); the gap is the hysteresis band. The crossings match the
+    -- previously tuned lens thresholds (ON ~ where TXR's own auto lights up).
+    OnElev  = -1.0,
+    OffElev = 0.5,
 
     DefaultBrightnessLevel = 3,  -- 1=0.5x 2=1.0x 3=2.0x 4=3.0x 5=5.0x
 
@@ -599,7 +597,7 @@ Config.Headlights = {
     GestureTapMaxSeconds  = 1.0,
     GestureOffHoldSeconds = 2.0,
 
-    -- Fallback ONLY when the Exposure module is disabled/unavailable (no lens signal).
+    -- Clock fallback when no sun elevation is available.
     OnTOD = 1900,    -- on after 19:00
     OffTOD = 600,    -- off after 06:00
 }
@@ -615,7 +613,7 @@ Config.Audio = {
 -- Widens the alignment sliders (camber/toe/ride height/wheel offset) to
 -- RangeMultiplier x their stock range, and re-asserts saved out-of-range values
 -- on car spawn (the game stores them but won't apply extremes on load itself).
--- Locked rows are skipped - this does NOT unlock parts/settings.
+-- Locked rows are skipped; this does NOT unlock parts/settings.
 Config.Tuning = {
     Enabled = true,
     RangeMultiplier = 3.0,  -- 3x stock range each way; 1.0 = stock (inactive)
@@ -624,465 +622,134 @@ Config.Tuning = {
     Debug = false,          -- log alignment rows, slider probes + widened ranges
 }
 
--- ============== LIGHT CYCLE (sun-elevation exposure - the active system) ==============
--- Replaces the 144-slot TOD exposure table (Config.Exposure below, kept as a
--- fallback behind ModuleToggles.Exposure). Drives the same three cvars, but from
--- the sun's REAL elevation (stock TXR runs UDS's Tokyo solar simulation), so the
--- curve is anchored on physical twilight bands and survives date/season changes.
--- Anchors ship mapped from the tuned 3.3.1 slot table via the measured effective
--- sun events (sunrise ~06:00 / sunset ~19:30); dusk tuning won the dawn/dusk
--- conflicts (it had the datapoints). Tune with Alt+D / Alt+Shift+D as before -
--- feedback lines now carry sun_elev.
+-- ============== LIGHT CYCLE (exposure + look) ==============
+-- Stock auto-exposure runs; this module can bias it via UDS's Exposure Bias
+-- knobs from the sun's REAL elevation (season-proof), applies the per-course
+-- post-process look overrides, and holds the cvar layer at engine-neutral
+-- (the UDS-less garage is the one cvar-driven look). Tune with Alt+D /
+-- Alt+Shift+D; feedback lines carry sun_elev + the applied EV.
 Config.LightCycle = {
     Enabled = true,
-    UpdateIntervalSeconds = 2.0,
+    UpdateIntervalSeconds = 1.0,  -- update cadence; writes are change-gated
 
-    -- DIAGNOSTIC (mission completed 2026-07-08 - it exposed the handoff gap
-    -- and the dead source levers): push engine-neutral cvars, no shaping at
-    -- all. Keep false unless testing raw UDS light again.
+    -- Diagnostic: push neutral cvars only, no shaping (raw UDS light).
     DiagnosticNeutralCvars = false,
 
-    -- ============ OUTPUT MODE (the post-breakthrough architecture) ============
-    -- "bias" (default): STOCK AUTO-EXPOSURE runs (engine.ini MethodOverride
-    -- removed 2026-07-08) and this module drives UDS's five Exposure Bias
-    -- knobs - user-confirmed live on the composited pipeline, natively
-    -- smoothed. Cvars held at engine-neutral. The old Curve below then serves
-    -- ONLY as the headlight brightness proxy.
-    -- "cvars": legacy behavior (needs r.EyeAdaptation.MethodOverride=3 back
-    -- in engine.ini to look right).
-    OutputMode = "bias",
+    -- EXPOSURE POLICY: the stock pipeline runs untouched apart from the
+    -- skylight-leak kill (Config.Tunnels.KillVolumeSkylightLeak) and the
+    -- look overrides below. Shaping ships neutral; tune from Alt+D data
+    -- (Logs/tuning_feedback.log).
 
-    -- EV bias vs sun elevation (bias mode). Daytime adaptation is fine stock
-    -- (user verdict); dawn/dusk/night read TOO BRIGHT because adaptation
-    -- flattens the natural darkening - the negative ramp restores it.
-    -- First pass 2026-07-08, conservative; tune with Alt+D (log carries
-    -- sun_elev + the applied EV in "Applied bias" lines).
+    -- EV bias vs sun elevation (0 = stock). Anchor shape: day / golden
+    -- hour / sunset / blue hour / civil twilight / night.
     BiasCurve = {
-        { elev =  30, bias = -0.3 },   -- day: user 2026-07-08 "everything
-        { elev =   8, bias = -0.3 },   -- feels bright during daytime"
-        { elev =   3, bias = -0.5 },   -- golden hour starts settling
-        { elev =   0, bias = -0.8 },   -- sunset
-        { elev =  -3, bias = -1.2 },   -- blue hour
-        { elev =  -6, bias = -1.6 },   -- civil twilight ends
-        { elev = -10, bias = -1.9 },   -- night
+        { elev =  30, bias = 0.0 },
+        { elev =   8, bias = 0.0 },
+        { elev =   3, bias = 0.0 },
+        { elev =   0, bias = 0.0 },
+        { elev =  -3, bias = 0.0 },
+        { elev =  -6, bias = 0.0 },
+        { elev = -10, bias = 0.0 },
     },
 
-    -- Weather EV compensation in bias mode. Ships OFF (0.0): auto-exposure
-    -- self-normalizes weather brightness (the reason the old cvar-era weather
-    -- mults existed is gone). Raise toward 1.0 only if Alt+D says cloudy
-    -- nights genuinely lag: bias += log2(weather sky mult, night-weighted) * this.
-    WeatherBiasScale = 0.0,
+    LeakAlbedo = 0.07,  -- r.Lumen.SkylightLeaking.ReflectionAverageAlbedo
 
-    -- Elevation anchors (degrees; +90 zenith, 0 horizon, negative below).
-    -- Piecewise-linear between anchors, clamped flat outside the ends.
-    -- sky  = r.SkylightIntensityMultiplier (scene-ambient brightness lever)
-    -- lens = r.EyeAdaptation.LensAttenuation (3D-scene EV trim; CANNOT dim the
-    --        sky dome - UDS's sky is exposure-compensated)
-    -- 2026-07-07: golden-hour lens anchors lowered to the tuned DUSK values
-    -- (the first mapping compromised toward dawn's higher numbers - read as
-    -- "way too high in golden hour"). Direction of travel: lens shrinks toward
-    -- a flat trim as the source-light levers take over the brightness duty.
-    -- 2026-07-07 late sweep: golden band (0..+15) trimmed 25-30% - "too
-    -- bright" presses in that band across ALL weathers incl. mult-inert ones
-    -- (= base curve verdict); collapse zone (-3/-5) sky nudged up ("too dark"
-    -- right after sunset even under light cloud).
-    -- 2026-07-08: post-sunset LENS ramp HALVED ("3D stuff glows weirdly right
-    -- after the day/night shift" - lens lifts everything EXCEPT the
-    -- exposure-compensated sky dome, so objects pop against the darkening
-    -- sky). The lost brightness moves to SKY (skylight lights the scene
-    -- naturally, and the real-time captured skylight couples it to the dome
-    -- glow). Deep night lens 30 -> 22, leaning on the new source floors.
-    Curve = {
-        { elev =  30, sky = 0.100, lens =  1.0 },   -- day core
-        { elev =  15, sky = 0.105, lens =  1.25 },
-        { elev =   9, sky = 0.130, lens =  1.8 },   -- late golden hour
-        { elev =   6, sky = 0.155, lens =  2.2 },
-        { elev =   2, sky = 0.270, lens =  2.7 },   -- sun on the towers
-        { elev =   0, sky = 0.420, lens =  3.8 },   -- sunset/sunrise moment
-        { elev =  -3, sky = 0.860, lens =  5.5 },   -- civil twilight (blue hour)
-        { elev =  -5, sky = 0.950, lens =  9.0 },
-        { elev =  -7, sky = 1.000, lens = 14.0 },
-        { elev = -10, sky = 1.050, lens = 22.0 },   -- night
+    -- UDS night floors. Mult scales the stock value; nil = leave stock.
+    AbsentBrightnessMult = 1.0,    -- "Directional Lights Absent Brightness" (stock 1.5)
+    NightCloudyBrightness = nil,   -- "Extra Night Brightness When Cloudy" (stock 0.0)
+    OvercastBrightnessNight = nil, -- "Overcast Brightness (Night)" (stock 0.2)
+
+    -- Clear the game's Curve_ExposureCompensation per course. Keep false:
+    -- the stock curve reads right with the skylight leak dead.
+    KillExposureCompCurve = false,
+
+    SunVectorSign = -1,  -- UDS sun vector = light direction; implementation constant
+    SunriseTOD = 600, SunsetTOD = 1930,  -- pseudo-elevation fallback events
+
+    -- Auto-exposure adaptation speeds (f-stops/second; stock 3/1, nil =
+    -- stock). Asymmetric like real eyes: adapting to BRIGHT (SpeedUp, e.g.
+    -- exiting a tunnel) is fast or the exit blows out white; adapting to
+    -- DARK (SpeedDown) stays slow and cinematic.
+    AdaptSpeedUp = 3.0,
+    AdaptSpeedDown = 0.35,
+
+    -- POST-PROCESS LOOK OVERRIDES: FPostProcessSettings fields written once
+    -- per course onto the course sky's main PP component (wins conflicts
+    -- with the game's second PP comp). Numbers/bools direct; vectors as
+    -- {X=,Y=,Z=,W=}. Verified by "PP one-shots readback" overrides_held.
+    -- Remove a line = stock.
+    PostProcess = {
+        BloomIntensity = 0.2,                       -- game runs 0.75
+        VignetteIntensity = 0.0,                    -- game runs 0.4
+        ScreenSpaceReflectionQuality = 100.0,       -- game runs 50
+        ScreenSpaceReflectionMaxRoughness = 0.4,    -- game runs 0.6
+        LumenSceneDetail = 2.0,                     -- game runs 1
+        LumenFinalGatherLightingUpdateSpeed = 2.0,
+        -- Shadow contrast: the game LIFTS unlit areas two ways, film toe
+        -- 0.3 (UE default 0.55) and local-exposure shadow scale 0.7 (a
+        -- regional lift that tracks auto-exposure). Neutralizing both
+        -- darkens shadows without moving mid-tones.
+        FilmToe = 0.55,
+        LocalExposureShadowContrastScale = 1.0,     -- game runs 0.7
+        LocalExposureHighlightContrastScale = 1.0,  -- game runs 0.8
     },
-    LeakAlbedo = 0.07,   -- constant across the cycle (reflection floor)
-
-    -- Garage / PA-menu worlds (artificial light, no sun): fixed values
-    Garage = { Sky = 1.005, Lens = 30.0 },
-
-    -- Night scene floor: multiplier on UDS "Directional Lights Absent
-    -- Brightness" (scene light when neither sun nor moon contributes; stock
-    -- 1.5), scaled from stock once per course. Reference target: real Tokyo
-    -- night reads ~25-30% of day raw. 1.3 = conservative first pass 2026-07-07.
-    AbsentBrightnessMult = 1.3,
-
-    -- Cloudy-night scene floor: ABSOLUTE value for UDS "Extra Night Brightness
-    -- When Cloudy" - a free stock lever (ships 0.0, so cloudy nights get no
-    -- extra light and read darkest-of-all; real city cloud REFLECTS glow and
-    -- reads brighter). nil = leave stock. 1.0 first pass read as nothing (nine
-    -- "too dark" presses through an overcast night at lens 60/sky 1.5) - the
-    -- sibling "Night Brightness" runs on a 3.0 scale, so match it.
-    NightCloudyBrightness = 3.0,
-
-    -- Overcast night keep-fraction: ABSOLUTE for UDS "Overcast Brightness
-    -- (Night)" - the engine's own "how much light survives under full cloud at
-    -- night" (stock 0.2 = cloud removes 80%). The reference footage says
-    -- overcast night city is the BRIGHTEST night (cloud reflects the glow).
-    -- nil = leave stock.
-    OvercastBrightnessNight = 0.45,
-
-    -- Dawn damping: the anchor curve is dusk-tuned, and dawn read "a tad
-    -- bright" at the same elevations (user 2026-07-07). While the sun is
-    -- RISING, sky/lens scale by these, feathered across the transition band
-    -- so there are no steps. 1.0 = off (symmetric curve).
-    DawnSkyMult  = 0.90,
-    DawnLensMult = 0.85,
-
-    -- UDS sun-vector vertical sign (the cached vector is the LIGHT direction:
-    -- raw Z = -sin(elevation), so -1). A constant of the UDS implementation -
-    -- only change this if a UDS update flips the convention (the module WARNS
-    -- "Sun vector sign LOOKS WRONG" if it detects a persistent mismatch).
-    SunVectorSign = -1,
-
-    -- Effective sun events for the pseudo-elevation FALLBACK (used only while
-    -- the sun vector is unreadable, e.g. the first seconds of a course load).
-    -- August-calibrated; the drifting date moves the real events away from
-    -- these, which is fine for a seconds-long fallback.
-    SunriseTOD = 600, SunsetTOD = 1930,
-
-    -- PP-volume RESEARCH flag: keeps the containment watcher running even
-    -- with no tunnel features configured, for ID-dump/classification drives.
-    -- The watcher runs anyway whenever tunnel features are on - leave false.
-    ProbePPVolumes = false,
-
-    -- TUNNEL FEATURES (2026-07-09). The course's 33 PostProcessVolumes are
-    -- inert as shipped but outline the covered road sections; the containment
-    -- poll fires ENTER/EXIT as the car crosses them. Volumes listed here BY
-    -- NAME (from "PP volume [i]" ID-dump / ENTER log lines) are treated as
-    -- tunnels: bias trim while inside + rain particle suppression.
-    -- These four are video-confirmed tunnel bores (2026-07-09 00:13 capture):
-    TunnelVolumes = {
-        "9C6B0021494DE9FA01_1223679167",  -- Takebashi-area tunnel (east part)
-        "9C6B0021494DE9FA01_1415472168",  -- Takebashi tunnel west part (the
-                                          -- bore is CHAINED [7]->[6]; missing
-                                          -- this one dropped the trim+rain
-                                          -- kill mid-tunnel on 2026-07-09)
-        "PostProcessVolume_20",           -- the long C1 tunnel (Miyakezaka JCT)
-        "PostProcessVolume_19",           -- Kasumigaseki tunnel
-        "PostProcessVolume_24",           -- Ginza-area tunnel (C1 inner)
-    },
-    -- Membership shortcut (user call 2026-07-09): treat EVERY volume the
-    -- devs authored a nonzero AutoExposureBias on as covered - their own
-    -- list, so un-ID'd bores (the "same symptoms" stretches) are covered
-    -- without more video passes. Costs: open trenches/portal ramps and a
-    -- few HUGE area boxes ([8][9][21][33], whole-district size) also get
-    -- trim + rain kill - if rain visibly dies on open road or a good-looking
-    -- trench goes dark, set this false (curated TunnelVolumes still applies).
-    TunnelAutoByBias = true,
-    -- Tunnel trim v2: EV = -TunnelTrimScale * authoredBias * dayWeight.
-    -- authoredBias = the volume's dev-authored dormant AutoExposureBias
-    -- (0.5..0.8 on the confirmed bores - the devs' own coveredness map, so
-    -- deeper tunnels trim harder for free). dayWeight ramps 0->1 across sun
-    -- elevation TunnelTrimFade.low..high: night tunnels are fine stock, so
-    -- the trim dies with the sun and never steps at dusk.
-    -- 3.0 measured "-0.5 EV short" (user 2026-07-09) -> 3.7 = Kasumigaseki
-    -- -2.6 EV, Ginza -3.0, Takebashi -1.85 at midday.
-    TunnelTrimScale = 3.7,
-    TunnelTrimFade = { low = 0.0, high = 12.0 },
-    -- Suppress rain/snow particles inside tunnels (weather STATE untouched -
-    -- it keeps raining outside; Weather.SetPrecipSuppressed does the work).
-    -- Lookahead (seconds of travel) starts the kill just before the portal
-    -- so already-falling drops are gone as you cross it.
-    TunnelRainKill = true,
-    TunnelRainLookahead = 1.2,
-
-    -- Per-weather compensation (same semantics as the legacy module; smoothed).
-    -- These are the LIVE tables now - the copies in Config.Exposure below are
-    -- only used if the legacy module is re-enabled.
-    WeatherSkyMult = {
-        Clear_Skies       = 1.00,
-        Partly_Cloudy     = 1.05,
-        Cloudy            = 1.25,
-        Overcast          = 1.50,
-        Foggy             = 1.40,
-        Rain_Light        = 1.35,
-        Rain              = 1.50,
-        Rain_Thunderstorm = 1.70,
-        Snow_Light        = 1.25,
-        Snow              = 1.40,
-        Snow_Blizzard     = 1.70,
-        Sand_Dust_Calm    = 1.20,
-        Sand_Dust_Storm   = 1.50,
-    },
-    WeatherLensMult = {
-        Clear_Skies       = 1.00,
-        Partly_Cloudy     = 1.05,
-        Cloudy            = 1.45,
-        Overcast          = 2.00,
-        Foggy             = 1.60,
-        Rain_Light        = 1.70,
-        Rain              = 1.90,
-        Rain_Thunderstorm = 2.20,
-        Snow_Light        = 1.45,
-        Snow              = 1.70,
-        Snow_Blizzard     = 2.20,
-        Sand_Dust_Calm    = 1.30,
-        Sand_Dust_Storm   = 1.80,
-    },
-    WeatherSmoothSeconds = 20.0,
 
     -- Skylight tuning keybinds (Alt+Z/X/C, Alt+V, Alt+Shift+V)
     Tune = { Step = 0.05, RoughnessBaseline = 1.0 },
 }
 
--- ============== AUTO-EXPOSURE (LEGACY - TOD slots, ex-VEAO) ==============
--- Superseded by Config.LightCycle above; kept intact as the fallback
--- (ModuleToggles: Exposure=false, LightCycle=true). Re-enable by flipping both.
--- 144 slots of 10 min across 00:00-24:00 (TOD 0..2400); garage forces night (slot 0).
--- Requires the exposure cvars in engine.ini (shipped minimal ini / installer).
-Config.Exposure = {
-    Enabled = false,  -- LEGACY: superseded by Config.LightCycle. To fall back:
-                      -- set this true AND Config.LightCycle.Enabled = false.
-    SlotCount = 144,
-    SlotSizeTOD = 2400 / 144,    -- 16.667 TOD units = 10 min
-    UpdateIntervalSeconds = 0.5,  -- slot re-evaluation rate. Kept low so exposure
-                                  -- tracks fast time (Alt+T 320x advances ~18 TOD/2s,
-                                  -- which lagged ~11 game-min per update at the old 2.0).
-                                  -- Flat day/night re-evals are near-free (unchanged
-                                  -- values skip the cvar push); only transitions emit.
+-- ============== TUNNELS (covered road: rain hide + GI fix) ==============
+-- Covered = the car's road-data tunnel attribute (roof bit; exact
+-- dev-authored boundaries, catches every real bore) OR a roof trace (lone
+-- overpasses, which the road data does not mark). Covered = precipitation
+-- components HIDDEN (they keep simulating; weather state untouched;
+-- restore = unhide, instant). Also clears the course volumes' authored
+-- skylight-leak override (the boundary lighting flip).
+Config.Tunnels = {
+    Enabled = true,
 
-    -- Per-slot cvars driven by the module
-    CvarSky  = "r.SkylightIntensityMultiplier",
-    CvarLeak = "r.Lumen.SkylightLeaking.ReflectionAverageAlbedo",
-    CvarLens = "r.EyeAdaptation.LensAttenuation",
-
-    -- Skylight tuning keybinds (Alt+Z/X/C, see Config.Keybinds)
-    Tune = {
-        Step = 0.05,               -- nudge size per keypress
-        CvarRough = "r.Lumen.SkylightLeaking.Roughness",
-        RoughnessBaseline = 1.0,   -- engine.ini boot value; keep in sync.
-                                   -- 1.0 = max (roughness is 0-1, engine clamps;
-                                   -- 10 looks identical). Baselined 2026-07-03.
+    -- Research reference for the ProbePPVolumes ENTER/EXIT classification
+    -- lines; no longer drives the rain logic.
+    TunnelVolumes = {
+        "9C6B0021494DE9FA01_1223679167",  -- Takebashi east
+        "9C6B0021494DE9FA01_1415472168",  -- Takebashi west
+        "PostProcessVolume_20",           -- long C1 (Miyakezaka JCT)
+        "PostProcessVolume_19",           -- Kasumigaseki
+        "PostProcessVolume_24",           -- Ginza (C1 inner)
     },
+    TunnelAutoByBias = true,
 
-    -- Per-weather lens multiplier. The slot curve is tuned for clear skies;
-    -- overcast/rain scenes are much darker at the same TOD (2026-07-04 feedback:
-    -- Overcast was too dark even at the lens=30 night cap). Applied on top of
-    -- the interpolated lens, smoothed so preset changes don't pop the exposure.
-    -- Presets not listed = 1.0.
-    -- 2026-07-04 recalibration: Overcast dusk was STILL too dark at 1.45
-    -- (20 presses, applied lens 2.0-29.5, mult confirmed active in log).
-    -- LENS compensation is now the SECONDARY lever. The 2026-07-04 full-cycle
-    -- Alt+D runs proved lens raises barely read on screen (overcast night at
-    -- lens 34 -> 78 = "too dark, and it stayed dark") - lens mostly shapes
-    -- contrast/adaptation, sky is the brightness. Kept at the earlier baseline;
-    -- the real per-weather brightening is WeatherSkyMult below.
-    WeatherLensMult = {
-        Clear_Skies       = 1.00,
-        Partly_Cloudy     = 1.05,  -- 1.15 -> 1.05 2026-07-06: every press that
-                                   -- session (day tail, dusk knee, night cap)
-                                   -- read uniformly ~slightly bright under PC
-        Cloudy            = 1.45,
-        Overcast          = 2.00,
-        Foggy             = 1.60,
-        Rain_Light        = 1.70,
-        Rain              = 1.90,
-        Rain_Thunderstorm = 2.20,
-        Snow_Light        = 1.45,
-        Snow              = 1.70,
-        Snow_Blizzard     = 2.20,
-        Sand_Dust_Calm    = 1.30,
-        Sand_Dust_Storm   = 1.80,
-    },
+    TunnelRainKill = true,      -- hide precipitation on covered road
+    TunnelRainLookahead = 1.2,  -- seconds of travel the roof trace probes ahead
 
-    -- Per-weather SKY multiplier (r.SkylightIntensityMultiplier) - the effective
-    -- brightness lever, added 2026-07-04 after the lens-only compensation failed
-    -- to register. Skylight is exactly the light heavy cloud takes away, so this
-    -- is also physically the right knob. Smoothed like the lens mult. Values are
-    -- a conservative first pass (sky is potent - night overcast runs
-    -- 1.005 * 1.5 = ~1.5): flag too-dark/too-bright with Alt+D / Alt+Shift+D and
-    -- read weather_sky_mult in the ExposureTune log lines.
-    WeatherSkyMult = {
-        Clear_Skies       = 1.00,
-        Partly_Cloudy     = 1.05,  -- 1.10 -> 1.05 2026-07-06 (see lens mult note)
-        Cloudy            = 1.25,
-        Overcast          = 1.50,
-        Foggy             = 1.40,
-        Rain_Light        = 1.35,
-        Rain              = 1.50,
-        Rain_Thunderstorm = 1.70,
-        Snow_Light        = 1.25,
-        Snow              = 1.40,
-        Snow_Blizzard     = 1.70,
-        Sand_Dust_Calm    = 1.20,
-        Sand_Dust_Storm   = 1.50,
-    },
-    WeatherLensSmoothSeconds = 20.0,
+    -- Fog on covered road: global fog is blind to ceilings, so foggy
+    -- weather reads as a white wall inside bores. Scale Fog Density is
+    -- multiplied by this while the road data says roofed. 0.0 = no fog at
+    -- all under a roof; 1.0 = damp off.
+    CoveredFogMult = 0.0,
 
-    -- [1..144] = { sky, leak, lens }. Index 1 = 00:00-00:10. Curves interpolated
-    Slots = {
-        -- NIGHT CORE
-        [  1] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 00:00-00:10
-        [  2] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 00:10-00:20
-        [  3] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 00:20-00:30
-        [  4] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 00:30-00:40
-        [  5] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 00:40-00:50
-        [  6] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 00:50-01:00
-        [  7] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 01:00-01:10
-        [  8] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 01:10-01:20
-        [  9] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 01:20-01:30
-        [ 10] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 01:30-01:40
-        [ 11] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 01:40-01:50
-        [ 12] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 01:50-02:00
-        [ 13] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 02:00-02:10
-        [ 14] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 02:10-02:20
-        [ 15] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 02:20-02:30
-        [ 16] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 02:30-02:40
-        [ 17] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 02:40-02:50
-        [ 18] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 02:50-03:00
-        [ 19] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 03:00-03:10
-        [ 20] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 03:10-03:20
-        [ 21] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 03:20-03:30
-        [ 22] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 03:30-03:40
-        [ 23] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 03:40-03:50
-        [ 24] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 03:50-04:00
-        [ 25] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 04:00-04:10
-        [ 26] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 04:10-04:20
-        [ 27] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 04:20-04:30
-        [ 28] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 04:30-04:40
-        [ 29] = { sky = 0.9700, leak = 0.070, lens = 28.00 }, -- 04:40-04:50
-        [ 30] = { sky = 0.9350, leak = 0.070, lens = 26.00 }, -- 04:50-05:00
-        -- DAWN TRANSITION (night -> day)
-        [ 31] = { sky = 0.9000, leak = 0.070, lens = 24.00 }, -- 05:00-05:10
-        [ 32] = { sky = 0.8000, leak = 0.070, lens = 20.67 }, -- 05:10-05:20
-        [ 33] = { sky = 0.7000, leak = 0.070, lens = 17.33 }, -- 05:20-05:30
-        [ 34] = { sky = 0.6000, leak = 0.070, lens = 14.00 }, -- 05:30-05:40
-        [ 35] = { sky = 0.4833, leak = 0.070, lens = 11.00 }, -- 05:40-05:50
-        -- 2026-07-06: dawn descent raised for 4x too-dark (under Rain_Light),
-        -- then walked back HALFWAY after 6x too-bright under Partly_Cloudy -
-        -- the rain case is now carried by the Rain lens mults, not the curve.
-        -- Sky bump kept (feeds reflections; inert without a light source).
-        [ 36] = { sky = 0.4000, leak = 0.070, lens =  9.50 }, -- 05:50-06:00
-        [ 37] = { sky = 0.3000, leak = 0.070, lens =  7.50 }, -- 06:00-06:10
-        -- post-sunup rampdown ACCELERATED 2026-07-06 ("slightly too bright
-        -- after sun up, rampdown too slow, midday fine") - day floor now
-        -- effectively reached ~07:15 instead of ~07:40
-        [ 38] = { sky = 0.2600, leak = 0.070, lens =  5.80 }, -- 06:10-06:20
-        [ 39] = { sky = 0.2100, leak = 0.070, lens =  4.60 }, -- 06:20-06:30
-        [ 40] = { sky = 0.1700, leak = 0.070, lens =  3.40 }, -- 06:30-06:40
-        [ 41] = { sky = 0.1500, leak = 0.070, lens =  2.60 }, -- 06:40-06:50
-        [ 42] = { sky = 0.1300, leak = 0.070, lens =  2.00 }, -- 06:50-07:00
-        [ 43] = { sky = 0.1100, leak = 0.070, lens =  1.55 }, -- 07:00-07:10
-        [ 44] = { sky = 0.1000, leak = 0.070, lens =  1.25 }, -- 07:10-07:20
-        [ 45] = { sky = 0.1000, leak = 0.070, lens =  1.10 }, -- 07:20-07:30
-        [ 46] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 07:30-07:40
-        [ 47] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 07:40-07:50
-        [ 48] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 07:50-08:00
-        [ 49] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 08:00-08:10
-        [ 50] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 08:10-08:20
-        [ 51] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 08:20-08:30
-        -- DAY
-        [ 52] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 08:30-08:40
-        [ 53] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 08:40-08:50
-        [ 54] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 08:50-09:00
-        [ 55] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 09:00-09:10
-        [ 56] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 09:10-09:20
-        [ 57] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 09:20-09:30
-        [ 58] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 09:30-09:40
-        [ 59] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 09:40-09:50
-        [ 60] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 09:50-10:00
-        [ 61] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 10:00-10:10
-        [ 62] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 10:10-10:20
-        [ 63] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 10:20-10:30
-        [ 64] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 10:30-10:40
-        [ 65] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 10:40-10:50
-        [ 66] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 10:50-11:00
-        [ 67] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 11:00-11:10
-        [ 68] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 11:10-11:20
-        [ 69] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 11:20-11:30
-        [ 70] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 11:30-11:40
-        [ 71] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 11:40-11:50
-        [ 72] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 11:50-12:00
-        [ 73] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 12:00-12:10
-        [ 74] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 12:10-12:20
-        [ 75] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 12:20-12:30
-        [ 76] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 12:30-12:40
-        [ 77] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 12:40-12:50
-        [ 78] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 12:50-13:00
-        [ 79] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 13:00-13:10
-        [ 80] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 13:10-13:20
-        [ 81] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 13:20-13:30
-        [ 82] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 13:30-13:40
-        [ 83] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 13:40-13:50
-        [ 84] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 13:50-14:00
-        [ 85] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 14:00-14:10
-        [ 86] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 14:10-14:20
-        [ 87] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 14:20-14:30
-        [ 88] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 14:30-14:40
-        [ 89] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 14:40-14:50
-        [ 90] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 14:50-15:00
-        [ 91] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 15:00-15:10
-        [ 92] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 15:10-15:20
-        [ 93] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 15:20-15:30
-        [ 94] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 15:30-15:40
-        [ 95] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 15:40-15:50
-        [ 96] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 15:50-16:00
-        [ 97] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:00-16:10
-        [ 98] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:10-16:20
-        [ 99] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:20-16:30
-        [100] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:30-16:40
-        [101] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:40-16:50
-        -- 2026-07-06 dusk lens rebuild, pass 2 (dawn = the confirmed-good
-        -- reference shape). Pass-1 presses: still too BRIGHT 18:20-19:43 at
-        -- applied 3.6-28.6, while 20:05 at 29 was too DARK the run before -
-        -- the light collapses between ~19:40 and ~20:05. So: hold ~day level
-        -- to 18:00, creep to ~19:00, climb 19:00-19:50, cap 30 by ~20:05.
-        [102] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 16:50-17:00
-        [103] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:00-17:10
-        [104] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:10-17:20
-        [105] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:20-17:30
-        -- DUSK -> EVENING (brightened 2026-07-03 from Alt+D nudges: ramp now
-        -- starts 16:50 and runs ~2x through 19:10; was flat 1.00 until 17:40)
-        [106] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:30-17:40
-        [107] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:40-17:50
-        [108] = { sky = 0.1000, leak = 0.070, lens =  1.00 }, -- 17:50-18:00
-        [109] = { sky = 0.1000, leak = 0.070, lens =  1.10 }, -- 18:00-18:10
-        [110] = { sky = 0.1333, leak = 0.070, lens =  1.20 }, -- 18:10-18:20
-        [111] = { sky = 0.1767, leak = 0.070, lens =  1.35 }, -- 18:20-18:30
-        [112] = { sky = 0.2200, leak = 0.070, lens =  1.55 }, -- 18:30-18:40
-        [113] = { sky = 0.2967, leak = 0.070, lens =  1.85 }, -- 18:40-18:50
-        [114] = { sky = 0.3733, leak = 0.070, lens =  2.10 }, -- 18:50-19:00
-        [115] = { sky = 0.4500, leak = 0.070, lens =  2.20 }, -- 19:00-19:10
-        [116] = { sky = 0.5267, leak = 0.070, lens =  2.60 }, -- 19:10-19:20
-        [117] = { sky = 0.6033, leak = 0.070, lens =  3.20 }, -- 19:20-19:30
-        [118] = { sky = 0.6800, leak = 0.070, lens =  5.00 }, -- 19:30-19:40
-        [119] = { sky = 0.7433, leak = 0.070, lens = 10.00 }, -- 19:40-19:50
-        [120] = { sky = 0.8067, leak = 0.070, lens = 17.50 }, -- 19:50-20:00
-        [121] = { sky = 0.8700, leak = 0.070, lens = 24.00 }, -- 20:00-20:10
-        [122] = { sky = 0.9033, leak = 0.070, lens = 30.00 }, -- 20:10-20:20
-        [123] = { sky = 0.9367, leak = 0.070, lens = 30.00 }, -- 20:20-20:30
-        [124] = { sky = 0.9700, leak = 0.070, lens = 30.00 }, -- 20:30-20:40
-        [125] = { sky = 0.9807, leak = 0.070, lens = 30.00 }, -- 20:40-20:50
-        [126] = { sky = 0.9913, leak = 0.070, lens = 30.00 }, -- 20:50-21:00
-        [127] = { sky = 1.0020, leak = 0.070, lens = 30.00 }, -- 21:00-21:10
-        [128] = { sky = 1.0030, leak = 0.070, lens = 30.00 }, -- 21:10-21:20
-        [129] = { sky = 1.0040, leak = 0.070, lens = 30.00 }, -- 21:20-21:30
-        -- NIGHT CORE
-        [130] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 21:30-21:40
-        [131] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 21:40-21:50
-        [132] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 21:50-22:00
-        [133] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 22:00-22:10
-        [134] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 22:10-22:20
-        [135] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 22:20-22:30
-        [136] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 22:30-22:40
-        [137] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 22:40-22:50
-        [138] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 22:50-23:00
-        [139] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 23:00-23:10
-        [140] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 23:10-23:20
-        [141] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 23:20-23:30
-        [142] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 23:30-23:40
-        [143] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 23:40-23:50
-        [144] = { sky = 1.0050, leak = 0.070, lens = 30.00 }, -- 23:50-24:00
-    },
+    -- Clear the authored LumenSkylightLeaking=1.0 override on all course
+    -- volumes (it flooded covered sections with flat sky ambient at every
+    -- volume edge). Armed line logs leakCleared=N.
+    KillVolumeSkylightLeak = true,
+
+    -- Roof trace for lone overpasses: downward Visibility leg for deck
+    -- tops + upward leg for tunnel linings. Shorten the trace if rain dies
+    -- under tall gantries.
+    OverpassRainKill = true,
+    OverpassTraceLength = 5000,  -- units (50 m)
+    OverpassDebug = false,       -- throttled "Roof trace debug" lines
+
+    -- Trace-cover release hold (uncovered polls) so girder gaps don't
+    -- strobe rain; road-data cover releases on the first uncovered poll.
+    RainClearPolls = 4,
+
+    -- Poll cadence: fast while it can rain, relaxed when dry.
+    PollSecondsRain = 0.25,
+    PollSecondsDry = 1.0,
+
+    -- Research: revive the PP-volume ENTER/EXIT classification lines.
+    ProbePPVolumes = false,
 }
 
 -- ============== MODULE TOGGLES ==============
@@ -1107,6 +774,7 @@ Config.ModuleToggles = {
     SpaceLayer  = true,   -- night-sky nebula
     CinematicSky= true,   -- daytime cloud/atmosphere grade (see Config.CinematicSky)
     LightCycle  = true,   -- sun-elevation exposure (see Config.LightCycle)
+    Tunnels     = true,   -- covered-road rain kill (see Config.Tunnels)
     RealSun     = true,   -- real-sun probe + experiment (see Config.RealSun)
     Vignette    = true,   -- hide the HUD vignette (see Config.Vignette)
     PhotoMode   = true,   -- photo mode free-camera unlocks
@@ -1116,10 +784,10 @@ Config.ModuleToggles = {
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 4, Patch = 0,
-    String = "3.4.0",
+    Major = 3, Minor = 5, Patch = 0,
+    String = "3.5.0",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.4.0",
+    FullName = "TXR Weather Mod v3.5.0",
 }
 
 return Config

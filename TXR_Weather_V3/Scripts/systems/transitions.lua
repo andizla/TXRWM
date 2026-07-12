@@ -42,7 +42,6 @@ local DUSK_PEAK_TOD = 1800    -- 18:00 (actual sunset)
 local TOKYO_TINT_COLORS = {
     orangeStrong = {R = 1.00, G = 0.36, B = 0.14, A = 1.0},
     orangeSoft   = {R = 1.00, G = 0.55, B = 0.22, A = 1.0},
-    redStrong    = {R = 0.92, G = 0.16, B = 0.16, A = 1.0},
     pink         = {R = 1.00, G = 0.45, B = 0.55, A = 1.0},
 }
 
@@ -80,7 +79,7 @@ end
 
 -- Sun-elevation window bounds (2026-07-07): the slow window is keyed to the
 -- SUN, not the clock. The stock game's date advances every in-game midnight,
--- so sunrise/sunset drift seasonally - fixed TOD windows aim at the wrong
+-- so sunrise/sunset drift seasonally; fixed TOD windows aim at the wrong
 -- sky within days of play (the measured August dusk collapse was 19:15-20:05
 -- while the old window ended at 19:30). Elevation centers the window on the
 -- actual event wherever the date drifts. TOD windows remain the FALLBACK when
@@ -227,7 +226,7 @@ local function readColorProperty(propName)
     pcall(function()
         local rawColor = uds[propName]
         if rawColor then
-            -- UE4SS returns LinearColor as UObject - extract numeric values
+            -- UE4SS returns LinearColor as UObject; extract numeric values
             local r = tonumber(rawColor.R) or 1.0
             local g = tonumber(rawColor.G) or 1.0
             local b = tonumber(rawColor.B) or 1.0
@@ -406,7 +405,7 @@ function Transitions.Init()
     return true
 end
 
---- Main tick function - call every frame/tick
+--- Main tick function; call every frame/tick
 function Transitions.Tick()
     if not isInitialized then return end
     if Config.Transitions and Config.Transitions.Enabled == false then return end
@@ -458,10 +457,10 @@ function Transitions.Tick()
         end
     end
     
-    -- Handle TINT WINDOW (color control) - extends beyond slow window
+    -- Handle TINT WINDOW (color control); extends beyond slow window
     if inTintWindow then
         if not originalColors then
-            -- First time in tint window - store colors
+            -- First time in tint window: store colors
             Log.Info(MODULE, "Entering tint window", {type = tintType, tod = currentTOD})
             storeOriginalColors()
         end

@@ -38,11 +38,7 @@ local internalState = {
     -- Current smoothed values
     cloudCurrent = nil,
     fogCurrent = nil,
-    
-    -- Target values for smooth transitions
-    cloudTarget = nil,
-    fogTarget = nil,
-    
+
     -- Mood system for day-to-day variation
     moodTarget = 0,
     moodCurrent = 0,
@@ -131,11 +127,11 @@ function CloudsFog.TargetCloudCoverage(tod)
     -- Base diurnal curve
     local diurnal = 0.5 * (1.0 - math.cos(2.0 * math.pi * (frac + 0.15)))
     
-    -- Drift - slow oscillation over minutes
+    -- Drift: slow oscillation over minutes
     local drift = Config.CloudsFog.CloudDriftAmplitude * 
         (0.5 * (1.0 - math.cos(2.0 * math.pi * (t / Config.CloudsFog.CloudDriftPeriod))))
     
-    -- Micro jitter - faster oscillation
+    -- Micro jitter: faster oscillation
     local jitter = Config.CloudsFog.CloudJitterAmplitude * 
         math.sin(2.0 * math.pi * (t / Config.CloudsFog.CloudJitterPeriod + 0.37))
     
@@ -318,13 +314,12 @@ function CloudsFog.SetCloudCoverage(value, immediate)
         local success = writeCloudCoverage(value)
         if success then
             internalState.cloudCurrent = value
-            internalState.cloudTarget = nil  -- Clear any pending target
             Log.Debug(MODULE, "Set cloud coverage immediate", {value = value})
         end
         return success
     else
-        -- Set target for smooth transition
-        internalState.cloudTarget = value
+        -- Non-immediate: the preset targets set in ApplyPreset drive the
+        -- ramp in Tick (there is no separate per-call target).
         Log.Debug(MODULE, "Set cloud coverage target", {value = value})
         return true
     end
@@ -343,13 +338,12 @@ function CloudsFog.SetFog(value, immediate)
         local success = writeFog(value)
         if success then
             internalState.fogCurrent = value
-            internalState.fogTarget = nil  -- Clear any pending target
             Log.Debug(MODULE, "Set fog immediate", {value = value})
         end
         return success
     else
-        -- Set target for smooth transition
-        internalState.fogTarget = value
+        -- Non-immediate: the preset targets set in ApplyPreset drive the
+        -- ramp in Tick (there is no separate per-call target).
         Log.Debug(MODULE, "Set fog target", {value = value})
         return true
     end
@@ -382,7 +376,7 @@ function CloudsFog.ApplyPreset(cloudValue, fogValue, immediate)
     })
 end
 
---- Main tick function - updates clouds and fog based on time
+--- Main tick function; updates clouds and fog based on time
 --- @param dt number|nil Delta time in seconds
 function CloudsFog.Tick(dt)
     if not Config.CloudsFog.Enabled then return end

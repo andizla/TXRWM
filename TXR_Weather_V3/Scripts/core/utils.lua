@@ -32,7 +32,7 @@ function Utils.IsValidObject(obj)
         return false
     end
     
-    -- Tables and other types - just check non-nil
+    -- Tables and other types: just check non-nil
     return obj ~= nil
 end
 
@@ -96,7 +96,7 @@ function Utils.SafeGetFunction(obj, functionName)
     if fnType == "function" then
         return fn, true
     elseif fnType == "userdata" then
-        -- UE4SS UFunctions are userdata - assume callable
+        -- UE4SS UFunctions are userdata; assume callable
         return fn, true
     elseif fn ~= nil then
         -- Could be a table with __call metamethod or other callable
@@ -215,9 +215,9 @@ end
 --- Get current time in seconds (high resolution if available)
 --- @return number
 function Utils.GetTime()
-    -- os.clock() gives CPU time, os.time() gives wall time
-    -- For game timing, we want wall time
-    return os.clock()  -- Returns seconds with subsecond precision
+    -- os.clock() has subsecond precision (os.time() is whole seconds); every
+    -- caller uses this for DELTAS, where process time works fine.
+    return os.clock()
 end
 
 --- Calculate delta time between two timestamps
@@ -288,7 +288,7 @@ end
 
 -- Cached console singletons (Engine + KismetSystemLibrary). Resolved once and
 -- reused so each console push doesn't re-scan the UObject array. Re-resolved if
--- they ever go invalid. Mirrors the proven pattern in systems/exposure.lua.
+-- they ever go invalid.
 local _cachedEngine = nil
 local _cachedKsl = nil
 local _UEH = nil

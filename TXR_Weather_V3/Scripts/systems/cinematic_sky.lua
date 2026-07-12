@@ -4,7 +4,7 @@
 -- cloud wisps (cirrus), cloud render quality and cloud movement mood.
 --
 -- Every target is a reflected primitive/struct on UDS verified against the v1.5
--- dump (shared/types/Ultra_Dynamic_Sky.lua) - nothing here is in the dead
+-- dump (shared/types/Ultra_Dynamic_Sky.lua); nothing here is in the dead
 -- post-process (MID + WeightedBlendable) family.
 --
 -- Knobs with undocumented internal scales are configured as MULTIPLIERS on the
@@ -155,7 +155,7 @@ local function applyOnGameThread()
         setMult(uds, PROP_RAYLEIGH_DESAT, cfg.RayleighDesatMult, changes)
         setMult(uds, PROP_SUNSET_INTENSITY, cfg.SunsetIntensityMult, changes)
     else
-        Log.Warn(MODULE, "UDS not controlling sky atmosphere - atmo tweaks skipped",
+        Log.Warn(MODULE, "UDS not controlling sky atmosphere: atmo tweaks skipped",
             {controlFlag = tostring(atmoControl)})
     end
 

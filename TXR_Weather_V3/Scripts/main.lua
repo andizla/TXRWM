@@ -44,13 +44,13 @@ Log.Info("Main", "==============================================")
 -- Load utils (depends on nothing)
 local Utils = safeRequire("core.utils", "Utils")
 if not Utils then
-    Log.Error("Main", "Failed to load Utils module - continuing with limited functionality")
+    Log.Error("Main", "Failed to load Utils module: continuing with limited functionality")
 end
 
 -- Load state (depends on nothing)
 local State = safeRequire("core.state", "State")
 if not State then
-    Log.Error("Main", "Failed to load State module - continuing with limited functionality")
+    Log.Error("Main", "Failed to load State module: continuing with limited functionality")
 end
 
 -- Mark core modules as loaded
@@ -88,8 +88,8 @@ local Atmosphere = nil
 local Headlights = nil
 local Audio = nil
 local Stars = nil
-local Exposure = nil
 local LightCycle = nil
+local Tunnels = nil
 local WindDebris = nil
 local LightRays = nil
 local Moon = nil
@@ -236,16 +236,6 @@ local function loadSystemModules()
         Log.Debug("Main", "Stars module not loaded")
     end
 
-    -- Phase 13: Auto-exposure scheduler (ported from VEAO; LEGACY fallback -
-    -- superseded by LightCycle below, disabled via Config.Exposure.Enabled)
-    Exposure = safeRequire("systems.exposure", "Exposure")
-    if Exposure then
-        Log.Info("Main", "System module loaded: Exposure")
-        if Exposure.Init then Exposure.Init() end
-    else
-        Log.Debug("Main", "Exposure module not loaded")
-    end
-
     -- Light cycle: sun-elevation-driven exposure (the active exposure system)
     LightCycle = safeRequire("systems.light_cycle", "LightCycle")
     if LightCycle then
@@ -253,6 +243,15 @@ local function loadSystemModules()
         if LightCycle.Init then LightCycle.Init() end
     else
         Log.Debug("Main", "LightCycle module not loaded")
+    end
+
+    -- Tunnels: covered-road detection + rain kill (split from LightCycle)
+    Tunnels = safeRequire("systems.tunnels", "Tunnels")
+    if Tunnels then
+        Log.Info("Main", "System module loaded: Tunnels")
+        if Tunnels.Init then Tunnels.Init() end
+    else
+        Log.Debug("Main", "Tunnels module not loaded")
     end
 
     -- Wind debris (UDW Niagara debris, scales with wind intensity)
@@ -363,7 +362,7 @@ local function loadSystemModules()
         Log.Debug("Main", "Scheduler module not loaded")
     end
 
-    -- Phase 6: Wetness simulation (disabled by default - WIP)
+    -- Phase 6: Wetness simulation (disabled by default, WIP)
     if Config.Wetness and Config.Wetness.Enabled then
         Wetness = safeRequire("systems.wetness", "Wetness")
         if Wetness then
@@ -385,7 +384,7 @@ local initialWeatherApplied = false  -- Track if we've applied initial weather t
 local restoredFromPA = false         -- Flag to skip initial weather when restoring from PA
 local _pendingRestore = false        -- Flag set when actors become invalid, triggers restore on next valid
 
--- PA freeze watchdog - continuously enforce freeze while in PA
+-- PA freeze watchdog: continuously enforce freeze while in PA
 local function enforcePAFreezeWatchdog()
     local uds = Actors and Actors.GetUDS()
     if uds then
@@ -403,7 +402,7 @@ local _CourseStateBeforePA = nil
 -- PA weather (Config.PA.Mode, canon 2026-07-09): the PA scene lives in the
 -- SAME outgame world as the garage but has its OWN working UDS/UDW (canned
 -- state: always night, TOD 1950 / cloud 7.5 / fog 3.0). Discovery succeeding
--- in an outgame world = PA - the garage's UDS never validates.
+-- in an outgame world = PA; the garage's UDS never validates.
 --   "continue": carry the captured course weather/time into the PA and keep
 --               the clock running at the captured course speed.
 --   "freeze":   same carry, then freeze time (the original V1.32 behavior).
@@ -475,9 +474,12 @@ local function applyPAState()
     end
 
     -- Exposure follows the PA's real sun (light_cycle bypasses the garage
-    -- constants for a validated PA scene) - arm it like a course entry.
+    -- constants for a validated PA scene); arm it like a course entry.
     if LightCycle and LightCycle.OnCourseLoad then
         LightCycle.OnCourseLoad()
+    end
+    if Tunnels and Tunnels.OnCourseLoad then
+        Tunnels.OnCourseLoad()
     end
 
     Log.Info("Main", "PA state applied", {
@@ -526,7 +528,7 @@ local function onTick()
             Actors.Tick()
         end
         
-        -- PA freeze watchdog - continuously enforce freeze while in PA
+        -- PA freeze watchdog: continuously enforce freeze while in PA
         if State.IsPAFrozen() then
             enforcePAFreezeWatchdog()
         end
@@ -545,7 +547,7 @@ local function onTick()
         if not initialWeatherApplied and Actors and Actors.IsOnCourse() and not State.IsPAFrozen() then
             -- If we just restored from PA, skip the normal initialization
             if restoredFromPA then
-                Log.Info("Main", "Restored from PA - skipping initial weather setup")
+                Log.Info("Main", "Restored from PA: skipping initial weather setup")
                 -- Still need to initialize DLWE system
                 if Wetness and Wetness.OnActorsReady then
                     Wetness.OnActorsReady()
@@ -553,7 +555,7 @@ local function onTick()
                 initialWeatherApplied = true
                 restoredFromPA = false
             else
-                Log.Info("Main", "Actors ready - triggering initial setup")
+                Log.Info("Main", "Actors ready: triggering initial setup")
                 
                 -- Initialize DLWE system FIRST before any weather operations
                 if Wetness and Wetness.OnActorsReady then
@@ -586,6 +588,15 @@ local function onTick()
                 if CloudsFog and CloudsFog.OnCourseLoad then
                     CloudsFog.OnCourseLoad()
                 end
+
+                -- Reset the weather-effect helpers' per-course state (fog
+                -- manual-override flag, lightning manager ref)
+                if EnhancedFog and EnhancedFog.OnCourseLoad then
+                    EnhancedFog.OnCourseLoad()
+                end
+                if Lightning and Lightning.OnCourseLoad then
+                    Lightning.OnCourseLoad()
+                end
                 
                 -- Initialize atmosphere (god rays, aurora, cloud shadows)
                 if Atmosphere and Atmosphere.Setup then
@@ -603,11 +614,11 @@ local function onTick()
                 end
 
                 -- Force exposure to re-apply its slot (map load may reset CVARs)
-                if Exposure and Exposure.OnCourseLoad then
-                    Exposure.OnCourseLoad()
-                end
                 if LightCycle and LightCycle.OnCourseLoad then
                     LightCycle.OnCourseLoad()
+                end
+                if Tunnels and Tunnels.OnCourseLoad then
+                    Tunnels.OnCourseLoad()
                 end
 
                 -- Reconcile headlights: clear any cast-only desync the game's native
@@ -639,6 +650,9 @@ local function onTick()
                 if LightCycle and LightCycle.OnCourseUnload then
                     LightCycle.OnCourseUnload()   -- disarm; the PA actors are gone
                 end
+                if Tunnels and Tunnels.OnCourseUnload then
+                    Tunnels.OnCourseUnload()
+                end
                 Log.Info("Main", "PA state cleared (actors lost)")
             end
         end
@@ -653,17 +667,26 @@ local function onTick()
             if CloudsFog and CloudsFog.OnCourseUnload then
                 CloudsFog.OnCourseUnload()
             end
+            -- Drop per-course refs/flags in the weather-effect helpers (the
+            -- lightning manager ref is a course-world object; keeping it
+            -- across the teardown is the known cross-world-ref crash pattern)
+            if EnhancedFog and EnhancedFog.OnCourseUnload then
+                EnhancedFog.OnCourseUnload()
+            end
+            if Lightning and Lightning.OnCourseUnload then
+                Lightning.OnCourseUnload()
+            end
             -- Disarm exposure's course branch so the re-entry transient (unrestored
             -- UDS reads Time Of Day = 0) can't flash the midnight slot before restore.
-            if Exposure and Exposure.OnCourseUnload then
-                Exposure.OnCourseUnload()
-            end
             if LightCycle and LightCycle.OnCourseUnload then
                 LightCycle.OnCourseUnload()
             end
+            if Tunnels and Tunnels.OnCourseUnload then
+                Tunnels.OnCourseUnload()
+            end
             initialWeatherApplied = false
             _pendingRestore = true  -- Signal to restore on next actor detection
-            Log.Info("Main", "Actors lost - pending restore on next detection")
+            Log.Info("Main", "Actors lost: pending restore on next detection")
         end
         
         -- Phase 4+: Time updates (skip in PA)
@@ -766,15 +789,16 @@ local function onTick()
             Vignette.Tick()
         end
 
-        -- Auto-exposure scheduler (self-throttled; also runs in garage/menu,
-        -- so it is intentionally NOT gated by the PA-frozen check)
-        if Exposure and Exposure.Tick then
-            Exposure.Tick()
-        end
-
-        -- Light cycle (sun-elevation exposure; same gating rationale as Exposure)
+        -- Light cycle (exposure/look; also runs in garage/menu, so it is
+        -- intentionally NOT gated by the PA-frozen check)
         if LightCycle and LightCycle.Tick then
             LightCycle.Tick()
+        end
+
+        -- Tunnels (covered-road rain kill; entered at the full tick rate and
+        -- self-paced inside, so portal reactions stay at the 0.25s budget)
+        if Tunnels and Tunnels.Tick then
+            Tunnels.Tick()
         end
 
         -- Tuning slider widening (the alignment menu lives in the garage, so
@@ -803,7 +827,7 @@ local function setupHooks()
     
     -- Check if we're in UE4SS environment
     if not RegisterHook then
-        Log.Warn("Main", "RegisterHook not available - running outside UE4SS?")
+        Log.Warn("Main", "RegisterHook not available: running outside UE4SS?")
         return false
     end
     
@@ -893,7 +917,7 @@ local function startMainLoop()
     
     -- Check if LoopAsync is available (UE4SS)
     if not LoopAsync then
-        Log.Error("Main", "LoopAsync not available - cannot start main loop")
+        Log.Error("Main", "LoopAsync not available: cannot start main loop")
         return false
     end
     
@@ -923,7 +947,7 @@ local function initialize()
 
     -- ===== PER-MODULE TOGGLES =====
     -- Setting a Config.ModuleToggles.X to false nil-s that module's handle, so every
-    -- `if X and X.Tick`/`X.Setup` guard in the loop skips it entirely - disabling the
+    -- `if X and X.Tick`/`X.Setup` guard in the loop skips it entirely, disabling the
     -- module's runtime without touching call sites. All true = normal operation.
     -- Actors/Presets/Keybinds are core and intentionally not toggleable here.
     local tg = Config.ModuleToggles
@@ -945,6 +969,7 @@ local function initialize()
         if tg.SpaceLayer  == false then SpaceLayer = nil end
         if tg.CinematicSky== false then CinematicSky = nil end
         if tg.LightCycle  == false then LightCycle = nil end
+        if tg.Tunnels     == false then Tunnels = nil end
         if tg.RealSun     == false then RealSun = nil end
         if tg.Vignette    == false then Vignette = nil end
         if tg.PhotoMode   == false then PhotoMode = nil end
@@ -1007,11 +1032,11 @@ end
 
 -- Track world context for PA transitions
 local _LastWorldTag = "unknown"
--- (_CourseStateBeforePA is declared above the main loop - applyPAState
+-- (_CourseStateBeforePA is declared above the main loop; applyPAState
 -- captures it as an upvalue)
 local _WorldLogPending = true       -- one-shot "World identify" log per map load (PA-name hunt)
 
--- LoadMapPreHook - fires BEFORE map unload while actors still valid
+-- LoadMapPreHook: fires BEFORE map unload while actors still valid
 if RegisterLoadMapPreHook then
     RegisterLoadMapPreHook(function()
         -- Old world is about to die: stop the async actor search from touching
@@ -1020,7 +1045,7 @@ if RegisterLoadMapPreHook then
             Actors.SuspendDiscovery()
         end
 
-        -- Get world tag from Actors module (or State) - NOT local variable
+        -- Get world tag from Actors module (or State), NOT a local variable
         local currentTag = "unknown"
         if Actors and Actors.GetWorldTag then
             currentTag = Actors.GetWorldTag()
@@ -1067,7 +1092,7 @@ if RegisterLoadMapPreHook then
                 if Log then Log.Warn("Main", string.format("Invalid TOD on unload: %.2f", tod or -1)) end
             end
         else
-            if Log then Log.Debug("Main", "No valid actors on unload - cannot capture state") end
+            if Log then Log.Debug("Main", "No valid actors on unload: cannot capture state") end
         end
         
         -- Save persistence if on course
@@ -1108,7 +1133,7 @@ local function TryGetCourseSkyClass()
     return CourseSkyClass
 end
 
--- BeginPlayPreHook - fires when new actors begin play
+-- BeginPlayPreHook: fires when new actors begin play
 if RegisterBeginPlayPreHook then
     RegisterBeginPlayPreHook(function(ActorParam)
         -- Get actor
@@ -1121,16 +1146,16 @@ if RegisterBeginPlayPreHook then
         pcall(function() isValid = Actor.IsValid and Actor:IsValid() end)
         if not isValid then return end
         
-        -- Cheap NAME check first - one GetFullName per actor. The old order ran
+        -- Cheap NAME check first: one GetFullName per actor. The old order ran
         -- TryGetSkyClass() for EVERY actor beginning play, which revalidates a
         -- CACHED CLASS OBJECT with IsValid(); during a world swap the previous
         -- world's GC can have freed that class, making the revalidation a
-        -- freed-memory read - matching the intermittent transition-crash
+        -- freed-memory read, matching the intermittent transition-crash
         -- signature (read AV in a game-thread hook, transitions only). The
         -- class-cache route now runs only as a fallback when the name read gives
         -- nothing usable, instead of hundreds of times per map load.
         -- NOT tostring(Actor): UE4SS's __tostring returns the userdata address
-        -- ("...Userdata: 0x..."), never the object name - the 3.3.0 tostring
+        -- ("...Userdata: 0x..."), never the object name; the 3.3.0 tostring
         -- version made isSky never match, so discovery only ever resumed via
         -- the 15s failsafe (the "TOD takes ~15s to snap in after a load"
         -- symptom). GetFullName on the live hook param is safe: this actor is
@@ -1182,7 +1207,7 @@ if RegisterBeginPlayPreHook then
             -- cache-only, so the exposure garage branch could not fire either:
             -- the garage ran ~15s on the previous course's cvars (after a dusk
             -- course that is sky=0.1 = a very dark garage). The outgame
-            -- managers begin play early in those worlds - use them as the
+            -- managers begin play early in those worlds; use them as the
             -- resume signal.
             if type(actorName) == "string"
                and (actorName:find("OutGameGarageManager") or actorName:find("OutGameMode"))
@@ -1194,14 +1219,14 @@ if RegisterBeginPlayPreHook then
         end
 
         -- A sky actor is beginning play: the new world is constructing, so the
-        -- teardown window is over - let the actor search run again
+        -- teardown window is over; let the actor search run again
         if Actors and Actors.ResumeDiscovery then
             Actors.ResumeDiscovery()
         end
 
         -- Get world tag from actor. GetFullName, NOT tostring: tostring(world)
         -- is just "UWorld: 0x..." (the address, no map path), which made every
-        -- world tag as the "course" default - the PA branch below never fired.
+        -- world tag as the "course" default; the PA branch below never fired.
         local tag = "course"
         local worldString = "unknown"
         pcall(function()
@@ -1211,7 +1236,7 @@ if RegisterBeginPlayPreHook then
                 if type(ws) ~= "string" or #ws == 0 then return end
                 worldString = ws  -- Capture for logging
                 local lw = ws:lower()
-                -- NOTE: there is NO separate "pa" world - the PA scene lives
+                -- NOTE: there is NO separate "pa" world; the PA scene lives
                 -- inside the outgame world (L_OutGame_P) and is handled by
                 -- the tick loop's PA lifecycle (Actors.IsInPAScene).
                 if lw:find("garage") or lw:find("outgame") or lw:find("ls_") then
@@ -1224,11 +1249,11 @@ if RegisterBeginPlayPreHook then
             worldString:sub(1,80), tag, _LastWorldTag)) end
         
         -- PA handling moved to the tick loop's PA lifecycle (applyPAState):
-        -- the old tag=="pa" branch here was DEAD - no world path ever matched,
+        -- the old tag=="pa" branch here was DEAD: no world path ever matched,
         -- the PA scene is part of the outgame world. Course return: don't
-        -- restore here - the tick loop's Persistence.Restore() handles it.
+        -- restore here; the tick loop's Persistence.Restore() handles it.
         if tag == "course" and _pendingRestore then
-            if Log then Log.Info("Main", "Course entry - deferring restore to tick loop") end
+            if Log then Log.Info("Main", "Course entry: deferring restore to tick loop") end
             _pendingRestore = false
             -- restoredFromPA stays false so tick loop will call Persistence.Restore()
         end
@@ -1262,8 +1287,8 @@ return {
     Headlights = Headlights,
     Audio = Audio,
     Stars = Stars,
-    Exposure = Exposure,
     LightCycle = LightCycle,
+    Tunnels = Tunnels,
     Rainbow = Rainbow,
     SpaceLayer = SpaceLayer,
     CinematicSky = CinematicSky,

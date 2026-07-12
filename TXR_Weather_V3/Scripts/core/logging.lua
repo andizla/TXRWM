@@ -175,7 +175,7 @@ function Logging.Init(config)
     -- Write session header
     local header = string.format(
         "================================================================================\n" ..
-        "TXR Weather Mod v%s - Log Session Started\n" ..
+        "TXR Weather Mod v%s: Log Session Started\n" ..
         "Date/Time: %s\n" ..
         "Log Level: %s\n" ..
         "================================================================================",

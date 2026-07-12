@@ -2,16 +2,16 @@
 -- systems/photomode.lua
 -- Removes the restrictions on TXR's Advanced Photo Mode free camera. Folded in from
 -- the standalone "PhotoModeUnlocked" mod (kept on disk but disabled) so the whole
--- experience ships in one mod. Pure runtime reflection - adds/modifies no game files.
+-- experience ships in one mod. Pure runtime reflection; adds/modifies no game files.
 --
 -- What it unlocks (all configurable in Config.PhotoMode):
---   - camera collision  (fly through cars/walls and outside the track)
---   - distance limit     (no cap on how far the camera can move from the car)
---   - orbit pan limits   (the non-free "orbit" camera can pan much further)
---   - FOV / zoom         (widens the in-game FOV slider's range so the normal zoom goes further)
---   - move speed         (multiplies the free camera's painfully slow fly speed)
---   - rotation speed     (scaled with FOV so zoomed-in framing isn't twitchy)
---   - vignette default   (forces the photo-mode vignette slider off, it ships at 40)
+--  , camera collision  (fly through cars/walls and outside the track)
+--  , distance limit     (no cap on how far the camera can move from the car)
+--  , orbit pan limits   (the non-free "orbit" camera can pan much further)
+--  : FOV / zoom         (widens the in-game FOV slider's range so the normal zoom goes further)
+--  , move speed         (multiplies the free camera's painfully slow fly speed)
+--  , rotation speed     (scaled with FOV so zoomed-in framing isn't twitchy)
+--  , vignette default   (forces the photo-mode vignette slider off, it ships at 40)
 --
 -- TXR's photo mode is the "AdvancedPhotoMode" plugin:
 --   /Game/AdvancedPhotoMode/Blueprints/BPC_PhotoMode   (the component, holds the limits)
@@ -25,7 +25,7 @@
 -- tick let other modules / actor-discovery churn occasionally stall the re-assert. The
 -- loop body runs on the async thread; the actual writes are object/widget/function calls
 -- on photo-mode actors, so they're marshalled onto the game thread via ExecuteInGameThread
--- - the same proven pattern the standalone used. When photo mode isn't open the find()
+-- (the same proven pattern the standalone used). When photo mode isn't open the find()
 -- calls return nil and a pass is a cheap no-op.
 
 local PhotoMode = {}
@@ -71,7 +71,7 @@ end
 
 -- Resolve the first VALID instance of a class. FindFirstOf can hand back a STALE /
 -- pending-kill object (e.g. a just-destroyed free camera lingering until GC) whose
--- IsValid() is false - which would make us think photo mode closed and drop every
+-- IsValid() is false, which would make us think photo mode closed and drop every
 -- unlock until the GC runs. Scanning FindAllOf for the first live instance kills that
 -- intermittent dropout; FindFirstOf is only a fallback.
 local function find(cls)
@@ -100,7 +100,7 @@ local function num(obj, field)
 end
 
 -- Read an FName/FText field as a real string. tostring() on these returns the userdata
--- address ("FNameUserdata: 0x...") - the actual text comes from :ToString().
+-- address ("FNameUserdata: 0x..."); the actual text comes from :ToString().
 local function name_str(obj, field)
     local s = ""
     pcall(function()
@@ -165,7 +165,7 @@ end
 -- The photo-mode menu builds its settings as WBP_PhotoMode_Bar_Slider widgets, each with
 -- its own Min/MaxValue. MoveCapture applies the slider's value WITHOUT re-clamping, so
 -- raising the FOV slider's Min/Max is what actually widens the zoom range. The menu has
--- several sliders; we match the FOV one by its internal ListKey ("FOV") - the on-screen
+-- several sliders; we match the FOV one by its internal ListKey ("FOV"); the on-screen
 -- "Zoom" name is localized display text and is unreliable to match on. Re-applied each
 -- tick (the menu rebuilds sliders on open) but only re-inits when the range/step isn't
 -- already ours (no flicker).
@@ -349,7 +349,7 @@ local function reassert()
 
     if not _loggedActive then
         _loggedActive = true
-        Log.Info(MODULE, "Photo mode detected - applying unlocks")
+        Log.Info(MODULE, "Photo mode detected: applying unlocks")
     end
 
     -- Throttled diagnostic for the long-exposure dropout. Decided on the async side so
@@ -368,7 +368,7 @@ local function reassert()
             if doDbg then
                 -- Read the live limits BEFORE we overwrite them: if these come back
                 -- "re-enabled" every log while pass= keeps climbing, the game is
-                -- re-asserting per frame (a race) - not the loop stalling.
+                -- re-asserting per frame (a race), not the loop stalling.
                 local camMaxOn, saTest, compMaxOn, fov
                 pcall(function() camMaxOn = cam and cam.bUseMaximumDistance end)
                 pcall(function() saTest = cam and cam.SpringArm and cam.SpringArm.bDoCollisionTest end)
@@ -398,7 +398,7 @@ end
 function PhotoMode.Start()
     if loopStarted then return end
     if type(LoopAsync) ~= "function" then
-        Log.Warn(MODULE, "LoopAsync unavailable - photo mode unlocker cannot run")
+        Log.Warn(MODULE, "LoopAsync unavailable: photo mode unlocker cannot run")
         return
     end
     loopStarted = true

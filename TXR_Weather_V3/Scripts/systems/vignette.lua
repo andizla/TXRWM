@@ -1,7 +1,7 @@
 -- TXR Weather Mod v3.0
 -- systems/vignette.lua
 -- Optional: hide TXR's in-game HUD vignette (the dark corner-darkening frame) for a
--- cleaner, more photographic look - useful for screenshots / photo-mode driving.
+-- cleaner, more photographic look, useful for screenshots / photo-mode driving.
 --
 -- This is a pure UI-widget toggle on TXR's OWN HUD (WBP_InGame_Hud_C ->
 -- WBP_Com_Vignette_Frame), NOT a UDS/UDW post-process effect, so it works reliably.
@@ -42,7 +42,7 @@ end
 
 --- True while a map teardown is in progress: no object probes or widget calls
 --- then (an object search against a dying world can be an uncatchable access
---- violation - same gating as audio/photomode/tuning)
+--- violation; same gating as audio/photomode/tuning)
 local function teardownActive()
     local actors = getActors()
     if actors and actors.IsDiscoverySuspended then

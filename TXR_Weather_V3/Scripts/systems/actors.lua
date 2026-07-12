@@ -24,7 +24,7 @@ local isSearching = false
 -- Map-teardown guard. Between LoadMapPreHook (old world starts dying) and the
 -- next sky-actor BeginPlay (new world constructing), the game thread is
 -- destroying the object array. Searching it from the async tick during that
--- window (FindFirstOf) reads dying objects - the suspected cause of the
+-- window (FindFirstOf) reads dying objects, the suspected cause of the
 -- intermittent course-to-garage transition crash (access violation inside the
 -- object search; see the "UDS found but not valid" spam right before each one).
 -- Discovery is suspended for the window, with a time failsafe in case no sky
@@ -37,15 +37,15 @@ local SUSPEND_FAILSAFE_SECONDS = 15
 
 --- Get world tag from actor's world object
 --- @param actor userdata
---- @return string "course", "pa", "outgame", or "unknown"
+--- @return string "course", "outgame", or "unknown"
 local function getWorldTagFromActor(actor)
     if not Utils.IsValidObject(actor) then return "unknown" end
-    
+
     local worldObj = nil
     pcall(function()
         if actor.GetWorld then worldObj = actor:GetWorld() end
     end)
-    
+
     -- Check world validity
     local worldValid = false
     if worldObj then
@@ -54,19 +54,23 @@ local function getWorldTagFromActor(actor)
         end)
     end
     if not worldValid then return "unknown" end
-    
+
+    -- GetFullName, NOT tostring: tostring(world) is just "UWorld: 0x..." (the
+    -- userdata address, no map path), so the old tostring version never
+    -- matched anything and always fell through to "course" here (the
+    -- garage-manager probe below rescued outgame detection).
     local ws = nil
-    pcall(function() ws = tostring(worldObj) end)
-    
+    pcall(function() ws = worldObj:GetFullName() end)
+
     if type(ws) == "string" then
         local lw = ws:lower()
+        -- There is NO separate "pa" world: the PA scene lives inside the
+        -- outgame world (see Actors.IsInPAScene).
         if lw:find("garage") or lw:find("outgame") or lw:find("ls_") then
             return "outgame"
-        elseif lw:find("_pa") or lw:find("/pa") or lw:find(" pa ") or lw:find("pa_") or lw:find("pause") then
-            return "pa"
         end
     end
-    
+
     return "course"
 end
 
@@ -89,13 +93,13 @@ end
 --- Check if we're in the garage / outgame menus (cached for performance).
 --- Two signals, both outgame-only (destroyed on travel into a course/PA, so neither
 --- can false-positive in-game and re-trigger the night exposure during course entry):
----   1. BP_OutGameGarageManager_C - the garage manager (garage screen specifically).
----   2. BP_OutGameMode_C           - the outgame GameMode (distinct from the course's
+---   1. BP_OutGameGarageManager_C: the garage manager (garage screen specifically).
+---   2. BP_OutGameMode_C:           the outgame GameMode (distinct from the course's
 ---      BP_RaceGameMode_C). Covers car-select/menus too and spawns early in the
 ---      outgame level load, so it usually detects sooner than the garage manager.
 --- @return boolean
 local function isInGarage()
-    -- During map teardown, don't probe the object array - serve the cache
+    -- During map teardown, don't probe the object array; serve the cache
     if suspendedForTeardown then
         return garageCheckCache.isInGarage
     end
@@ -131,7 +135,7 @@ end
 local function findUDSActor()
     -- Check if FindFirstOf is available (UE4SS function)
     if not FindFirstOf then
-        Log.Error(MODULE, "FindFirstOf not available - not running in UE4SS?")
+        Log.Error(MODULE, "FindFirstOf not available: not running in UE4SS?")
         return nil
     end
     
@@ -325,14 +329,14 @@ function Actors.HasActors()
 end
 
 --- Get current world tag
---- @return string "course", "pa", "outgame", or "unknown"
+--- @return string "course", "outgame", or "unknown"
 function Actors.GetWorldTag()
     return State.GetWorldContext()
 end
 
 --- Check if we're in the PA scene. There is NO separate "pa" world: the PA
 --- lives in the same outgame world as the garage but has its OWN working
---- UDS/UDW. Discovery succeeding there is the reliable signal - the garage's
+--- UDS/UDW. Discovery succeeding there is the reliable signal; the garage's
 --- UDS never validates, so validated cached actors + outgame context = PA.
 --- @return boolean
 function Actors.IsInPAScene()
@@ -383,7 +387,7 @@ end
 
 --- Called when a map loads (from BeginPlay hook)
 function Actors.OnMapLoad()
-    Log.Info(MODULE, "Map load detected - starting actor discovery")
+    Log.Info(MODULE, "Map load detected: starting actor discovery")
     suspendedForTeardown = false
     isSearching = true
     discoveryAttempts = 0
@@ -398,7 +402,7 @@ end
 
 --- Called when a map unloads (from EndPlay hook)
 function Actors.OnMapUnload()
-    Log.Info(MODULE, "Map unload detected - clearing actors")
+    Log.Info(MODULE, "Map unload detected: clearing actors")
     State.ClearActors()
     State.SetWorldContext("unknown")
     isSearching = false
@@ -409,7 +413,7 @@ function Actors.OnMapUnload()
     garageCheckCache.lastCheck = 0
 end
 
---- Tick function - called from main loop
+--- Tick function, called from main loop
 function Actors.Tick()
     -- Map teardown window: leave the object array alone while the old world is
     -- being destroyed. Failsafe-resume in case no sky actor ever begins play.
@@ -497,7 +501,7 @@ end
 function Actors.SetUDSProperty(propertyName, value)
     local uds = Actors.GetUDS()
     if not uds then
-        Log.Warn(MODULE, "Cannot set UDS property - no actor", {property = propertyName})
+        Log.Warn(MODULE, "Cannot set UDS property: no actor", {property = propertyName})
         return false
     end
     
@@ -529,7 +533,7 @@ end
 function Actors.SetUDWProperty(propertyName, value)
     local udw = Actors.GetUDW()
     if not udw then
-        Log.Warn(MODULE, "Cannot set UDW property - no actor", {property = propertyName})
+        Log.Warn(MODULE, "Cannot set UDW property: no actor", {property = propertyName})
         return false
     end
     
@@ -560,7 +564,7 @@ end
 function Actors.CallUDWFunction(functionName, ...)
     local udw = Actors.GetUDW()
     if not udw then
-        Log.Warn(MODULE, "Cannot call UDW function - no actor", {func = functionName})
+        Log.Warn(MODULE, "Cannot call UDW function: no actor", {func = functionName})
         return nil, false
     end
     

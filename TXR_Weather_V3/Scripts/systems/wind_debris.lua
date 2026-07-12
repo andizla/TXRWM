@@ -8,7 +8,7 @@
 -- Enabling at runtime needs UDW's "Static Properties - Wind Debris" to apply (the
 -- static-properties footgun). We set the bool (+ optional spawn count) and call that
 -- function on the GAME THREAD, deferred past BeginPlay by a settle gate (same safe
--- pattern as Stars / Lens Flare). This is separate from the do-not-touch rain/dry
+-- pattern as Stars / Moon). This is separate from the do-not-touch rain/dry
 -- pipeline in weather.lua and does not interact with it.
 
 local WindDebris = {}

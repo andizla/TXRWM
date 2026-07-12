@@ -13,6 +13,7 @@ local EnhancedFog = {}
 local Log = require("core.logging")
 local Utils = require("core.utils")
 local Actors = require("systems.actors")
+local Config = require("config")
 
 local MODULE = "EnhancedFog"
 
@@ -52,11 +53,11 @@ local UDS_PROPS = {
 }
 
 -- ============== CONFIGURATION ==============
--- (Unused BASELINE defaults table removed 2026-07-09 - the profiles below
+-- (Unused BASELINE defaults table removed 2026-07-09; the profiles below
 -- are the only values ever applied.)
 
 -- Enhanced fog presets for different fog intensities
--- Values tuned down - volumetric fog required for all presets for weather system
+-- Values tuned down; volumetric fog required for all presets for weather system
 local FOG_PROFILES = {
     -- No fog (Clear_Skies)
     none = {
@@ -126,11 +127,17 @@ local internalState = {
     initialized = false,
     currentProfile = "none",
     manualOverrideSet = false,
-    
+    lastScaleDensity = nil,   -- current profile's scale (for the covered damp)
+
     -- Store original values for restoration
     originalValues = {},
     valuesStored = false,
 }
+
+-- Covered-road fog damp: multiplier on Scale Fog Density while the tunnels
+-- module reports the car under a roof (1.0 = off). Config.Tunnels.CoveredFogMult.
+local coveredDamp = 1.0
+local COVERED_FOG_MULT = 0.15
 
 -- ============== INTERNAL FUNCTIONS ==============
 
@@ -198,17 +205,21 @@ local function applyFogProfile(profile)
         Log.Warn(MODULE, "No UDS actor for fog profile")
         return false
     end
-    
+
     storeOriginalValues()
-    
+
     local successCount = 0
     local attemptCount = 0
-    
-    -- Apply scale fog density (the key multiplier!)
+
+    -- Apply scale fog density (the key multiplier!). coveredDamp thins the
+    -- fog on covered road (tunnels report in via SetCoveredDamp): global
+    -- fog is blind to ceilings, so a foggy preset otherwise reads as a
+    -- white wall inside every bore.
     if profile.scaleFogDensity then
         attemptCount = attemptCount + 1
+        internalState.lastScaleDensity = profile.scaleFogDensity
         local ok = pcall(function()
-            uds[UDS_PROPS.SCALE_FOG_DENSITY] = profile.scaleFogDensity
+            uds[UDS_PROPS.SCALE_FOG_DENSITY] = profile.scaleFogDensity * coveredDamp
         end)
         if ok then successCount = successCount + 1 end
     end
@@ -259,8 +270,8 @@ local function applyFogProfile(profile)
         end)
     end
     
-    -- Apply time-of-day multipliers (critical for VEAO compatibility)
-    -- VEAO's auto-exposure washes out fog at night, so we boost nighttime density
+    -- Apply time-of-day multipliers: the exposure pipeline brightens night
+    -- scenes and washes out fog, so nighttime density gets a boost
     if profile.daytimeMultiplier then
         pcall(function()
             uds[UDS_PROPS.FOG_DENSITY_DAYTIME_MULTIPLIER] = profile.daytimeMultiplier
@@ -310,7 +321,36 @@ function EnhancedFog.Init()
     internalState.currentProfile = "none"
     internalState.manualOverrideSet = false
     internalState.valuesStored = false
+    pcall(function()
+        if Config.Tunnels and Config.Tunnels.CoveredFogMult then
+            COVERED_FOG_MULT = Config.Tunnels.CoveredFogMult
+        end
+    end)
     return true
+end
+
+--- Covered-road fog damp (called by the tunnels module on cover changes;
+--- game thread). Rescales the current profile's Scale Fog Density so the
+--- global fog doesn't read as a white wall inside bores; the weather state
+--- (UDW fog value) stays untouched.
+--- @param on boolean car under a roof
+function EnhancedFog.SetCoveredDamp(on)
+    local target = on and COVERED_FOG_MULT or 1.0
+    if target == coveredDamp then return end
+    coveredDamp = target
+    if not internalState.initialized then return end
+    local scale = internalState.lastScaleDensity
+    if not scale then return end
+    local uds = Actors.GetUDS()
+    if not uds then return end
+    local ok = pcall(function()
+        uds[UDS_PROPS.SCALE_FOG_DENSITY] = scale * coveredDamp
+    end)
+    if ok then
+        Log.Info(MODULE, "Covered fog damp " .. (on and "ON" or "OFF"), {
+            scale = string.format("%.3f", scale * coveredDamp),
+        })
+    end
 end
 
 --- Apply enhanced fog settings for a given fog intensity

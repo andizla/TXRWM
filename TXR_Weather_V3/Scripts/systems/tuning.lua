@@ -2,7 +2,7 @@
 -- systems/tuning.lua
 -- Native tuning slider-range widening for the alignment tab (camber, toe,
 -- ride height, wheel offset). Successor to the abandoned WheelOffsetUnlocker
--- (NadzW / FenderBender, 04.2025) - approach credited to them, rebuilt against
+-- (NadzW / FenderBender, 04.2025); approach credited to them, rebuilt against
 -- the v1.5 API.
 --
 -- What the game does: the alignment settings menu (WBP_OutGame_Setting_List_
@@ -10,14 +10,14 @@
 -- (front/rear) whose min/max come from the game's own SetSettingListInit. The
 -- slider value is stored into the car save on Decide (values persist even past
 -- stock range), but the game's LOAD path does not apply out-of-range values to
--- the car - so extremes need re-asserting on spawn (the physical setters accept
+-- the car, so extremes need re-asserting on spawn (the physical setters accept
 -- them fine).
 --
 -- What this module does (all game-thread, tick-driven like photomode's FOV
 -- slider widening):
 --  1. WIDEN: while the alignment tab exists, scale every unlocked row's slider
 --     range to RangeMultiplier x its own stock range (multiplicative, so each
---     setting keeps its semantics; locked rows are skipped - this mod does NOT
+--     setting keeps its semantics; locked rows are skipped, this mod does NOT
 --     unlock parts).
 --  2. LIVE PREVIEW: post-hooks on the tab's own ValueChange events re-apply the
 --     slider value through the physical setters (SetWheelOffset /
@@ -30,12 +30,12 @@
 --     the game's own load path won't apply extremes.
 --
 -- v1.5 API notes (verified against the dump / shared types):
---  - stored-parameter scales: offset /1000, ride height /500, camber /-100,
+-- , stored-parameter scales: offset /1000, ride height /500, camber /-100,
 --    toe raw; slider-value scales: offset /10, ride height /5, camber *-1,
 --    toe raw (ECarSetting: camber 6/7, toe 8/9, ride height 18/19, offset 26/27).
---  - the old mod's MaxValue/MinValue/step_value wrapper properties do not exist
+-- , the old mod's MaxValue/MinValue/step_value wrapper properties do not exist
 --    in 1.5 (only max_value/min_value/step_size + SetSliderInit).
---  - the tab now has FIVE element rows (tire width was added), so the old
+-- , the tab now has FIVE element rows (tire width was added), so the old
 --    hardcoded element mapping is stale; we iterate all rows and skip locked.
 
 local Tuning = {}
@@ -296,11 +296,11 @@ end
 
 --- Widen one slider to rangeMultiplier x its current (stock) range.
 --- In-game probe 2026-07-02: this menu never fills the WRAPPER's
---- min_value/max_value (they read 0/0 on live rows) - the working range lives
+--- min_value/max_value (they read 0/0 on live rows); the working range lives
 --- on the inner AnalogSlider (USlider MinValue/MaxValue floats). So the
 --- AnalogSlider is what we probe and widen; the wrapper props and SetSliderInit
 --- are left alone. Guard: an AnalogSlider reading exactly 0..1 is a normalized
---- display slider (real range in BP math) - logged and not touched.
+--- display slider (real range in BP math); logged and not touched.
 --- Idempotent per slider instance via the `widened` cache. Game thread.
 local function widenSliderGT(slider, rowName, side)
     if not valid(slider) then return end
@@ -387,7 +387,7 @@ local function scanAndWidenGT()
     -- named element fields only reach the design-time placeholder row).
     -- FILTERS (from the 2026-07-02 probe run): live UI objects sit under
     -- /Engine/Transient.GameEngine... (everything else is the blueprint's
-    -- design-time archetype - invalid sliders, endless noise), and the element
+    -- design-time archetype: invalid sliders, endless noise), and the element
     -- class is REUSED by the LSD tab, so require "Aliment2" (the tab) in the
     -- path, not just the class name.
     local sawLiveTab = false
@@ -467,7 +467,7 @@ local function scanAndWidenGT()
         end
     end
 
-    -- Register the value hooks only once a LIVE alignment tab exists - at boot
+    -- Register the value hooks only once a LIVE alignment tab exists; at boot
     -- only the archetype is loaded and registration fails with UFunction::Func
     -- 0x0 (seen for OFFSETFrontValueChange on the 2026-07-02 run)
     if sawLiveTab and not valueHooksRegistered then
@@ -515,7 +515,7 @@ function Tuning.Init()
     return true
 end
 
---- Per-tick (8 Hz, runs in AND out of course - the tuning menu is in the garage)
+--- Per-tick (8 Hz, runs in AND out of course; the tuning menu is in the garage)
 function Tuning.Tick()
     if not isInitialized or not enabled then return end
 
@@ -539,7 +539,7 @@ function Tuning.Tick()
     -- Menu scan (~1s): widen sliders, lazily register hooks. The tuning menu
     -- only exists in the garage/outgame. The old gate was just "not on course",
     -- which ALSO matched map transitions (IsOnCourse flips false the moment a
-    -- course starts unloading) and PA - so the FindAllOf/GetFullName scans ran
+    -- course starts unloading) and PA, so the FindAllOf/GetFullName scans ran
     -- on the game thread while the world was being torn down, walking dying
     -- widget objects: the garage-transition crash. Scan only when the
     -- garage/outgame is POSITIVELY detected and no teardown is in progress.

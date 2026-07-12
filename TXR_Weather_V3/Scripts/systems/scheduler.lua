@@ -182,7 +182,7 @@ function Scheduler.PickAndApply()
         return nil
     end
     if Config.Weather and Config.Weather.Enabled == false then
-        Log.Debug(MODULE, "Weather master switch off - skipping pick")
+        Log.Debug(MODULE, "Weather master switch off: skipping pick")
         return nil
     end
 

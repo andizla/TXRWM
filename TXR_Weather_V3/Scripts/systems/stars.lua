@@ -66,7 +66,7 @@ local function getUDS()
 end
 
 --- The actual UDS work. MUST run on the game thread. NO asset load, NO object
---- write - only a primitive bool/doubles plus UDS's own apply function.
+--- write; only a primitive bool/doubles plus UDS's own apply function.
 local function enableStarsOnGameThread()
     local uds = getUDS()
     if not uds then return end
