@@ -153,15 +153,18 @@ a short press turns headlights on, a ~2-second hold turns them off.
   intensity, easy to disable.
 
 ### Lighting and exposure
-- **Exposure and look** (`light_cycle.lua`): *settled in 3.5.0.* The game's own
-  auto-exposure runs stock (it reads right once the covered-road skylight leak is fixed,
-  see Tunnels above); adaptation is slowed to a natural pace. A sun-elevation bias curve
-  (`Config.LightCycle.BiasCurve`, EV vs sun angle, ships neutral) is available to shape
-  brightness from feedback: dusk and dawn land wherever the sun actually is, any date,
-  any season. On top sits a **post-process look layer**
+- **Exposure and look** (`light_cycle.lua`): *settled in 3.5.0, shaped in 3.5.1.* The
+  game's own auto-exposure runs stock (it reads right once the covered-road skylight
+  leak is fixed, see Tunnels above); adaptation runs fast into daylight and slow into
+  the dark, like eyes. A sun-elevation bias curve (`Config.LightCycle.BiasCurve`, EV vs
+  sun angle) ships with a gentle low-key tune: about two thirds of a stop under during
+  the day, easing off through dusk, for a photographic look with deep blacks; set the
+  anchors to 0 for the plain stock picture. Dusk and dawn land wherever the sun
+  actually is, any date, any season. On top sits a **post-process look layer**
   (`Config.LightCycle.PostProcess`): per-course, log-verified overrides for bloom,
-  vignette, reflections quality, interior global-illumination quality and shadow
-  contrast, and it accepts any engine post-process field if you want to go further.
+  vignette, reflections quality, interior global-illumination quality, shadow contrast,
+  saturation and highlight rolloff, and it accepts any engine post-process field if you
+  want to go further.
   Requires the 3.4+ Engine.ini (re-run the installer). Live **skylight tuning
   keybinds** still apply (`Alt+Z/X/C`, confirm with `Alt+V`, see Keybinds).
 - **Headlights** (`headlights.lua`): Auto mode follows the sun's real elevation (with hysteresis) so
@@ -317,6 +320,8 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 
 See `CHANGELOG.md` for the full list. Most recent:
 
+- **3.5.1**: first shaped pass of the low-key photographic look (day sits under the
+  meter, color survives the shade, skies keep their tone).
 - **3.5.0**: Covered-road lighting fixed at the root (the volumes' skylight-leak override);
   exposure runs stock with a new configurable post-process look layer (bloom, shadows,
   reflections, interior GI); covered-road detection rebuilt on the game's own road data

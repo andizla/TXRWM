@@ -642,14 +642,20 @@ Config.LightCycle = {
 
     -- EV bias vs sun elevation (0 = stock). Anchor shape: day / golden
     -- hour / sunset / blue hour / civil twilight / night.
+    -- First shaped pass (2026-07-13, from photographic reference targets):
+    -- auto-exposure meters shaded scenes to mid-grey = flat and washed; a
+    -- negative bias sinks the whole frame toward the low-key photographic
+    -- look (deep blacks, controlled sky). Flat 2/3 stop under during the
+    -- day, easing off through dusk so nights don't double-darken. Tune
+    -- with Alt+D / Alt+Shift+D in 0.2 steps.
     BiasCurve = {
-        { elev =  30, bias = 0.0 },
-        { elev =   8, bias = 0.0 },
-        { elev =   3, bias = 0.0 },
-        { elev =   0, bias = 0.0 },
-        { elev =  -3, bias = 0.0 },
-        { elev =  -6, bias = 0.0 },
-        { elev = -10, bias = 0.0 },
+        { elev =  30, bias = -0.6 },
+        { elev =   8, bias = -0.6 },
+        { elev =   3, bias = -0.6 },
+        { elev =   0, bias = -0.5 },
+        { elev =  -3, bias = -0.4 },
+        { elev =  -6, bias = -0.3 },
+        { elev = -10, bias = -0.3 },
     },
 
     LeakAlbedo = 0.07,  -- r.Lumen.SkylightLeaking.ReflectionAverageAlbedo
@@ -692,6 +698,15 @@ Config.LightCycle = {
         FilmToe = 0.55,
         LocalExposureShadowContrastScale = 1.0,     -- game runs 0.7
         LocalExposureHighlightContrastScale = 1.0,  -- game runs 0.8
+        -- Low-key look pass (2026-07-13, photographic reference targets):
+        -- with the frame sitting darker (BiasCurve), a touch of saturation
+        -- keeps color alive in the shade instead of washing grey.
+        ColorSaturation = { X = 1.05, Y = 1.05, Z = 1.05, W = 1.0 },
+        -- Highlight rolloff: the game runs shoulder 0.7 (UE default 0.26),
+        -- a hard bright ramp that clips skies to white. Softer shoulder =
+        -- skies keep their tone like the reference shots. Raise toward 0.7
+        -- if bright scenes start reading dull.
+        FilmShoulder = 0.45,
     },
 
     -- Skylight tuning keybinds (Alt+Z/X/C, Alt+V, Alt+Shift+V)
@@ -784,10 +799,10 @@ Config.ModuleToggles = {
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 5, Patch = 0,
-    String = "3.5.0",
+    Major = 3, Minor = 5, Patch = 1,
+    String = "3.5.1",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.5.0",
+    FullName = "TXR Weather Mod v3.5.1",
 }
 
 return Config

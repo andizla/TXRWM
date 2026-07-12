@@ -3,6 +3,17 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.5.1]: 2026-07-13
+
+### Changed
+- **First shaped pass of the low-key look**, tuned against photographic references.
+  The picture sits about two thirds of a stop under the meter during the day (easing
+  off through dusk and night so dark hours don't double-darken), a touch more
+  saturation keeps color alive in the shade, and a softer highlight rolloff lets
+  skies keep their tone instead of clipping to white. Everything lives in the config
+  (`Config.LightCycle.BiasCurve` + `PostProcess`); set the bias anchors to 0 for the
+  plain stock picture, and use `Alt+D` / `Alt+Shift+D` to log tuning feedback.
+
 ## [3.5.0]: 2026-07-13
 
 ### Changed
