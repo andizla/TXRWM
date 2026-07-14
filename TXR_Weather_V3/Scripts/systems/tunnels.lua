@@ -670,6 +670,67 @@ function Tunnels.IsRainSuppressed()
     return rainZoneNow
 end
 
+--- Rain-spot datapoint (Alt+N): one line with everything the rain kill
+--- knows at the car's current position, for pinning down spots where rain
+--- presence looks wrong (missing on open road, falling under a roof, not
+--- restarting after a bore). Tag "RainSpot" also lands the line in
+--- Logs/tuning_feedback.log. Keybind handlers run on the game thread, so
+--- the pawn read and the fresh roof trace are direct.
+function Tunnels.NoteRainSpot()
+    local px, py, pz = nil, nil, nil
+    local pawnObj = nil
+    pcall(function()
+        local UEH = getUEHelpers()
+        local pc = UEH and UEH.GetPlayerController and UEH.GetPlayerController()
+        local pawn = pc and pc.Pawn
+        if pawn and pawn.IsValid and pawn:IsValid() then
+            local loc = pawn:K2_GetActorLocation()
+            if loc then
+                px, py, pz = loc.X, loc.Y, loc.Z
+                pawnObj = pawn
+            end
+        end
+    end)
+    if px == nil then
+        Log.Warn(MODULE, "Rain spot note: no pawn (not on course?)")
+        return
+    end
+
+    local attr = nil
+    pcall(function() attr = pawnObj.tunnel_attribute end)
+    local roofBit = type(attr) == "number" and ((math.floor(attr / 4) % 2) == 1)
+
+    -- Fresh probe at press time, with distance + hit name (the latched
+    -- roofNow can lag a poll behind and hides WHAT the trace hit).
+    local probe = "no-ksl"
+    local ksl = getKslRef()
+    if ksl then
+        local h, okc, dist, hitName, leg = roofProbeGT(ksl, pawnObj, px, py, pz)
+        if h then
+            probe = string.format("HIT(%s)@%scm:%s", leg or "?",
+                dist and string.format("%.0f", dist) or "?", hitName or "?")
+        elseif okc then
+            probe = "miss"
+        else
+            probe = "ERR"
+        end
+    end
+
+    local preset = "unknown"
+    pcall(function() preset = State.GetCurrentPreset() or "none" end)
+
+    Log.Info("RainSpot", "SPOT", {
+        pos = string.format("%.0f,%.0f,%.0f", px, py, pz),
+        attr = tostring(attr),
+        roof_bit = tostring(roofBit),
+        roof_probe = probe,
+        roof_latched = tostring(roofNow),
+        kill_active = tostring(rainZoneNow),
+        cover_src = rainZoneNow and (coverWasRoad and "road-data" or "trace") or "none",
+        weather = preset,
+    })
+end
+
 function Tunnels.GetStatus()
     return {
         initialized = isInitialized,

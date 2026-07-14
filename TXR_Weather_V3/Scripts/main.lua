@@ -1039,12 +1039,6 @@ local _WorldLogPending = true       -- one-shot "World identify" log per map loa
 -- LoadMapPreHook: fires BEFORE map unload while actors still valid
 if RegisterLoadMapPreHook then
     RegisterLoadMapPreHook(function()
-        -- Old world is about to die: stop the async actor search from touching
-        -- the object array until the new world's sky actor begins play
-        if Actors and Actors.SuspendDiscovery then
-            Actors.SuspendDiscovery()
-        end
-
         -- Get world tag from Actors module (or State), NOT a local variable
         local currentTag = "unknown"
         if Actors and Actors.GetWorldTag then
@@ -1052,11 +1046,13 @@ if RegisterLoadMapPreHook then
         elseif State and State.GetWorldContext then
             currentTag = State.GetWorldContext()
         end
-        
+
         if Log then Log.Info("Main", "LoadMapPreHook: Map unloading, tag=" .. tostring(currentTag)) end
-        
-        -- Capture course state while actors still valid
-        -- Try to capture regardless of tag if we have valid actors
+
+        -- Capture course state FIRST: the PreHook runs on the game thread
+        -- while the old world is still fully alive, so this is the last safe
+        -- moment to read the dying world's UDS/UDW. The suspend + cache drop
+        -- at the END of this hook must come after these reads.
         local uds = Actors and Actors.GetUDS()
         local udw = Actors and Actors.GetUDW()
         
@@ -1095,11 +1091,20 @@ if RegisterLoadMapPreHook then
             if Log then Log.Debug("Main", "No valid actors on unload: cannot capture state") end
         end
         
-        -- Save persistence if on course
+        -- Save persistence if on course (still before the cache drop, so the
+        -- save can read live values)
         if currentTag == "course" and Persistence and Persistence.Save then
             Persistence.Save("map_unload_pre")
         end
-        
+
+        -- LAST: stop the async actor search AND drop every cached actor ref.
+        -- A ref that survives the swap can falsely validate against freed
+        -- memory and crash the next property read (2026-07-14 beta crash on
+        -- the course->PA return; dump held the previous course's UDS).
+        if Actors and Actors.SuspendDiscovery then
+            Actors.SuspendDiscovery()
+        end
+
         _LastWorldTag = currentTag
         _WorldLogPending = true
     end)

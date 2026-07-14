@@ -3,6 +3,57 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.6.0]: 2026-07-15
+
+### Fixed
+- **Crash when returning to the Parking Area (and on other world changes).** A
+  cached weather-actor reference could survive a map change and falsely validate
+  against freed memory, crashing the game seconds into the next world, most often
+  on PA race loops. Every cached actor reference is now dropped the moment a map
+  begins unloading. If you crash on 3.5.1, this update is for you.
+- **Photo mode now freezes time.** The sun, shadows and clouds hold still for the
+  whole session, including long exposures, and resume when you leave. A manual
+  time pause (`Alt+T`) is respected on both ends.
+- **Photo mode aperture works.** Sessions run manual metering, so the aperture
+  option physically drives exposure like a real camera. The session's base
+  brightness follows the sun's position using the field-tuned 3.4.0 exposure
+  curve (`Config.PhotoMode.ManualCurve`); normal auto-exposure returns on close.
+
+### Added
+- **Heavy Overcast**, a new weather preset: a denser, properly grey deck, cool and
+  muted but not greyscale. In the cycle keys (after Overcast) and the scheduler pool.
+- **Auto headlights react to tunnels and rain.** In auto mode the lamps now come on
+  inside real bores (lone overpasses deliberately do not flash them) and whenever a
+  wet preset is active, then hand back to the sun-elevation logic
+  (`Config.Headlights.AutoOnInTunnel` / `AutoOnInRain`).
+- **HDR and SDR display profiles.** The game applies a hidden shadow-lifting grade
+  only when the display outputs HDR, so a look tuned on HDR crushes on SDR screens.
+  The mod now detects the display output per session and, on SDR, backs the tuned
+  look off toward stock with a softer exposure curve (`Config.LightCycle.DisplayProfile`,
+  `Config.LightCycle.SDR`). `Alt+D` feedback lines carry the active profile.
+- **`Alt+N` rain-spot datapoint.** Logs position, the road-data roof bits, a live
+  roof-trace result and the rain-kill state to `Logs/tuning_feedback.log`, for
+  reporting spots where rain presence looks wrong.
+
+### Changed
+- **Skylight rework.** The skylight no longer lights translucent surfaces (it
+  painted a milky sheen on glass and taillight lenses under every roof, worst
+  without direct sun), the translucent lighting grid in the bundled Engine.ini is
+  restored to full resolution so what light remains respects geometry, and the
+  global skylight level now runs at a low floor with Lumen bounce lighting
+  carrying the ambient (`Config.LightCycle.SkylightMultiplier`).
+- **Overcast and rain read properly grey.** Cloudy-wet presets now carry their own
+  sky grade: cooler, desaturated decks instead of the warm golden cast
+  (per-preset `skyGrade`, restored to the normal look on dry presets).
+- **Thunder now has tiers.** Light Rain carries no thunder at all, Rain rumbles in
+  the distance only, and only Thunderstorm brings strikes close
+  (`Config.Audio.CloseThunderMin`).
+- **Exposure adaptation reacts faster** (both directions), tuned for the fixed
+  lighting pipeline, and shadows are opened a touch from true black
+  (`ColorGainShadows`).
+- Screen-space reflection overrides removed; reflections run the game's stock
+  post-process values.
+
 ## [3.5.1]: 2026-07-13
 
 ### Changed

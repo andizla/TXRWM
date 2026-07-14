@@ -449,6 +449,19 @@ local function onPrecipSuppressTest()
     Weather.SetPrecipSuppressed(precipTestOn)
 end
 
+--- Rain-spot datapoint (Alt+N): logs position, road-data tunnel bits, a
+--- fresh roof-trace result, and the rain-kill state; the line also lands in
+--- Logs/tuning_feedback.log (tag "RainSpot"). Press wherever rain presence
+--- looks wrong.
+local function onNoteRainSpot()
+    local ok, Tunnels = pcall(require, "systems.tunnels")
+    if not ok or not Tunnels or not Tunnels.NoteRainSpot then
+        Log.Warn(MODULE, "Tunnels module not available")
+        return
+    end
+    Tunnels.NoteRainSpot()
+end
+
 --- Skylight tuning session: Alt+Z/X/C nudge albedo/roughness/multiplier up,
 --- Alt+Shift lowers; Alt+V logs the datapoint, Alt+Shift+V resets to the curve.
 local function nudgeSkylight(which, dir)
@@ -609,6 +622,10 @@ function Keybinds.Init(config)
 
     if config.PrecipSuppressTest then
         registerKeybind("PrecipSuppressTest", config.PrecipSuppressTest, onPrecipSuppressTest)
+    end
+
+    if config.NoteRainSpot then
+        registerKeybind("NoteRainSpot", config.NoteRainSpot, onNoteRainSpot)
     end
 
     -- Skylight tuning session (Alt+Z/X/C nudge, Alt+V confirm, Alt+Shift+V reset)

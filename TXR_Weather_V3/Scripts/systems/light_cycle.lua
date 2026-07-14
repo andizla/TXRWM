@@ -66,6 +66,10 @@ local ADAPT_UP, ADAPT_DOWN = nil, nil
 -- Compensation curve kill (see header). false = leave the devs' curve alone.
 local KILL_COMP_CURVE = true
 
+-- Skylight off translucents (Config.LightCycle.KillSkylightTranslucentLighting):
+-- bAffectTranslucentLighting=false on the course skylights, once per course.
+local KILL_SKY_TRANSLUCENT = false
+
 -- Generic post-process look overrides (Config.LightCycle.PostProcess):
 -- field name -> value, written with bOverride flags onto the course sky's
 -- main PP component in the same per-course one-shot, verified by the
@@ -106,6 +110,18 @@ local armed = false                  -- course gate (fresh UDS reads garbage
 local ppShotsApplied = false
 local ppShotsWroteClock = nil
 local ppShotsCheckDone = false
+
+-- Photomode session state (SetPhotoExposureFreeze) and the 3.4.0 manual
+-- exposure curves it applies (Config.PhotoMode.ManualCurve, normalized in
+-- Init to two elev/bias tables for curveLookup). Declared here because
+-- applyValues sits above the photomode section (local-ordering rule).
+local photoExpFrozen = false
+local PHOTO_SKY_CURVE = {}
+local PHOTO_LENS_CURVE = {}
+local PHOTO_GARAGE_SKY = 1.005   -- the 3.4.0 garage pair (no sun there)
+local PHOTO_GARAGE_LENS = 30.0
+local PHOTO_USE_SKY = false      -- apply the curve's sky column too
+                                 -- (Config.PhotoMode.ManualCurveSky)
 
 -- UDS sun-vector vertical convention: the cached vector is the LIGHT direction,
 -- so raw Z = -sin(elevation) and the sign is a CONSTANT -1 (measured across
@@ -168,6 +184,25 @@ local function clamp(x, a, b)
 end
 
 local function lerp(a, b, t) return a + (b - a) * t end
+
+--- Piecewise-linear lookup on an elev-sorted anchor curve ({elev, bias}).
+--- Shared by the bias curve, the SDR profile swap, and the photomode lens
+--- curve (which normalizes its {elev, lens} anchors to this shape in Init).
+--- @return number bias
+local function curveLookup(curve, elev)
+    local n = #curve
+    if n == 0 then return 0.0 end
+    if elev >= curve[1].elev then return curve[1].bias end
+    if elev <= curve[n].elev then return curve[n].bias end
+    for i = 1, n - 1 do
+        local a, b = curve[i], curve[i + 1]
+        if elev <= a.elev and elev >= b.elev then
+            local t = (a.elev - elev) / (a.elev - b.elev)
+            return lerp(a.bias, b.bias, t)
+        end
+    end
+    return curve[n].bias
+end
 
 local cachedEngine = nil
 local cachedKsl = nil
@@ -260,11 +295,38 @@ local function noteDriveState(state)
     Log.Info(MODULE, "Drive state: " .. state, {world = tag})
 end
 
+-- Photomode covered-skylight damp: when a PHOTO SESSION opens with the car
+-- under road-data cover, the sky multiplier drops to
+-- Config.PhotoMode.CoveredSkylightMult; restores on close. Kills the
+-- leaked-sky sheen on glass/taillight translucents for tunnel shots
+-- (user-diagnosed via Alt+Shift+C 2026-07-14). Driving is untouched: the
+-- always-on tunnel damp was tried the same night and rejected (whole-scene
+-- skylight stepping at every portal). Wins over the Alt+C tune.
+local COVERED_SKY_MULT = nil   -- nil = feature off (Config.PhotoMode)
+local coveredSkyDamp = false
+
 --- Push the cvar trio; skips values unchanged since the last push.
 local function applyValues(sky, leak, lens, elev, reason)
     local eps = 1e-4
     if tune.sky  then sky  = tune.sky  end
     if tune.leak then leak = tune.leak end
+    -- Photo session: manual metering is live, the 3.4.0 curve sets the
+    -- level from SUN ELEVATION (garage/PA menu: the fixed garage pair;
+    -- there is no sun there and 3.4.0 forced night values). The sky
+    -- column only applies when Config.PhotoMode.ManualCurveSky is on:
+    -- lens carries the exposure alone by default, so photomode never
+    -- scales the skylight (it masked the translucent-skylight work).
+    if photoExpFrozen and #PHOTO_LENS_CURVE > 0 then
+        if elev == nil then
+            lens = PHOTO_GARAGE_LENS
+            if PHOTO_USE_SKY then sky = PHOTO_GARAGE_SKY end
+        else
+            lens = curveLookup(PHOTO_LENS_CURVE, elev)
+            if PHOTO_USE_SKY then sky = curveLookup(PHOTO_SKY_CURVE, elev) end
+        end
+    end
+    -- Covered damp wins over everything on sky (tunnel glass sheen)
+    if coveredSkyDamp and COVERED_SKY_MULT then sky = COVERED_SKY_MULT end
     local cmds = {}
     if not lastApplied.sky  or math.abs(sky  - lastApplied.sky)  >= eps then
         cmds[#cmds + 1] = string.format("%s %.6f", CVAR_SKY,  sky)
@@ -361,6 +423,34 @@ local function applyPPShotsGT()
         })
     end
 
+    -- SKYLIGHT OFF TRANSLUCENTS: the skylight's translucent-lighting feed is
+    -- what paints leaked sky onto glass/taillight lenses under ceilings
+    -- (the translucency probe grid is too coarse to occlude it). Killing
+    -- the feed costs nothing: glass is specular/reflection dominated, and
+    -- opaque surfaces keep their normally-occluded skylight via Lumen GI.
+    if KILL_SKY_TRANSLUCENT then
+        local written, found = 0, 0
+        pcall(function()
+            local all = FindAllOf("SkyLightComponent")
+            if not all then return end
+            for _, c in ipairs(all) do
+                if c and c.IsValid and c:IsValid() then
+                    local full = ""
+                    pcall(function() full = c:GetFullName() end)
+                    if full:find("BP_CourseSky") then
+                        found = found + 1
+                        if pcall(function() c.bAffectTranslucentLighting = false end) then
+                            written = written + 1
+                        end
+                    end
+                end
+            end
+        end)
+        Log.Info(MODULE, "Skylight translucent lighting killed", {
+            written = written, courseSkylights = found,
+        })
+    end
+
     -- COMPENSATION CURVE KILL: clear the curve at both ends (see header).
     -- Object-property nil-writes may not be supported by every UE4SS build:
     -- each attempt sits in its own pcall and the log carries what stuck.
@@ -443,6 +533,218 @@ local function ppShotsReadbackGT()
     end)
 end
 
+-- ============== INTERNAL: display PP dump (TEMP diagnostic) ==============
+-- One-shot full FPostProcessSettings dump of every live PostProcessComponent
+-- (CourseSky x2, BP_HDR, BP_CourseWeather) with the GameUserSettings HDR
+-- output state in the header and filename. Purpose: diff an HDR-on boot
+-- against an HDR-off boot to learn what BP_HDR's UpdatePostProcessSettings
+-- changes for SDR displays (the 3.5.x look reads crushed on SDR screens).
+-- Field list: the cook's 246 FPostProcessSettings fields in declaration
+-- order (reference: pp_override_fields.txt). Config.LightCycle.DumpDisplayPP.
+
+local DUMP_DISPLAY_PP = false
+local displayDumpDone = false   -- session-level: one file per game boot
+
+local PP_FIELDS = {
+    "TemperatureType", "WhiteTemp", "WhiteTint", "ColorSaturation",
+    "ColorContrast", "ColorGamma", "ColorGain", "ColorOffset",
+    "ColorSaturationShadows", "ColorContrastShadows", "ColorGammaShadows", "ColorGainShadows",
+    "ColorOffsetShadows", "ColorSaturationMidtones", "ColorContrastMidtones", "ColorGammaMidtones",
+    "ColorGainMidtones", "ColorOffsetMidtones", "ColorSaturationHighlights", "ColorContrastHighlights",
+    "ColorGammaHighlights", "ColorGainHighlights", "ColorOffsetHighlights", "ColorCorrectionShadowsMax",
+    "ColorCorrectionHighlightsMin", "ColorCorrectionHighlightsMax", "BlueCorrection", "ExpandGamut",
+    "ToneCurveAmount", "FilmSlope", "FilmToe", "FilmShoulder",
+    "FilmBlackClip", "FilmWhiteClip", "SceneColorTint", "SceneFringeIntensity",
+    "ChromaticAberrationStartOffset", "bMegaLights", "AmbientCubemapTint", "AmbientCubemapIntensity",
+    "BloomMethod", "BloomIntensity", "BloomThreshold", "Bloom1Tint",
+    "Bloom1Size", "Bloom2Size", "Bloom2Tint", "Bloom3Tint",
+    "Bloom3Size", "Bloom4Tint", "Bloom4Size", "Bloom5Tint",
+    "Bloom5Size", "Bloom6Tint", "Bloom6Size", "BloomSizeScale",
+    "BloomConvolutionTexture", "BloomConvolutionScatterDispersion", "BloomConvolutionSize", "BloomConvolutionCenterUV",
+    "BloomConvolutionPreFilter", "BloomConvolutionPreFilterMin", "BloomConvolutionPreFilterMax", "BloomConvolutionPreFilterMult",
+    "BloomConvolutionBufferScale", "BloomDirtMaskIntensity", "BloomDirtMaskTint", "BloomDirtMask",
+    "CameraShutterSpeed", "CameraISO", "AutoExposureMethod", "AutoExposureLowPercent",
+    "AutoExposureHighPercent", "AutoExposureMinBrightness", "AutoExposureMaxBrightness", "AutoExposureCalibrationConstant",
+    "AutoExposureSpeedUp", "AutoExposureSpeedDown", "AutoExposureBias", "AutoExposureBiasCurve",
+    "AutoExposureMeterMask", "AutoExposureApplyPhysicalCameraExposure", "HistogramLogMin", "HistogramLogMax",
+    "LocalExposureMethod", "LocalExposureContrastScale", "LocalExposureHighlightContrastScale", "LocalExposureShadowContrastScale",
+    "LocalExposureHighlightContrastCurve", "LocalExposureShadowContrastCurve", "LocalExposureHighlightThreshold", "LocalExposureShadowThreshold",
+    "LocalExposureDetailStrength", "LocalExposureBlurredLuminanceBlend", "LocalExposureBlurredLuminanceKernelSizePercent", "LocalExposureHighlightThresholdStrength",
+    "LocalExposureShadowThresholdStrength", "LocalExposureMiddleGreyBias", "LensFlareIntensity", "LensFlareTint",
+    "LensFlareTints", "LensFlareBokehSize", "LensFlareBokehShape", "LensFlareThreshold",
+    "VignetteIntensity", "Sharpen", "GrainIntensity", "GrainJitter",
+    "FilmGrainIntensity", "FilmGrainIntensityShadows", "FilmGrainIntensityMidtones", "FilmGrainIntensityHighlights",
+    "FilmGrainShadowsMax", "FilmGrainHighlightsMin", "FilmGrainHighlightsMax", "FilmGrainTexelSize",
+    "FilmGrainTexture", "AmbientOcclusionIntensity", "AmbientOcclusionStaticFraction", "AmbientOcclusionRadius",
+    "AmbientOcclusionFadeDistance", "AmbientOcclusionFadeRadius", "AmbientOcclusionDistance", "AmbientOcclusionRadiusInWS",
+    "AmbientOcclusionPower", "AmbientOcclusionBias", "AmbientOcclusionQuality", "AmbientOcclusionMipBlend",
+    "AmbientOcclusionMipScale", "AmbientOcclusionMipThreshold", "AmbientOcclusionTemporalBlendWeight", "RayTracingAO",
+    "RayTracingAOSamplesPerPixel", "RayTracingAOIntensity", "RayTracingAORadius", "LPVIntensity",
+    "LPVDirectionalOcclusionIntensity", "LPVDirectionalOcclusionRadius", "LPVDiffuseOcclusionExponent", "LPVSpecularOcclusionExponent",
+    "LPVDiffuseOcclusionIntensity", "LPVSpecularOcclusionIntensity", "LPVSize", "LPVSecondaryOcclusionIntensity",
+    "LPVSecondaryBounceIntensity", "LPVGeometryVolumeBias", "LPVVplInjectionBias", "LPVEmissiveInjectionIntensity",
+    "LPVFadeRange", "LPVDirectionalOcclusionFadeRange", "IndirectLightingColor", "IndirectLightingIntensity",
+    "ColorGradingIntensity", "ColorGradingLUT", "DepthOfFieldFocalDistance", "DepthOfFieldFstop",
+    "DepthOfFieldMinFstop", "DepthOfFieldBladeCount", "DepthOfFieldSensorWidth", "DepthOfFieldSqueezeFactor",
+    "DepthOfFieldDepthBlurRadius", "DepthOfFieldUseHairDepth", "DepthOfFieldPetzvalBokeh", "DepthOfFieldPetzvalBokehFalloff",
+    "DepthOfFieldPetzvalExclusionBoxExtents", "DepthOfFieldPetzvalExclusionBoxRadius", "DepthOfFieldAspectRatioScalar", "DepthOfFieldMatteBoxFlags",
+    "DepthOfFieldBarrelRadius", "DepthOfFieldBarrelLength", "DepthOfFieldDepthBlurAmount", "DepthOfFieldFocalRegion",
+    "DepthOfFieldNearTransitionRegion", "DepthOfFieldFarTransitionRegion", "DepthOfFieldScale", "DepthOfFieldNearBlurSize",
+    "DepthOfFieldFarBlurSize", "MobileHQGaussian", "DepthOfFieldOcclusion", "DepthOfFieldSkyFocusDistance",
+    "DepthOfFieldVignetteSize", "MotionBlurAmount", "MotionBlurMax", "MotionBlurTargetFPS",
+    "MotionBlurPerObjectSize", "ScreenPercentage", "ReflectionMethod", "LumenReflectionQuality",
+    "ScreenSpaceReflectionIntensity", "ScreenSpaceReflectionQuality", "ScreenSpaceReflectionMaxRoughness", "ScreenSpaceReflectionRoughnessScale",
+    "UserFlags", "ReflectionsType", "RayTracingReflectionsMaxRoughness", "RayTracingReflectionsMaxBounces",
+    "RayTracingReflectionsSamplesPerPixel", "RayTracingReflectionsShadows", "RayTracingReflectionsTranslucency", "TranslucencyType",
+    "RayTracingTranslucencyMaxRoughness", "RayTracingTranslucencyRefractionRays", "RayTracingTranslucencySamplesPerPixel", "RayTracingTranslucencyShadows",
+    "RayTracingTranslucencyRefraction", "RayTracingTranslucencyMaxPrimaryHitEvents", "RayTracingTranslucencyMaxSecondaryHitEvents", "RayTracingTranslucencyUseRayTracedRefraction",
+    "DynamicGlobalIlluminationMethod", "LumenSceneLightingQuality", "LumenSceneDetail", "LumenSceneViewDistance",
+    "LumenSceneLightingUpdateSpeed", "LumenFinalGatherQuality", "LumenFinalGatherLightingUpdateSpeed", "LumenFinalGatherScreenTraces",
+    "LumenMaxTraceDistance", "LumenDiffuseColorBoost", "LumenSkylightLeaking", "LumenSkylightLeakingTint",
+    "LumenFullSkylightLeakingDistance", "LumenRayLightingMode", "LumenReflectionsScreenTraces", "LumenFrontLayerTranslucencyReflections",
+    "LumenMaxRoughnessToTraceReflections", "LumenMaxReflectionBounces", "LumenMaxRefractionBounces", "LumenSurfaceCacheResolution",
+    "RayTracingGI", "RayTracingGIMaxBounces", "RayTracingGISamplesPerPixel", "PathTracingMaxBounces",
+    "PathTracingSamplesPerPixel", "PathTracingMaxPathIntensity", "PathTracingEnableEmissiveMaterials", "PathTracingEnableReferenceDOF",
+    "PathTracingEnableReferenceAtmosphere", "PathTracingEnableDenoiser", "PathTracingIncludeEmissive", "PathTracingIncludeDiffuse",
+    "PathTracingIncludeIndirectDiffuse", "PathTracingIncludeSpecular", "PathTracingIncludeIndirectSpecular", "PathTracingIncludeVolume",
+    "PathTracingIncludeIndirectVolume", "AutoExposureBiasBackup", 
+}
+
+local function fmtNum(n) return string.format("%.6g", n) end
+
+--- Serialize one FPostProcessSettings field value for the dump: numbers and
+--- bools direct, colors RGBA(...), vectors XYZ/XYZW(...), objects by name.
+local function ppValueString(v)
+    local tv = type(v)
+    if v == nil then return "nil" end
+    if tv == "number" then return fmtNum(v) end
+    if tv == "boolean" then return tostring(v) end
+    if tv == "string" then return v end
+    local out = nil
+    pcall(function()
+        local r, g, b, a = v.R, v.G, v.B, v.A
+        if type(r) == "number" and type(g) == "number" and type(b) == "number" then
+            out = string.format("RGBA(%s,%s,%s,%s)", fmtNum(r), fmtNum(g), fmtNum(b),
+                type(a) == "number" and fmtNum(a) or "?")
+        end
+    end)
+    if out then return out end
+    pcall(function()
+        local x, y, z = v.X, v.Y, v.Z
+        if type(x) == "number" and type(y) == "number" and type(z) == "number" then
+            local w = nil
+            pcall(function() w = v.W end)
+            if type(w) == "number" then
+                out = string.format("XYZW(%s,%s,%s,%s)", fmtNum(x), fmtNum(y), fmtNum(z), fmtNum(w))
+            else
+                out = string.format("XYZ(%s,%s,%s)", fmtNum(x), fmtNum(y), fmtNum(z))
+            end
+        end
+    end)
+    if out then return out end
+    return objName(v)
+end
+
+--- bOverride_ flag for a field; bool fields drop their b prefix in the flag
+--- name (bMegaLights pairs with bOverride_MegaLights).
+local function ppFlagFor(s, name)
+    local flag = nil
+    pcall(function() flag = s["bOverride_" .. name] end)
+    if flag == nil and name:match("^b%u") then
+        pcall(function() flag = s["bOverride_" .. name:sub(2)] end)
+    end
+    return flag
+end
+
+--- Mod Logs/ dir from this chunk's source path. UE4SS chunk sources carry
+--- MIXED slashes; normalize before matching (the DumpPPValues footgun).
+local function modLogsDir()
+    local src = nil
+    pcall(function() src = debug.getinfo(1, "S").source end)
+    if type(src) ~= "string" then return nil end
+    src = src:gsub("^@", ""):gsub("\\", "/")
+    local root = src:match("^(.*)/Scripts/")
+    if not root then return nil end
+    return root .. "/Logs/"
+end
+
+local function dumpDisplayPPGT()
+    local hdrState, hdrNits = "unk", "?"
+    pcall(function()
+        local gus = FindFirstOf("GameUserSettings")
+        if gus and gus.IsValid and gus:IsValid() then
+            local on = nil
+            pcall(function() on = gus.bUseHDRDisplayOutput end)
+            pcall(function()
+                local live = gus:IsHdrEnabled()
+                if type(live) == "boolean" then on = live end
+            end)
+            if on == true then hdrState = "on" elseif on == false then hdrState = "off" end
+            pcall(function() hdrNits = tostring(gus.HDRDisplayOutputNits) end)
+        end
+    end)
+
+    local dir = modLogsDir()
+    if not dir then
+        Log.Warn(MODULE, "Display PP dump: could not resolve Logs dir")
+        return
+    end
+    local fname = string.format("pp_values_%s_hdr-%s.txt", os.date("%Y%m%d_%H%M%S"), hdrState)
+    local f = io.open(dir .. fname, "w")
+    if not f then
+        Log.Warn(MODULE, "Display PP dump: file open failed", {file = fname})
+        return
+    end
+
+    f:write(string.format("FPostProcessSettings VALUES dump (display diagnostic): %s\n",
+        os.date("%Y-%m-%d %H:%M:%S")))
+    f:write(string.format("GameUserSettings HDR output: %s (nits=%s)\n", hdrState, hdrNits))
+    f:write("ov=* marks fields whose bOverride_ flag is TRUE (actually applying);\n")
+    f:write("all other values are inert struct defaults, listed for reference.\n")
+
+    local comps = {}
+    pcall(function()
+        local all = FindAllOf("PostProcessComponent")
+        if not all then return end
+        for _, comp in ipairs(all) do
+            if comp and comp.IsValid and comp:IsValid() then
+                local full = ""
+                pcall(function() full = comp:GetFullName() end)
+                if full ~= "" and not full:find("Default__") and not full:find("GEN_VARIABLE") then
+                    comps[#comps + 1] = {
+                        comp = comp,
+                        label = full:match("PersistentLevel%.(.+)$") or full,
+                    }
+                end
+            end
+        end
+    end)
+    table.sort(comps, function(a, b) return a.label < b.label end)
+
+    for _, e in ipairs(comps) do
+        f:write(string.format("\n========== %s ==========\n", e.label))
+        local en, bw, ub = "?", "?", "?"
+        pcall(function() en = tostring(e.comp.bEnabled) end)
+        pcall(function() bw = tostring(e.comp.BlendWeight) end)
+        pcall(function() ub = tostring(e.comp.bUnbound) end)
+        f:write(string.format("(bEnabled=%s BlendWeight=%s bUnbound=%s)\n", en, bw, ub))
+        local s = nil
+        pcall(function() s = e.comp.Settings end)
+        if s then
+            for _, name in ipairs(PP_FIELDS) do
+                local flag = ppFlagFor(s, name)
+                local val = "?"
+                pcall(function() val = ppValueString(s[name]) end)
+                f:write(string.format("%s %-46s = %s\n", flag and "ov=*" or "    ", name, val))
+            end
+        else
+            f:write("(Settings unreadable)\n")
+        end
+    end
+    f:close()
+    Log.Info(MODULE, "Display PP dump written", {file = fname, comps = #comps, hdr = hdrState})
+end
+
 -- ============== INTERNAL: sun elevation ==============
 
 --- Approximate elevation from the game clock (fallback + sign calibration).
@@ -504,22 +806,10 @@ local function readSunElevation(uds, tod)
     return elev
 end
 
---- Piecewise-linear lookup on the bias anchor curve (elev -> EV bias).
---- @return number bias
 local function biasLookup(elev)
-    local n = #BIAS_CURVE
-    if n == 0 then return 0.0 end
-    if elev >= BIAS_CURVE[1].elev then return BIAS_CURVE[1].bias end
-    if elev <= BIAS_CURVE[n].elev then return BIAS_CURVE[n].bias end
-    for i = 1, n - 1 do
-        local a, b = BIAS_CURVE[i], BIAS_CURVE[i + 1]
-        if elev <= a.elev and elev >= b.elev then
-            local t = (a.elev - elev) / (a.elev - b.elev)
-            return lerp(a.bias, b.bias, t)
-        end
-    end
-    return BIAS_CURVE[n].bias
+    return curveLookup(BIAS_CURVE, elev)
 end
+
 
 --- Write the bias to UDS's knobs: Day and Night get the SAME value (our
 --- elevation curve owns the number; UDS's internal day/night blend becomes a
@@ -614,6 +904,100 @@ local function applyAbsentBrightness(uds)
     end)
 end
 
+-- ============== PHOTOMODE MANUAL METERING (legacy lens curve) ==============
+-- photomode.lua drives this on session open/close. Manual metering
+-- (MethodOverride 3) is the ONLY mode where the photomode aperture
+-- physically drives exposure (user-verified; every read/hook emulation of
+-- the applied f-stop failed, the value is unreachable). The manual level
+-- rides the legacy lens-attenuation machinery, now keyed on SUN ELEVATION
+-- (photoLensForElev above, applied inside applyValues), like every other
+-- modern curve in this module. Histogram AE + neutral lens return on close.
+
+function LightCycle.SetPhotoExposureFreeze(on)
+    if on == photoExpFrozen then return end
+    photoExpFrozen = on
+    scheduleExec({ "r.EyeAdaptation.MethodOverride " .. (on and "3" or "-1") })
+    -- Re-push the cvar trio on the next main tick (125ms): the lens value
+    -- must land with the metering switch
+    lastCheckClock = 0.0
+    Log.Info(MODULE, on and "Photo session: manual metering ON (legacy lens curve)"
+        or "Photo session: manual metering OFF")
+end
+
+--- Photomode covered-skylight damp signal (photomode.lua, session
+--- open/close). Engages ONLY if the session opens with the car under
+--- road-data cover; no-op unless Config.PhotoMode.CoveredSkylightMult set.
+function LightCycle.SetPhotoCoveredSkyDamp(on)
+    local want = false
+    if on and COVERED_SKY_MULT then
+        pcall(function()
+            local T = getTunnels()
+            want = (T and T.IsCovered and T.IsCovered()) or false
+        end)
+    end
+    if want == coveredSkyDamp then return end
+    coveredSkyDamp = want
+    lastCheckClock = 0.0   -- re-push on the next 125ms tick
+    Log.Info(MODULE, want and "Photo covered sky damp ON" or "Photo covered sky damp OFF",
+        {mult = want and COVERED_SKY_MULT or "restore"})
+end
+
+-- ============== DISPLAY PROFILE (HDR vs SDR) ==============
+-- The game lifts shadows 1.5x + global 1.2x for HDR displays only (BP_HDR
+-- enables its grading component when GameUserSettings.IsHdrEnabled). The
+-- config look tables are tuned on HDR on top of that lift; on SDR they
+-- crush. Resolved ONCE per session on the first Update ("auto" reads the
+-- live HDR output state; Config.LightCycle.DisplayProfile forces "hdr"/
+-- "sdr"); the SDR profile swaps PP_OVERRIDES/BIAS_CURVE for the
+-- Config.LightCycle.SDR tables. An in-session HDR toggle is NOT tracked
+-- (restart to re-resolve).
+
+local DISPLAY_PROFILE_CFG = "auto"
+local SDR_TABLES = nil
+local displayProfile = nil   -- resolved: "hdr" | "sdr"
+
+--- force=true resolves even when the HDR state is unreadable (falls back
+--- to "hdr" = the historical look) so the PP one-shots never stall on it.
+local function resolveDisplayProfile(force)
+    if displayProfile then return end
+    local prof = DISPLAY_PROFILE_CFG
+    local src = "config"
+    if prof ~= "hdr" and prof ~= "sdr" then
+        src = "auto"
+        local hdrOn = nil
+        pcall(function()
+            local gus = FindFirstOf("GameUserSettings")
+            if gus and gus.IsValid and gus:IsValid() then
+                pcall(function() hdrOn = gus.bUseHDRDisplayOutput end)
+                pcall(function()
+                    local live = gus:IsHdrEnabled()
+                    if type(live) == "boolean" then hdrOn = live end
+                end)
+            end
+        end)
+        if hdrOn == nil then
+            if not force then return end   -- retry on a later tick
+            prof = "hdr"
+            src = "fallback (HDR state unreadable)"
+        else
+            prof = hdrOn and "hdr" or "sdr"
+        end
+    end
+    displayProfile = prof
+    if prof == "sdr" and type(SDR_TABLES) == "table" then
+        if type(SDR_TABLES.PostProcess) == "table" then
+            PP_OVERRIDES = next(SDR_TABLES.PostProcess) ~= nil
+                and SDR_TABLES.PostProcess or nil
+        end
+        if type(SDR_TABLES.BiasCurve) == "table"
+            and #SDR_TABLES.BiasCurve > 0 then
+            BIAS_CURVE = SDR_TABLES.BiasCurve
+            table.sort(BIAS_CURVE, function(a, b) return a.elev > b.elev end)
+        end
+    end
+    Log.Info(MODULE, "Display profile", {profile = prof, source = src})
+end
+
 -- ============== PUBLIC API ==============
 
 function LightCycle.Init()
@@ -624,6 +1008,7 @@ function LightCycle.Init()
         if cfg.Enabled ~= nil then enabled = cfg.Enabled end
         if cfg.UpdateIntervalSeconds then UPDATE_INTERVAL = cfg.UpdateIntervalSeconds end
         if cfg.LeakAlbedo then LEAK_ALBEDO = cfg.LeakAlbedo end
+        if type(cfg.SkylightMultiplier) == "number" then NEUTRAL_SKY = cfg.SkylightMultiplier end
         if cfg.AbsentBrightnessMult then ABSENT_MULT = cfg.AbsentBrightnessMult end
         if cfg.NightCloudyBrightness then NIGHT_CLOUDY = cfg.NightCloudyBrightness end
         if cfg.OvercastBrightnessNight then OVERCAST_NIGHT = cfg.OvercastBrightnessNight end
@@ -632,6 +1017,12 @@ function LightCycle.Init()
         if cfg.AdaptSpeedUp then ADAPT_UP = cfg.AdaptSpeedUp end
         if cfg.AdaptSpeedDown then ADAPT_DOWN = cfg.AdaptSpeedDown end
         if cfg.KillExposureCompCurve ~= nil then KILL_COMP_CURVE = cfg.KillExposureCompCurve end
+        if cfg.KillSkylightTranslucentLighting ~= nil then
+            KILL_SKY_TRANSLUCENT = cfg.KillSkylightTranslucentLighting
+        end
+        if cfg.DumpDisplayPP ~= nil then DUMP_DISPLAY_PP = cfg.DumpDisplayPP end
+        if type(cfg.DisplayProfile) == "string" then DISPLAY_PROFILE_CFG = cfg.DisplayProfile end
+        if type(cfg.SDR) == "table" then SDR_TABLES = cfg.SDR end
         if type(cfg.PostProcess) == "table" and next(cfg.PostProcess) ~= nil then
             PP_OVERRIDES = cfg.PostProcess
         end
@@ -643,6 +1034,43 @@ function LightCycle.Init()
             if cfg.Tune.RoughnessBaseline then ROUGH_BASELINE = cfg.Tune.RoughnessBaseline end
         end
     end
+
+    -- Photomode covered-skylight damp value lives under Config.PhotoMode
+    -- (session behavior), but the sky cvar is ours
+    pcall(function()
+        local v = Config.PhotoMode and Config.PhotoMode.CoveredSkylightMult
+        if type(v) == "number" and v >= 0.0 and v < 1.0 then
+            COVERED_SKY_MULT = v
+        end
+    end)
+
+    -- Photomode manual exposure curve (the 3.4.0 sky+lens pairs), split
+    -- into two elev/bias tables so curveLookup serves both
+    pcall(function()
+        local mc = Config.PhotoMode and Config.PhotoMode.ManualCurve
+        if type(mc) == "table" and #mc > 0 then
+            PHOTO_SKY_CURVE, PHOTO_LENS_CURVE = {}, {}
+            for _, a in ipairs(mc) do
+                if type(a.elev) == "number" then
+                    PHOTO_SKY_CURVE[#PHOTO_SKY_CURVE + 1] =
+                        { elev = a.elev, bias = tonumber(a.sky) or 1.0 }
+                    PHOTO_LENS_CURVE[#PHOTO_LENS_CURVE + 1] =
+                        { elev = a.elev, bias = tonumber(a.lens) or NEUTRAL_LENS }
+                end
+            end
+            local desc = function(x, y) return x.elev > y.elev end
+            table.sort(PHOTO_SKY_CURVE, desc)
+            table.sort(PHOTO_LENS_CURVE, desc)
+        end
+        local g = Config.PhotoMode and Config.PhotoMode.ManualGarage
+        if type(g) == "table" then
+            PHOTO_GARAGE_SKY = tonumber(g.Sky) or PHOTO_GARAGE_SKY
+            PHOTO_GARAGE_LENS = tonumber(g.Lens) or PHOTO_GARAGE_LENS
+        end
+        if Config.PhotoMode and Config.PhotoMode.ManualCurveSky ~= nil then
+            PHOTO_USE_SKY = Config.PhotoMode.ManualCurveSky and true or false
+        end
+    end)
 
     -- PA mode lives OUTSIDE the LightCycle block (Config.PA, shared with
     -- main.lua): any non-stock mode makes the PA scene follow the elevation
@@ -698,6 +1126,13 @@ function LightCycle.OnCourseLoad()
     ppShotsApplied = false  -- fresh CourseSky/UDS = fresh one-shots
     ppShotsWroteClock = nil
     ppShotsCheckDone = false
+    -- A teardown-close of photomode can leave the manual-metering latch
+    -- set; the cvar is process-global, so assert the restore too
+    if photoExpFrozen then
+        photoExpFrozen = false
+        scheduleExec({ "r.EyeAdaptation.MethodOverride -1" })
+    end
+    coveredSkyDamp = false  -- fresh course starts uncovered
     armed = true
 end
 
@@ -709,6 +1144,10 @@ end
 --- so 1s is nearly free).
 function LightCycle.Update()
     if not enabled then return true end
+
+    -- Display profile: resolve as early as possible (retries silently while
+    -- GameUserSettings is not readable yet)
+    if not displayProfile then resolveDisplayProfile(false) end
 
     local now = os.clock()
     local actors = getActors()
@@ -742,8 +1181,11 @@ function LightCycle.Update()
         return true
     end
 
-    -- Per-course pipeline one-shots (game thread) + their delayed readback
+    -- Per-course pipeline one-shots (game thread) + their delayed readback.
+    -- The display profile MUST be settled before these fire (they consume
+    -- PP_OVERRIDES); force the fallback if auto-detect never resolved.
     if not ppShotsApplied then
+        if not displayProfile then resolveDisplayProfile(true) end
         ppShotsApplied = true
         if ExecuteInGameThread then
             pcall(function() ExecuteInGameThread(applyPPShotsGT) end)
@@ -753,6 +1195,10 @@ function LightCycle.Update()
         ppShotsCheckDone = true
         if ExecuteInGameThread then
             pcall(function() ExecuteInGameThread(ppShotsReadbackGT) end)
+        end
+        if DUMP_DISPLAY_PP and not displayDumpDone and ExecuteInGameThread then
+            displayDumpDone = true
+            pcall(function() ExecuteInGameThread(dumpDisplayPPGT) end)
         end
     end
 
@@ -854,6 +1300,7 @@ function LightCycle.LogFeedback(direction)
         sun_elev     = lastElevation and string.format("%.1f", lastElevation) or "nil",
         driver       = "elevation",
         weather      = preset,
+        profile      = displayProfile or "unresolved",
         where        = where,
         applied_bias = lastBias and string.format("%.2f", lastBias) or "nil",
         tunnel       = covered and "YES" or nil,

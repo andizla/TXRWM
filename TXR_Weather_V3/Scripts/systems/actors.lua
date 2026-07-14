@@ -180,6 +180,12 @@ end
 --- Validate that cached actors are still valid
 --- @return boolean True if both actors are valid
 local function validateCachedActors()
+    -- Teardown window: do not even touch the cached objects. IsValidObject
+    -- on a freed object is UNDEFINED and can read true (2026-07-14 beta
+    -- crash: the dead course UDS kept "validating" in the PA world until a
+    -- property read hit freed memory).
+    if suspendedForTeardown then return false end
+
     local uds = State.GetUDS()
     local udw = State.GetUDW()
     
@@ -362,12 +368,19 @@ function Actors.Discover()
     return discoverActors()
 end
 
---- Suspend discovery while the old world tears down (from LoadMapPreHook)
+--- Suspend discovery while the old world tears down (from LoadMapPreHook).
+--- ALSO drops every cached actor ref on the spot: the EndPlay-driven
+--- OnMapUnload does not fire on this game's world swaps, and a ref that
+--- survives the swap can falsely validate against freed memory and crash
+--- the next property read (the 2026-07-14 PA-transition beta crash, dump
+--- rsi = the previous course's UDS). No actor ref may outlive its world.
 function Actors.SuspendDiscovery()
     if not suspendedForTeardown then
         suspendedForTeardown = true
         suspendedAt = os.time()
-        Log.Info(MODULE, "Discovery suspended (map teardown)")
+        State.ClearActors()
+        invalidateGarageCache()
+        Log.Info(MODULE, "Discovery suspended (map teardown, actor cache dropped)")
     end
 end
 

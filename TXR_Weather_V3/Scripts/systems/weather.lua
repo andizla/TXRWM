@@ -276,6 +276,15 @@ function Weather.Apply(presetName, transitionTime)
             if Lightning and Lightning.EnableFromPreset then
                 Lightning.EnableFromPreset(presetData)
             end
+
+            -- Per-preset sky grade (cool/grey overcast + rain; nil grade =
+            -- back to the session baseline). CinematicSky owns those props.
+            pcall(function()
+                local CSky = require("systems.cinematic_sky")
+                if CSky and CSky.ApplyWeatherGrade then
+                    CSky.ApplyWeatherGrade(presetData.skyGrade)
+                end
+            end)
             
             -- Apply wetness settings via Wetness module (Phase 6)
             local Wetness = nil

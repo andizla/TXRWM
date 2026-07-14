@@ -33,6 +33,13 @@ local currentMode = "auto"
 local ON_ELEV = -1.0
 local OFF_ELEV = 0.5
 
+-- Forced-ON contexts for auto mode (Config.Headlights.AutoOnInTunnel /
+-- AutoOnInRain): real bores via the road-data cover (lone overpasses
+-- deliberately do NOT count) and wet weather presets. When the context
+-- ends the decision falls back to the elevation logic.
+local AUTO_ON_TUNNEL = true
+local AUTO_ON_RAIN = true
+
 -- TOD thresholds (fallback when no sun elevation is available)
 local HEADLIGHT_ON_TOD = 1830   -- Turn on after 18:30 (dusk)
 local HEADLIGHT_OFF_TOD = 630   -- Turn off after 06:30 (dawn)
@@ -129,12 +136,40 @@ local function isNightTime(tod)
     return tod >= HEADLIGHT_ON_TOD or tod < HEADLIGHT_OFF_TOD
 end
 
+--- Forced-ON check for AUTO mode: tunnel bores (road-data cover only, so
+--- overpass shadows do not flash the lights) and wet weather.
+--- @return boolean
+local function autoForcedOn()
+    if AUTO_ON_TUNNEL then
+        local ok, T = pcall(require, "systems.tunnels")
+        if ok and T and T.IsCovered then
+            local okc, cov = pcall(T.IsCovered)
+            if okc and cov then return true end
+        end
+    end
+    if AUTO_ON_RAIN then
+        local preset = nil
+        pcall(function() preset = State.GetCurrentPreset() end)
+        if preset then
+            local ok, P = pcall(require, "systems.presets")
+            if ok and P and P.IsDry then
+                local okd, dry = pcall(P.IsDry, preset)
+                if okd and dry == false then return true end
+            end
+        end
+    end
+    return false
+end
+
 --- Decide whether headlights should be on in AUTO mode. Primary signal: the
---- sun's elevation (season-proof; the game's date drifts). Fallbacks: the
---- legacy exposure lens proxy, then the TOD thresholds.
+--- sun's elevation (season-proof; the game's date drifts). Tunnel cover and
+--- rain force ON regardless of the sun. Fallbacks: the legacy exposure lens
+--- proxy, then the TOD thresholds.
 --- @param tod number current time of day (for the last-resort fallback)
 --- @return boolean
 local function computeAutoDesired(tod)
+    if autoForcedOn() then return true end
+
     local exp = getExposure()
 
     -- Sun elevation (LightCycle). Hysteresis: ON at/below ON_ELEV, then stay
@@ -439,6 +474,12 @@ function Headlights.Init()
         end
         if Config.Headlights.OffElev ~= nil then
             OFF_ELEV = Config.Headlights.OffElev
+        end
+        if Config.Headlights.AutoOnInTunnel ~= nil then
+            AUTO_ON_TUNNEL = Config.Headlights.AutoOnInTunnel
+        end
+        if Config.Headlights.AutoOnInRain ~= nil then
+            AUTO_ON_RAIN = Config.Headlights.AutoOnInRain
         end
         if Config.Headlights.GestureTapMaxSeconds then
             GESTURE_TAP_MAX_SEC = Config.Headlights.GestureTapMaxSeconds

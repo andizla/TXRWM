@@ -41,7 +41,7 @@ local lastFlush = 0
 -- file accumulates across sessions with a session marker, is only created on
 -- the first feedback press, and every line is flushed (presses are rare and
 -- must survive a crash).
-local FEEDBACK_TAGS = { ExposureTune = true, SkylightTune = true }
+local FEEDBACK_TAGS = { ExposureTune = true, SkylightTune = true, RainSpot = true }
 local FEEDBACK_FILENAME = "tuning_feedback.log"
 local feedbackFile = nil
 local feedbackPath = nil

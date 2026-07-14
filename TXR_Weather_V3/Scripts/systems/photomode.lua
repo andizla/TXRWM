@@ -330,6 +330,46 @@ end
 -- ============== one re-assert pass ==============
 -- Runs on the async thread. Detects photo mode (via the stale-safe find) and marshals
 -- the actual writes onto the game thread. No-op when photo mode isn't open.
+
+-- Session state, declared BEFORE every reader below (local-ordering rule:
+-- onApertureSet reads _sessionOpen from the hook callback)
+local _sessionOpen = false
+local _openSigWarned = false
+
+-- Photo-session side effects, fired on the open/close transitions of the
+-- detect loop: freeze TOD (time_of_day, Animate Time of Day bool) and arm
+-- the aperture EV rig (light_cycle; histogram AE stays live, the hooked
+-- f-stop feeds the emulated aperture exposure). Both restore on close.
+-- A teardown counts as close: the writes land in a dying world and fail
+-- silently, and the next course load re-applies normal state on its own.
+local function setSessionFrozen(on)
+    if cfg.FreezeTime ~= false then
+        pcall(function()
+            local t = require("systems.time_of_day")
+            if t and t.SetPhotoFreeze then t.SetPhotoFreeze(on) end
+        end)
+    end
+    if cfg.ManualExposure ~= false then
+        pcall(function()
+            local lc = require("systems.light_cycle")
+            if lc and lc.SetPhotoExposureFreeze then lc.SetPhotoExposureFreeze(on) end
+        end)
+    end
+    -- Covered skylight damp, photomode-scoped: only if the session opens
+    -- with the car under a ceiling (light_cycle checks the cover and
+    -- no-ops when Config.PhotoMode.CoveredSkylightMult is unset)
+    pcall(function()
+        local lc = require("systems.light_cycle")
+        if lc and lc.SetPhotoCoveredSkyDamp then lc.SetPhotoCoveredSkyDamp(on) end
+    end)
+end
+
+-- (Aperture exposure emulation REMOVED 2026-07-15: every read of the
+-- applied f-stop failed, static defaults on ~130 carriers, and even the
+-- CineCameraComponent:SetCurrentAperture hook never fired in the field.
+-- Photomode now runs MANUAL metering with the 3.4.0 sun-elevation curve
+-- (light_cycle), under which the aperture works physically.)
+
 local _dbgPass = 0
 local _dbgLastLog = 0.0
 local function reassert()
@@ -337,12 +377,20 @@ local function reassert()
     if teardownActive() then
         -- World is being torn down: no FindAllOf sweeps, and treat photo mode
         -- as closed so the next real detection logs again
+        if _sessionOpen then
+            _sessionOpen = false
+            setSessionFrozen(false)
+        end
         _loggedActive = false
         return
     end
     local comp = find("BPC_PhotoMode_C")
     local cam  = find("BP_FreeCamera_C")
     if not comp and not cam then
+        if _sessionOpen then
+            _sessionOpen = false
+            setSessionFrozen(false)
+        end
         _loggedActive = false
         return
     end
@@ -350,6 +398,44 @@ local function reassert()
     if not _loggedActive then
         _loggedActive = true
         Log.Info(MODULE, "Photo mode detected: applying unlocks")
+    end
+
+    -- Session freeze keys on the component's REAL open state, not object
+    -- existence: BPC_PhotoMode_C lives in every garage/course world from
+    -- load with photomode closed (proven by the 01:24 log, 2026-07-14,
+    -- "always applied, super bright daytime"). Primary signal: the
+    -- bIsUsingPhotoMode member. Fallback: the IsOpenedPhotoMode BP call,
+    -- whose bool arrives as an out-param table fill; it is a FUNCTION in
+    -- this cook, not a property (reading it property-style compares a
+    -- function ref and never fires; that was the 08:33 silent-freeze run).
+    -- The unlock writes below stay existence-driven as ever.
+    local isOpen = false
+    local gotSignal = false
+    pcall(function()
+        local v = comp and comp.bIsUsingPhotoMode
+        if type(v) == "boolean" then
+            isOpen = v
+            gotSignal = true
+        end
+    end)
+    if not gotSignal and comp then
+        pcall(function()
+            local out = {}
+            comp:IsOpenedPhotoMode(out)
+            if type(out.IsOpenedPhoto) == "boolean" then
+                isOpen = out.IsOpenedPhoto
+                gotSignal = true
+            end
+        end)
+    end
+    if not gotSignal and not _openSigWarned then
+        _openSigWarned = true
+        Log.Warn(MODULE,
+            "Photo open signal unreadable (bIsUsingPhotoMode nil, IsOpenedPhotoMode call failed)")
+    end
+    if isOpen ~= _sessionOpen then
+        _sessionOpen = isOpen
+        setSessionFrozen(isOpen)
     end
 
     -- Throttled diagnostic for the long-exposure dropout. Decided on the async side so

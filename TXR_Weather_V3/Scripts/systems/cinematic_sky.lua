@@ -123,6 +123,52 @@ local function setMult(uds, prop, mult, changes)
     end
 end
 
+-- ============== PER-PRESET WEATHER GRADE ==============
+-- Weather presets can carry a skyGrade table (presets.lua): ABSOLUTE values
+-- for a small set of UDS grade props, applied on weather change so overcast
+-- and rain read cool/grey instead of the warm session grade. A preset
+-- without a grade restores the session baseline (the values the per-course
+-- apply above settled). This module owns these UDS props (single writer).
+
+local GRADE_PROPS = {
+    "Saturation",
+    "Desaturate Rayleigh Scattering When Cloudy",
+    "Volumetric Cloud Ambient Light Saturation",
+    "Sunset/Sunrise Color Intensity (Absorption Scale)",
+}
+local gradeBaseline = nil    -- [prop] = post-apply session value
+local pendingGrade = nil     -- grade table (or nil = restore)
+local pendingGradeSet = false
+
+local function captureGradeBaselineGT(uds)
+    gradeBaseline = {}
+    for _, prop in ipairs(GRADE_PROPS) do
+        pcall(function() gradeBaseline[prop] = tonumber(uds[prop]) end)
+    end
+end
+
+local function applyWeatherGradeGT(uds)
+    if not gradeBaseline then return end
+    uds = uds or getUDS()
+    if not uds then return end
+    local grade = pendingGrade
+    pendingGradeSet = false
+    local written, mode = 0, grade and "preset" or "baseline"
+    for _, prop in ipairs(GRADE_PROPS) do
+        local target = (grade and grade[prop]) or gradeBaseline[prop]
+        if target ~= nil then
+            if pcall(function() uds[prop] = target end) then written = written + 1 end
+        end
+    end
+    -- Bake: UDS samples some of these at setup, not per tick
+    for _, fnName in ipairs(STATIC_FNS) do
+        local fn = nil
+        pcall(function() fn = uds[fnName] end)
+        if fn then pcall(function() fn(uds) end) end
+    end
+    Log.Info(MODULE, "Weather sky grade applied", {mode = mode, props = written})
+end
+
 local function applyOnGameThread()
     local uds = getUDS()
     if not uds then return end
@@ -183,6 +229,15 @@ local function applyOnGameThread()
 
     lastApplySummary = changes
     Log.Info(MODULE, "Cinematic sky applied", changes)
+
+    -- Session baseline for the per-preset weather grade: the values THIS
+    -- apply just settled (grade props restore to these when a preset has
+    -- no grade). Then land any grade that arrived before we ran (weather
+    -- applies before the cinematic sky on course load).
+    captureGradeBaselineGT(uds)
+    if pendingGradeSet then
+        applyWeatherGradeGT(uds)
+    end
 end
 
 local function apply()
@@ -208,6 +263,22 @@ function CinematicSky.Init()
 end
 
 --- Per-tick: apply once per course, after the settle gate.
+--- Per-preset sky grade from weather.lua (nil = restore session baseline).
+--- Queued until the per-course apply has settled a baseline to restore to.
+function CinematicSky.ApplyWeatherGrade(grade)
+    if not (initialized and enabled) then return end
+    pendingGrade = grade
+    pendingGradeSet = true
+    if gradeBaseline then
+        if ExecuteInGameThread then
+            pcall(function() ExecuteInGameThread(function() applyWeatherGradeGT(nil) end) end)
+        else
+            applyWeatherGradeGT(nil)
+        end
+    end
+    -- No baseline yet = course still settling; applyOnGameThread lands it
+end
+
 function CinematicSky.Tick()
     if not initialized or not enabled then return end
 
@@ -215,6 +286,7 @@ function CinematicSky.Tick()
     if not actors or not actors.IsOnCourse() then
         settleTicks = 0
         appliedThisCourse = false
+        gradeBaseline = nil   -- fresh sky actor per course = fresh baseline
         return
     end
 

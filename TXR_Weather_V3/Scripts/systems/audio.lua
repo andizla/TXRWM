@@ -40,6 +40,8 @@ local ENABLE_THUNDER_AUDIO = true
 local RAIN_VOLUME_SCALE = 1.0
 local WIND_VOLUME_SCALE = 0.8
 local THUNDER_VOLUME_SCALE = 1.0
+local CLOSE_THUNDER_MIN = 7.0   -- Thunder/Lightning level below which only
+                                -- distant rumbles play (Config.Audio.CloseThunderMin)
 
 -- ============== UDW NATIVE SOUND PROPERTIES / FUNCTIONS (v1.5 names) ==============
 -- Used only as the asset-loading kick (see header); they make no sound themselves.
@@ -211,16 +213,21 @@ local function updateLoopGT(ac, path, vol, label)
     return spawn2DGT(path, vol, label)
 end
 
---- Full direct-spawn update for one snapshot of the weather state (game thread)
-local function updateSoundsGT(rainVol, windVol, thunderOn)
+--- Full direct-spawn update for one snapshot of the weather state (game
+--- thread). thunderLevel = the UDW Thunder/Lightning value: 0 = silent,
+--- below CLOSE_THUNDER_MIN = distant rumbles only, above = full mix
+--- (Rain runs 4 = distant only; Thunderstorm runs 10 = both).
+local function updateSoundsGT(rainVol, windVol, thunderLevel)
     if teardownActiveGT() then return end
     rainAC = updateLoopGT(rainAC, ASSET_RAIN_LOOP, rainVol, "rain_loop")
     windAC = updateLoopGT(windAC, ASSET_WIND_FALLBACK, windVol, "wind_loop")
 
+    local thunderOn = (tonumber(thunderLevel) or 0) > 0.5
     if thunderOn and ENABLE_THUNDER_AUDIO then
         local now = os.clock()
         if now >= (nextThunderAt or 0) then
-            local distant = (math.random() < 0.7)
+            local distant = (thunderLevel < CLOSE_THUNDER_MIN)
+                or (math.random() < 0.7)
             local path, vol
             if distant then
                 local i = math.random(1, DISTANT_THUNDER_COUNT)
@@ -296,9 +303,9 @@ local function scheduleGuarded(fn)
 end
 
 --- Queue one direct-spawn update
-local function scheduleSoundUpdate(rainVol, windVol, thunderOn)
+local function scheduleSoundUpdate(rainVol, windVol, thunderLevel)
     scheduleGuarded(function()
-        updateSoundsGT(rainVol, windVol, thunderOn)
+        updateSoundsGT(rainVol, windVol, thunderLevel)
     end)
 end
 
@@ -333,6 +340,9 @@ function Audio.Init()
         end
         if Config.Audio.ThunderVolume then
             THUNDER_VOLUME_SCALE = Config.Audio.ThunderVolume
+        end
+        if Config.Audio.CloseThunderMin then
+            CLOSE_THUNDER_MIN = Config.Audio.CloseThunderMin
         end
         if Config.Audio.Enabled == false then
             Log.Info(MODULE, "Audio module disabled in config")
@@ -405,7 +415,7 @@ function Audio.Tick()
         windVol = math.min(1.0, 0.30 + wind01 * 0.5) * WIND_VOLUME_SCALE
     end
 
-    scheduleSoundUpdate(rainVol, windVol, thunder > 0.5)
+    scheduleSoundUpdate(rainVol, windVol, thunder)
 end
 
 --- Toggle all weather audio

@@ -57,6 +57,33 @@ local PRESET_DATA = {
         hasSnow = false,
         cloudCoverage = 6.0,
         fog = 0.6,
+        -- Cool the deck down: the session grade (saturation 1.15, warm
+        -- absorption boost) reads too warm under full cloud (user
+        -- 2026-07-15 "overcast needs to be more overcasty")
+        skyGrade = {
+            ["Saturation"] = 1.0,
+            ["Desaturate Rayleigh Scattering When Cloudy"] = 0.55,
+            ["Volumetric Cloud Ambient Light Saturation"] = 0.38,
+            ["Sunset/Sunrise Color Intensity (Absorption Scale)"] = 0.0020,
+        },
+    },
+    -- Heavy overcast (user request 2026-07-15): a proper grey deck, denser
+    -- than Overcast, desaturated hard but not greyscale. Reuses the game's
+    -- Overcast asset; the difference is our overlay + grade.
+    Overcast_Heavy = {
+        assetName = "Overcast",
+        displayName = "Heavy Overcast",
+        category = "cloudy",
+        hasRain = false,
+        hasSnow = false,
+        cloudCoverage = 7.5,
+        fog = 0.9,
+        skyGrade = {
+            ["Saturation"] = 0.88,
+            ["Desaturate Rayleigh Scattering When Cloudy"] = 0.75,
+            ["Volumetric Cloud Ambient Light Saturation"] = 0.25,
+            ["Sunset/Sunrise Color Intensity (Absorption Scale)"] = 0.0012,
+        },
     },
     
     -- Fog
@@ -78,10 +105,16 @@ local PRESET_DATA = {
         hasRain = true,
         hasSnow = false,
         rainIntensity = 5.0,
-        thunderIntensity = 2.0,
+        thunderIntensity = 0.0,  -- light rain carries NO thunder (2026-07-15)
         spawnCount = 10000.0,
         cloudCoverage = 5.0,
         fog = 0.8,
+        skyGrade = {
+            ["Saturation"] = 1.0,
+            ["Desaturate Rayleigh Scattering When Cloudy"] = 0.55,
+            ["Volumetric Cloud Ambient Light Saturation"] = 0.38,
+            ["Sunset/Sunrise Color Intensity (Absorption Scale)"] = 0.0018,
+        },
     },
     Rain = {
         assetName = "Rain",
@@ -90,10 +123,16 @@ local PRESET_DATA = {
         hasRain = true,
         hasSnow = false,
         rainIntensity = 7.0,
-        thunderIntensity = 4.0,
+        thunderIntensity = 4.0,  -- below Audio.CloseThunderMin: distant only
         spawnCount = 20000.0,
         cloudCoverage = 6.0,
         fog = 1.0,
+        skyGrade = {
+            ["Saturation"] = 0.95,
+            ["Desaturate Rayleigh Scattering When Cloudy"] = 0.60,
+            ["Volumetric Cloud Ambient Light Saturation"] = 0.33,
+            ["Sunset/Sunrise Color Intensity (Absorption Scale)"] = 0.0016,
+        },
     },
     Rain_Thunderstorm = {
         assetName = "Rain_Thunderstorm",
@@ -107,6 +146,12 @@ local PRESET_DATA = {
         spawnCount = 25000.0,
         cloudCoverage = 8.0,
         fog = 1.5,
+        skyGrade = {
+            ["Saturation"] = 0.92,
+            ["Desaturate Rayleigh Scattering When Cloudy"] = 0.65,
+            ["Volumetric Cloud Ambient Light Saturation"] = 0.30,
+            ["Sunset/Sunrise Color Intensity (Absorption Scale)"] = 0.0014,
+        },
     },
     
     -- Snow variants
@@ -177,6 +222,7 @@ local DEFAULT_CYCLE_ORDER = {
     "Partly_Cloudy",
     "Cloudy",
     "Overcast",
+    "Overcast_Heavy",
     "Foggy",
     "Rain_Light",
     "Rain",

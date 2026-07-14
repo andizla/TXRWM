@@ -29,10 +29,11 @@ Config.Weather = {
     FastTransitionTime = 2.0,     -- seconds (keybind cycling)
     ApplyDefaultOnLoad = true,    -- apply default preset on course load
 
-    -- Order used by the Alt+S / Alt+Shift+S cycle keybinds
+    -- Order used by the Alt+S / Alt+Shift+S cycle keybinds (this list WINS
+    -- over presets.lua's DEFAULT_CYCLE_ORDER; keep both in sync)
     PresetCycleOrder = {
-        "Clear_Skies", "Partly_Cloudy", "Cloudy", "Overcast", "Foggy",
-        "Rain_Light", "Rain", "Rain_Thunderstorm",
+        "Clear_Skies", "Partly_Cloudy", "Cloudy", "Overcast", "Overcast_Heavy",
+        "Foggy", "Rain_Light", "Rain", "Rain_Thunderstorm",
     },
 }
 
@@ -59,6 +60,7 @@ Config.Scheduler = {
         Partly_Cloudy     = 4.0,
         Cloudy            = 3.0,
         Overcast          = 2.0,
+        Overcast_Heavy    = 1.0,
         Foggy             = 1.0,
         Rain_Light        = 2.0,
         Rain              = 1.0,
@@ -72,11 +74,12 @@ Config.Scheduler = {
     -- favors more dramatic skies, so daytime isn't boring.
     TimeWeights = {
         day = {
-            Clear_Skies   = 0.15,  -- clear sky is rare while the sun is up
-            Partly_Cloudy = 1.0,
-            Cloudy        = 1.5,
-            Overcast      = 1.5,
-            Foggy         = 0.5,
+            Clear_Skies    = 0.15,  -- clear sky is rare while the sun is up
+            Partly_Cloudy  = 1.0,
+            Cloudy         = 1.5,
+            Overcast       = 1.5,
+            Overcast_Heavy = 1.5,
+            Foggy          = 0.5,
         },
         -- night / dawn / dusk omitted = all multipliers 1.0 (use the base pool).
     },
@@ -244,6 +247,13 @@ Config.Keybinds = {
     -- component level (weather state untouched; it keeps "raining"). The
     -- tunnel system drives the same mechanism automatically.
     PrecipSuppressTest = { Key = "J", Modifiers = {"Alt"} },
+
+    -- Rain-spot datapoint: press at any spot where rain presence looks wrong
+    -- (missing on open road, falling under a roof, not restarting after a
+    -- bore). Logs position, the road-data tunnel bits, a fresh roof-trace
+    -- result with hit distance/name, and the kill state; lines land in
+    -- Logs/tuning_feedback.log too (grep for "RainSpot").
+    NoteRainSpot = { Key = "N", Modifiers = {"Alt"} },
 
     -- Exposure tuning feedback: press when the picture looks wrong; logs time,
     -- weather, and the exposure values in effect (grep the log for "ExposureTune").
@@ -508,6 +518,63 @@ Config.Vignette = {
 Config.PhotoMode = {
     Enabled = true,
 
+    -- While a photo session is open: freeze time of day (UDS Animate Time
+    -- of Day off; sun and shadows hold still through composing and long
+    -- shutters) and make the APERTURE slider drive exposure. Auto-exposure
+    -- stays live (scene-correct in tunnels/night/day); the live f-stop is
+    -- converted to its exact EV equivalent and applied as exposure
+    -- compensation (f/2 from the f/4 base = +2 EV, like a real camera).
+    -- Both restore on close; a user Alt+T pause is respected either way.
+    FreezeTime = true,
+
+    -- Photomode exposure = MANUAL METERING (r.EyeAdaptation.MethodOverride
+    -- 3 for the session, restored on close). Manual is the only mode where
+    -- the aperture physically drives exposure (every emulation attempt
+    -- failed: the applied f-stop is not readable anywhere). The manual
+    -- level comes from the 3.4.0 sun-elevation curve below.
+    ManualExposure = true,
+
+    -- The 3.4.0 cvar curve, verbatim (elevation anchors in degrees; +90
+    -- zenith, 0 horizon; piecewise-linear, clamped flat outside the ends):
+    -- sky  = r.SkylightIntensityMultiplier (scene-ambient brightness)
+    -- lens = r.EyeAdaptation.LensAttenuation (3D-scene EV trim)
+    -- Field-tuned across the 07-07/07-08 sweeps for manual metering; time
+    -- is frozen in photomode so each session gets one steady pair.
+    ManualCurve = {
+        { elev =  30, sky = 0.100, lens =  1.0 },   -- day core
+        { elev =  15, sky = 0.105, lens =  1.25 },
+        { elev =   9, sky = 0.130, lens =  1.8 },   -- late golden hour
+        { elev =   6, sky = 0.155, lens =  2.2 },
+        { elev =   2, sky = 0.270, lens =  2.7 },   -- sun on the towers
+        { elev =   0, sky = 0.420, lens =  3.8 },   -- sunset/sunrise moment
+        { elev =  -3, sky = 0.860, lens =  5.5 },   -- civil twilight
+        { elev =  -5, sky = 0.950, lens =  9.0 },
+        { elev =  -7, sky = 1.000, lens = 14.0 },
+        { elev = -10, sky = 1.050, lens = 22.0 },   -- night
+    },
+
+    -- Garage / PA-menu sessions (artificial light, no sun): the fixed
+    -- 3.4.0 garage pair.
+    ManualGarage = { Sky = 1.005, Lens = 30.0 },
+
+    -- Apply the curve's SKY column too (the 3.4.0 pairing dimmed the
+    -- skylight by day, sky 0.1). DISABLED 2026-07-15: it scales the
+    -- skylight in photomode and masks the translucent-skylight fix being
+    -- judged; lens carries the exposure alone. If day photomode reads too
+    -- bright with sky untouched, lower the day lens anchors (the legacy
+    -- eras always paired a day-sky dim with these lens values) or flip
+    -- this back on.
+    ManualCurveSky = false,
+
+    -- Covered-session skylight damp: when a photo session opens with the
+    -- car under road-data cover, r.SkylightIntensityMultiplier drops to
+    -- this value and restores on close. nil = OFF (2026-07-15: disabled so
+    -- the real fix, KillSkylightTranslucentLighting + the finer
+    -- translucency grid, can be judged unmasked; this damp zeroed the
+    -- skylight in exactly the test scenario). Re-arm with 0.0 only if the
+    -- real fix fails.
+    CoveredSkylightMult = nil,
+
     -- Let the camera pass through geometry and leave the track (disables the
     -- free-camera collision sphere and the spring-arm collision pull-in).
     DisableCameraCollision = true,
@@ -587,6 +654,12 @@ Config.Headlights = {
     OnElev  = -1.0,
     OffElev = 0.5,
 
+    -- Forced-ON contexts for auto mode: real tunnel bores (road-data cover;
+    -- lone overpasses deliberately do NOT flash the lights) and wet weather
+    -- presets. When the context ends, the elevation logic takes back over.
+    AutoOnInTunnel = true,
+    AutoOnInRain = true,
+
     DefaultBrightnessLevel = 3,  -- 1=0.5x 2=1.0x 3=2.0x 4=3.0x 5=5.0x
 
     -- Light-button gesture (keyboard + controller; reads the hi-beam input state, so
@@ -607,6 +680,11 @@ Config.Audio = {
     Enabled = true,
     EnableRain = true, EnableWind = true, EnableThunder = true,
     RainVolume = 1.0, WindVolume = 0.8, ThunderVolume = 1.0,
+
+    -- Thunder/Lightning level below which only DISTANT rumbles play (Rain
+    -- runs 4 = distant only; Thunderstorm runs 10 = distant + close mix;
+    -- Light Rain carries no thunder at all).
+    CloseThunderMin = 7.0,
 }
 
 -- ============== TUNING SLIDER RANGE (garage alignment tab) ==============
@@ -660,6 +738,12 @@ Config.LightCycle = {
 
     LeakAlbedo = 0.07,  -- r.Lumen.SkylightLeaking.ReflectionAverageAlbedo
 
+    -- Global r.SkylightIntensityMultiplier baseline (the Alt+C cvar).
+    -- 0.10 (2026-07-15, field-verified): with the volume leak dead and the
+    -- skylight cut off translucents, Lumen bounce light carries the ambient
+    -- and the direct skylight runs near-floor. 1.0 = engine default.
+    SkylightMultiplier = 0.10,
+
     -- UDS night floors. Mult scales the stock value; nil = leave stock.
     AbsentBrightnessMult = 1.0,    -- "Directional Lights Absent Brightness" (stock 1.5)
     NightCloudyBrightness = nil,   -- "Extra Night Brightness When Cloudy" (stock 0.0)
@@ -669,15 +753,26 @@ Config.LightCycle = {
     -- the stock curve reads right with the skylight leak dead.
     KillExposureCompCurve = false,
 
+    -- Stop the course skylights from lighting TRANSLUCENTS
+    -- (bAffectTranslucentLighting=false, once per course). The translucency
+    -- probe grid is too coarse to occlude sky through tunnel ceilings, so
+    -- glass and taillight lenses catch a milky leaked-sky sheen under
+    -- roofs. Glass is specular-dominated, so losing sky diffuse on it is
+    -- near-invisible in the open; opaque surfaces keep their normal
+    -- Lumen-occluded skylight either way. Zero GPU cost.
+    KillSkylightTranslucentLighting = true,
+
     SunVectorSign = -1,  -- UDS sun vector = light direction; implementation constant
     SunriseTOD = 600, SunsetTOD = 1930,  -- pseudo-elevation fallback events
 
     -- Auto-exposure adaptation speeds (f-stops/second; stock 3/1, nil =
     -- stock). Asymmetric like real eyes: adapting to BRIGHT (SpeedUp, e.g.
     -- exiting a tunnel) is fast or the exit blows out white; adapting to
-    -- DARK (SpeedDown) stays slow and cinematic.
-    AdaptSpeedUp = 3.0,
-    AdaptSpeedDown = 0.35,
+    -- DARK (SpeedDown) stays slower and cinematic. Down raised 0.35 -> 0.6
+    -- (2026-07-14, "a bit faster reacting"; photomode now locks exposure
+    -- entirely, so gameplay speed no longer has to protect photo shoots).
+    AdaptSpeedUp = 6.0,
+    AdaptSpeedDown = 2.0,
 
     -- POST-PROCESS LOOK OVERRIDES: FPostProcessSettings fields written once
     -- per course onto the course sky's main PP component (wins conflicts
@@ -687,8 +782,12 @@ Config.LightCycle = {
     PostProcess = {
         BloomIntensity = 0.2,                       -- game runs 0.75
         VignetteIntensity = 0.0,                    -- game runs 0.4
-        ScreenSpaceReflectionQuality = 100.0,       -- game runs 50
-        ScreenSpaceReflectionMaxRoughness = 0.4,    -- game runs 0.6
+        -- SSR overrides removed 2026-07-14 (MaxRoughness 0.4, then Quality
+        -- 100 too): reflection settings in the PP are now fully stock while
+        -- the milky car-glass artifact is hunted. Note the sheen is BRIGHT
+        -- in dark tunnels, and SSR can only reflect what is on screen, so
+        -- the prime suspect is the skylight-leak reflection floor
+        -- (LeakAlbedo cvar): test live with Alt+Shift+Z.
         LumenSceneDetail = 2.0,                     -- game runs 1
         LumenFinalGatherLightingUpdateSpeed = 2.0,
         -- Shadow contrast: the game LIFTS unlit areas two ways, film toe
@@ -707,10 +806,61 @@ Config.LightCycle = {
         -- skies keep their tone like the reference shots. Raise toward 0.7
         -- if bright scenes start reading dull.
         FilmShoulder = 0.45,
+        -- Slight near-black lift (2026-07-14): gain on the shadows region
+        -- keeps true black anchored while opening the darkest surfaces a
+        -- touch. Same lever the game's own BP_HDR grading comp uses (it
+        -- runs 1.5 for HDR displays). Step by 0.05 to taste.
+        ColorGainShadows = { X = 1.05, Y = 1.05, Z = 1.05, W = 1.0 },
+    },
+
+    -- DISPLAY PROFILE. The game lifts shadows 1.5x and global 1.2x for HDR
+    -- displays only (BP_HDR enables its grading component when the display
+    -- outputs HDR). The look above (BiasCurve + PostProcess) is tuned on an
+    -- HDR screen ON TOP of that lift; on SDR output it reads crushed and
+    -- clipped. "auto" reads the live HDR state once per session and, on
+    -- SDR, swaps in the SDR tables below. Force with "hdr" or "sdr".
+    -- The active profile is logged ("Display profile") and stamped into
+    -- every Alt+D feedback line.
+    DisplayProfile = "auto",
+
+    -- SDR replacements (used only when the SDR profile is active). Keys
+    -- REPLACE their Config.LightCycle counterparts wholesale. First guess,
+    -- to be iterated from SDR-tester Alt+D data: the shadow-deepening
+    -- fields (FilmToe, LocalExposure scales, ColorGainShadows) are simply
+    -- absent, stock game values apply; the bias curve runs half depth by
+    -- day easing to neutral at night (the SDR tester's night feedback was
+    -- too-dark at -0.3).
+    SDR = {
+        PostProcess = {
+            BloomIntensity = 0.2,
+            VignetteIntensity = 0.0,
+            LumenSceneDetail = 2.0,
+            LumenFinalGatherLightingUpdateSpeed = 2.0,
+            ColorSaturation = { X = 1.05, Y = 1.05, Z = 1.05, W = 1.0 },
+            FilmShoulder = 0.45,
+        },
+        BiasCurve = {
+            { elev =  30, bias = -0.3 },
+            { elev =   8, bias = -0.3 },
+            { elev =   3, bias = -0.3 },
+            { elev =   0, bias = -0.25 },
+            { elev =  -3, bias = -0.15 },
+            { elev =  -6, bias = 0.0 },
+            { elev = -10, bias = 0.0 },
+        },
     },
 
     -- Skylight tuning keybinds (Alt+Z/X/C, Alt+V, Alt+Shift+V)
     Tune = { Step = 0.05, RoughnessBaseline = 1.0 },
+
+    -- TEMP DIAGNOSTIC (2026-07-13, HDR/SDR look split): once per session,
+    -- ~8s after course arm, dump every live PostProcessComponent's full
+    -- FPostProcessSettings (all 246 fields + override flags + blend state)
+    -- to Logs/pp_values_<ts>_hdr-<on|off>.txt with the GameUserSettings
+    -- HDR output state in the header. The hdr-on/hdr-off pair was captured
+    -- 2026-07-14 (verdict: BP_HDR bEnabled flip is the only delta); flip
+    -- true again only for a fresh capture.
+    DumpDisplayPP = false,
 }
 
 -- ============== TUNNELS (covered road: rain hide + GI fix) ==============
@@ -799,10 +949,10 @@ Config.ModuleToggles = {
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 5, Patch = 1,
-    String = "3.5.1",
+    Major = 3, Minor = 6, Patch = 0,
+    String = "3.6.0",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.5.1",
+    FullName = "TXR Weather Mod v3.6.0",
 }
 
 return Config

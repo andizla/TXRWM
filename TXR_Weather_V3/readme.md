@@ -92,9 +92,12 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Debug short cycle**: *new in 3.3.0, off by default.* Full-length dawn and dusk, but the flat
   midday and deep-night stretches are cut to about an hour each: a complete lighting cycle in
   minutes. `Config.TimeOfDay.DebugShortCycle`; wins over night-only if both are on.
-- **13 weather presets** (`presets.lua` / `weather.lua`): Clear_Skies, Partly_Cloudy, Cloudy,
-  Overcast, Foggy, Rain_Light, Rain, Rain_Thunderstorm, Snow_Light, Snow, Snow_Blizzard,
-  Sand_Dust_Calm, Sand_Dust_Storm. Rain/dry enforcement here is **stable, do not modify**.
+- **14 weather presets** (`presets.lua` / `weather.lua`): Clear_Skies, Partly_Cloudy, Cloudy,
+  Overcast, Overcast_Heavy *(new in 3.6.0: a denser, properly grey deck)*, Foggy, Rain_Light,
+  Rain, Rain_Thunderstorm, Snow_Light, Snow, Snow_Blizzard, Sand_Dust_Calm, Sand_Dust_Storm.
+  Cloudy-wet presets carry their own cool/grey sky grade (per-preset `skyGrade`), and thunder
+  has tiers: none in light rain, distant-only in rain, the full mix only in a thunderstorm.
+  Rain/dry enforcement here is **stable, do not modify**.
 - **Random weather scheduler** (`scheduler.lua`): weighted pool with time-of-day multipliers and an
   `AllowPrecipitation` switch. A manual change re-arms the timer so it never overrides your pick.
 - **Clouds and fog** (`clouds_fog.lua`): drift/jitter, day "mood", morning profiles, smooth
@@ -168,9 +171,15 @@ a short press turns headlights on, a ~2-second hold turns them off.
   Requires the 3.4+ Engine.ini (re-run the installer). Live **skylight tuning
   keybinds** still apply (`Alt+Z/X/C`, confirm with `Alt+V`, see Keybinds).
 - **Headlights** (`headlights.lua`): Auto mode follows the sun's real elevation (with hysteresis) so
-  the lamps come on at dusk and go off after sunrise in any season; manual mode (`Alt+Q`, the
-  garage, and the light-button gesture); adjustable brightness; animated pop-ups via the game's
-  native raise/lower.
+  the lamps come on at dusk and go off after sunrise in any season, and *since 3.6.0* also inside
+  real tunnel bores and whenever a wet preset is active (lone overpasses deliberately do not flash
+  them); manual mode (`Alt+Q`, the garage, and the light-button gesture); adjustable brightness;
+  animated pop-ups via the game's native raise/lower.
+- **Display profiles (HDR/SDR)**: *new in 3.6.0.* The game applies a hidden shadow-lifting grade
+  only on HDR output, so a look tuned on HDR crushes on SDR screens. The mod detects the display
+  per session and on SDR backs the look off toward stock with a softer bias curve
+  (`Config.LightCycle.DisplayProfile` = auto/hdr/sdr, tables in `Config.LightCycle.SDR`). `Alt+D`
+  feedback lines carry the active profile.
 - **Shadows** (`shadows.lua`): adaptive FOV-to-distance table so shadows survive photo-mode zoom.
 
 ### Driving
@@ -192,6 +201,11 @@ a short press turns headlights on, a ~2-second hold turns them off.
   pan, and a much wider zoom range at both ends (closer macro, wider angle). Free-camera movement is
   faster, rotation scales with the zoom so tight framing isn't twitchy, and the photo-mode vignette
   starts off. On by default; `Config.PhotoMode`.
+- **Photo mode sessions** (*new in 3.6.0*): time of day freezes for the whole session (sun, shadows
+  and clouds hold still, long exposures included) and exposure switches to manual metering so the
+  aperture option genuinely drives brightness like a real camera. The session's base level follows
+  the sun's position on the field-tuned 3.4.0 curve (`Config.PhotoMode.ManualCurve`); everything
+  restores the moment you close photo mode (`Config.PhotoMode.FreezeTime` / `ManualExposure`).
 - **Hide HUD vignette** (`vignette.lua`): *new in 3.0.20, OFF by default.* Removes the darkened
   corner vignette the game draws during normal play (`WBP_Com_Vignette_Frame` on the in-game HUD).
   It's a HUD overlay, not a render setting, so Engine.ini can't touch it, this can. Pure HUD-widget
@@ -320,6 +334,11 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 
 See `CHANGELOG.md` for the full list. Most recent:
 
+- **3.6.0**: crash fix for PA/world transitions; photo mode freezes time and the
+  aperture works (manual metering on the 3.4.0 sun curve); Heavy Overcast preset +
+  grey/cool grades for cloudy-wet weather; tiered thunder; auto headlights in
+  tunnels and rain; HDR/SDR display profiles; skylight rework (no sky on glass,
+  geometry-aware translucent lighting, low ambient floor).
 - **3.5.1**: first shaped pass of the low-key photographic look (day sits under the
   meter, color survives the shade, skies keep their tone).
 - **3.5.0**: Covered-road lighting fixed at the root (the volumes' skylight-leak override);
