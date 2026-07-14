@@ -5,7 +5,7 @@ A modular UE4SS Lua mod for **Tokyo Xtreme Racer** that drives **Ultra Dynamic S
 full feature + configuration + developer reference. For install and a short feature list, see the
 landing `README.md`. For per-version changes, see `CHANGELOG.md`.
 
-**Current version: 3.2.0**
+**Current version: 3.6.0**
 
 ---
 
