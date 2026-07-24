@@ -9,27 +9,27 @@ Lightweight and modular - roughly half the code of the original, streamlined and
   elevation: dusk and dawn land wherever the sun actually is, in any season
 - **Seasons (3.4.0)** - the in-game calendar advances and sunrise/sunset drift through the year
   like real Tokyo (pinnable to a fixed date)
-- **Tunnels (3.4.0)** - daylight tunnel exposure adapts like your eyes would, and rain stops
-  under covered road and returns at the portal
+- **Tunnels (3.4.0, lighting root-fixed 3.5.0)** - daylight tunnel exposure adapts like your
+  eyes would, true interior lighting (no flat sky ambient flooding in), and fog is removed under
+  roofs so foggy weather doesn't read as a white wall inside bores
 - **Parking Area weather (3.4.0)** - the PA continues your course weather and time of day with
   the clock running (no more canned always-night)
 - **Night-only mode** - dusk, night, dawn, then straight back to dusk: the day is skipped entirely (off by default; installer option)
 - **Cinematic sky** - a daytime look pass: denser cloud cores, silver-lining glow, high cirrus that lights up near the sun, richer sky color, luminous overcast, stronger sunsets, slower cloud drift
 - **Per-weather exposure compensation** - overcast, rain, fog and snow scenes automatically get brighter instead of gray mush
-- Weather preset cycling - clear, cloudy, fog, rain, thunderstorm, and more
+- Weather preset cycling - six dry skies since 3.7.0 (clear through heavy overcast and fog);
+  precipitation presets are out of the rotation for performance, data retained for a future return
 - Random weather scheduler - weighted and time-of-day aware (clear skies rarer by day)
-- Lightning / thunderstorm flashes
 - Enhanced volumetric fog
 - Daytime + FOV-scaled shadows (work with photomode zoom)
-- HD real-stars night sky
+- **Real-star night sky (fixed for real in 3.7.0)** - bright through the city glow, Milky Way
+  included, rotating with time like the actual sky, fading naturally at twilight and under cloud
 - Headlights with **animated pop-ups** - Auto mode tracks the scene brightness; manual mode works in the garage and on a controller (short-press on / hold off); adjustable brightness
 - Atmospherics - god rays, volumetric cloud light rays, cloud shadows, Tokyo city glow (night light pollution)
-- Wind debris in storms, and moon phases / scalable moon
-- **Weather sounds** - rain and wind loops that follow the weather, thunder cracks in storms
+- Wind debris, and moon phases / scalable moon
 - **Wider garage alignment sliders** - camber, toe, ride height, wheel offset and tire width run to 3x their stock range, and out-of-range setups persist and apply on spawn (nothing is unlocked)
-- **Rainbows** after rain when the sun comes through (drawn on a world mesh, so it renders in TXR)
-- **Night-sky nebula** - a faint nebula band that fades in at night (optional, stylistic)
-- **Dynamic wet grip** - tire grip drops in the rain and recovers as it dries, for every car including the AI rivals, and it works in PA battles
+- **Rainbows** when fog feeds them and the sun comes through (drawn on a world mesh, so it renders in TXR)
+- **Dynamic wet grip** - tire grip drops in the rain for every car including the AI rivals (ships disabled while no rain is in the rotation)
 - **Photo mode camera unlocked** - no collision (fly anywhere), no distance cap, a much wider zoom range, faster free-cam, and the photo vignette off for clean shots
 - **Hide HUD vignette** - optional cleaner look for screenshots / photo driving
 - Auto-exposure / photomode aperture (ported from VEAO)
@@ -51,9 +51,9 @@ shares the same goal (driving Ultra Dynamic Sky/Weather inside TXR) but **none o
 - **What's new in V3 (not in 1.34).** Auto-exposure (ex-VEAO) on a 144-step day/night curve,
   exposure-driven auto headlights with animated pop-ups + a controller light-button gesture, a weighted
   time-of-day-aware random weather scheduler, dawn/dusk slow-time, Tokyo city glow, volumetric cloud
-  light rays, wind debris, moon phases, rainbows, a night-sky nebula, audible weather sounds, wider
-  garage alignment sliders, a night-only time cycle, a cinematic daytime sky pass, per-weather
-  exposure compensation, and an installer with Engine.ini graphics profiles.
+  light rays, wind debris, moon phases, rainbows, a rotating real-star night sky with the Milky
+  Way, wider garage alignment sliders, a night-only time cycle, a cinematic daytime sky pass,
+  per-weather exposure compensation, and an installer with Engine.ini graphics profiles.
 - **What 1.34 had that V3 deliberately leaves out.** Surface/vehicle wetness and screen-space weather
   effects (rain-on-lens, frost) - they rely on material/post-process paths the game doesn't composite,
   so they never rendered reliably; V3 focuses on the effects that actually show in TXR.
@@ -103,6 +103,7 @@ profile, so try Photomode if a lighter profile looks flat.
 | `Alt+B` / `Alt+Shift+B` | Headlight brightness (up / down) |
 | `Alt+L` / `Alt+Shift+L` | Re-apply shadow distance |
 | `Alt+D` / `Alt+Shift+D` | Exposure feedback: too dark / too bright (appends a datapoint to `Logs/tuning_feedback.log` - attach that file when reporting) |
+| `Alt+K` / `Alt+Shift+K` | Night sky glow down / up (live night-look tuning; never affects the stars) |
 
 In **manual** headlight mode you can also use the car's own light button (keyboard or
 controller): a short press turns the headlights on, a ~2-second hold turns them off.
@@ -113,10 +114,14 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
 - `Config.ModuleToggles` - turn individual modules on/off.
 - `Config.TimeOfDay.NightOnly = true` - the night-only cycle (dusk -> night -> dawn, repeat).
 - `Config.CinematicSky` - the daytime look pass: cloud density/silver lining/cirrus/color knobs (on by default).
-- `Config.Rainbow` / `Config.SpaceLayer` - rainbows and the night-sky nebula (both on; tune or disable).
-- `Config.WetGrip` - dynamic wet grip: grip floors, the full-wet rain threshold, and wet/dry timing (on by default).
+- `Config.Stars.SimulateRealStars` - the rotating real-star map with the Milky Way (on by default).
+- `Config.Atmosphere.LightPollutionMax` - the city-glow light-pollution peak. **Keep at or below
+  1.0**: the sky dims stars as pollution rises, and above 1.0 the star math inverts (dark dots).
+  `NightSkyGlowMax` is the star-safe glow knob (`Alt+K` live).
+- `Config.Rainbow` - rainbows (on; tune or disable).
+- `Config.WetGrip` - dynamic wet grip: grip floors, the full-wet rain threshold, and wet/dry timing
+  (ships disabled while no rain is in the rotation).
 - `Config.PhotoMode` - photo mode camera unlocks: collision, distance, zoom range, and speed (on by default).
-- `Config.Audio` - weather sound volumes and per-sound toggles (on by default).
 - `Config.Tuning` - alignment slider widening factor and spawn re-apply (on by default).
 - `Config.Vignette.Enabled = true` - hide the in-game HUD vignette for a cleaner photo look.
 
@@ -124,8 +129,9 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
 - **Pick an Engine.ini profile in the installer** (see above). Brightness, shadow-quality, and
   glass-reflection problems are almost always a skipped Engine.ini step or a custom/outdated one,
   not the mod.
-- **Rain in tunnels / odd sun & shadows indoors** - the game's tunnel meshes have no interior
-  collision, so weather and lighting can't be occluded there from the mod.
+- **Odd sun and shadows indoors in a few spots** - the game's tunnel meshes have no interior
+  collision, so direct sun and shadows can't be fully occluded there from the mod (the interior
+  ambient/exposure side is handled since 3.5.0).
 - **Surface wetness and screen weather effects** - the game's road materials lack Ultra Dynamic
   Weather's wetness logic, and the game doesn't composite UDW's screen-space effects (rain-on-lens,
   frost, etc.), so those don't render. Not fixable from the mod; would need cooked content.

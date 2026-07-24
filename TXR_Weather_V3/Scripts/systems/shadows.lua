@@ -160,6 +160,17 @@ end
 --- Call this periodically or on FOV change
 --- @return boolean success
 function Shadows.Update()
+    -- Run ONLY with live validated actors outside a teardown window (course/PA,
+    -- where the FOV lever matters). This used to probe
+    -- FindFirstOf("PlayerCameraManager") + a GetFOVAngle UFUNCTION CALL from the
+    -- async tick 8x/sec in EVERY world, ungated; the garage map screen swaps
+    -- exactly that camera manager, and probing it off-thread mid-swap is the
+    -- reflection AV in the 2026-07-18/20 crash dumps (map-open crashes).
+    local actors = getActors()
+    if not actors then return false end
+    if actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then return false end
+    if not (actors.HasActors and actors.HasActors()) then return false end
+
     local fov = getCurrentFOV()
     local distance = calculateDistance(fov)
     

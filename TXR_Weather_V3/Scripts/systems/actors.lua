@@ -33,6 +33,38 @@ local suspendedForTeardown = false
 local suspendedAt = 0
 local SUSPEND_FAILSAFE_SECONDS = 15
 
+-- Outgame settle (2026-07-21, the map-open crash fix). In the GARAGE outgame
+-- world the UDS always resolves but its UDW never validates ("UDW found but
+-- not valid" once per second, forever), while in the PA outgame world both
+-- validate within ~2 attempts of world load. So after the garage signature
+-- repeats, further polling is pure exposure: every FindFirstOf/property read
+-- from the async tick can land on an object the map screen's streaming just
+-- freed (the 07-18/07-20 dump class). Once settled, discovery goes quiet for
+-- the rest of the world's life; every scene change on this game is a map swap,
+-- so the next world resets the settle in SuspendDiscovery/OnMapLoad.
+local outgameSettled = false
+local udwInvalidStreak = 0
+local resumedAt = 0
+local OUTGAME_SETTLE_STREAK = 2      -- consecutive garage-signature hits
+local OUTGAME_SETTLE_MIN_SECONDS = 3 -- never settle before PA discovery could land
+
+-- Event-driven outgame signal: set from main.lua's BeginPlayPreHook when an
+-- OutGameGarageManager/OutGameMode actor begins play (game thread, actor in
+-- hand, no probing). While set, isInGarage() serves it without ever running
+-- its FindFirstOf probe. Cleared with the world.
+local garageEventThisWorld = false
+
+-- Course post-race settle (2026-07-21 field find): after a race ends the
+-- course world lingers (result/photo screens) with the sky torn down, and
+-- rediscovery probed the dead UDS every 2s indefinitely. Once we HAD valid
+-- actors in this world and then hit a run of UDS-invalid finds, the sky is
+-- gone for this world's life: stop probing. A sky BeginPlay (race retry
+-- respawning it) re-runs OnMapLoad and resets this, as does any map swap.
+local courseSettled = false
+local hadActorsThisWorld = false
+local udsInvalidStreak = 0
+local COURSE_SETTLE_STREAK = 5
+
 -- ============== INTERNAL FUNCTIONS ==============
 
 --- Get world tag from actor's world object
@@ -102,6 +134,12 @@ local function isInGarage()
     -- During map teardown, don't probe the object array; serve the cache
     if suspendedForTeardown then
         return garageCheckCache.isInGarage
+    end
+
+    -- Event-driven fast path: the outgame managers' BeginPlay already told us
+    -- (via main.lua, on the game thread). No probe needed for this world.
+    if garageEventThisWorld then
+        return true
     end
 
     local now = os.clock()
@@ -232,9 +270,21 @@ local function discoverActors()
     -- Validate UDS
     if not Utils.IsValidObject(uds) then
         Log.Warn(MODULE, "UDS found but not valid")
+        -- Course post-race signature: we HAD live actors in this world and
+        -- now the found UDS repeatedly fails validation = the sky is torn
+        -- down for good (result screens). Settle; a sky BeginPlay or map
+        -- swap resets it.
+        if hadActorsThisWorld and not garageEventThisWorld then
+            udsInvalidStreak = udsInvalidStreak + 1
+            if not courseSettled and udsInvalidStreak >= COURSE_SETTLE_STREAK then
+                courseSettled = true
+                Log.Info(MODULE, "Course discovery settled (sky gone, probes off until next sky/map event)")
+            end
+        end
         return false
     end
-    
+    udsInvalidStreak = 0
+
     -- Get UDW from UDS
     local udw = getUDWFromUDS(uds)
     if not udw then
@@ -250,10 +300,27 @@ local function discoverActors()
     if not Utils.IsValidObject(udw) then
         Log.Warn(MODULE, "UDW found but not valid")
         State.SetUDS(uds)
+        -- Garage signature: UDS resolves, UDW never validates. In a known
+        -- outgame world, repeated hits settle discovery for this world (see
+        -- the settle block at the top of the file). The nil-UDW branch above
+        -- does NOT count: a PA world mid-init can legitimately show that.
+        if garageEventThisWorld then
+            udwInvalidStreak = udwInvalidStreak + 1
+            if not outgameSettled
+               and udwInvalidStreak >= OUTGAME_SETTLE_STREAK
+               and os.time() - resumedAt >= OUTGAME_SETTLE_MIN_SECONDS then
+                outgameSettled = true
+                Log.Info(MODULE, "Outgame discovery settled (garage, probes off until next map load)")
+            end
+        end
         return false
     end
-    
+
     -- Both found and valid!
+    udwInvalidStreak = 0
+    udsInvalidStreak = 0
+    hadActorsThisWorld = true
+    courseSettled = false
     State.SetUDS(uds)
     State.SetUDW(udw)
     
@@ -380,6 +447,13 @@ function Actors.SuspendDiscovery()
         suspendedAt = os.time()
         State.ClearActors()
         invalidateGarageCache()
+        -- New world coming: reset the settle + event state
+        outgameSettled = false
+        courseSettled = false
+        hadActorsThisWorld = false
+        udwInvalidStreak = 0
+        udsInvalidStreak = 0
+        garageEventThisWorld = false
         Log.Info(MODULE, "Discovery suspended (map teardown, actor cache dropped)")
     end
 end
@@ -388,8 +462,22 @@ end
 function Actors.ResumeDiscovery()
     if suspendedForTeardown then
         suspendedForTeardown = false
+        resumedAt = os.time()
         Log.Info(MODULE, "Discovery resumed (new world alive)")
     end
+end
+
+--- Event-driven outgame signal from main.lua's BeginPlayPreHook: an
+--- OutGameGarageManager/OutGameMode actor is beginning play in the new world
+--- (game-thread context, actor already in hand). Marks the world outgame so
+--- the async garage probe never needs to run, and lets the garage settle
+--- logic engage. PA worlds carry these managers too; that matches what the
+--- old FindFirstOf probe answered there, and IsInPAScene is unaffected (it
+--- keys on validated actors, which only the PA scene provides).
+function Actors.OnOutgameManagerBeginPlay()
+    garageEventThisWorld = true
+    garageCheckCache.isInGarage = true
+    garageCheckCache.lastCheck = os.clock()
 end
 
 --- Whether the map-teardown window is active (world being destroyed)
@@ -404,6 +492,12 @@ function Actors.OnMapLoad()
     suspendedForTeardown = false
     isSearching = true
     discoveryAttempts = 0
+    outgameSettled = false
+    courseSettled = false
+    hadActorsThisWorld = false
+    udwInvalidStreak = 0
+    udsInvalidStreak = 0
+    resumedAt = os.time()
     
     -- Attempt immediate discovery
     if discoverActors() then
@@ -421,9 +515,15 @@ function Actors.OnMapUnload()
     isSearching = false
     discoveryAttempts = 0
     
-    -- Reset garage cache
+    -- Reset garage cache + settle/event state
     garageCheckCache.isInGarage = false
     garageCheckCache.lastCheck = 0
+    garageEventThisWorld = false
+    outgameSettled = false
+    courseSettled = false
+    hadActorsThisWorld = false
+    udwInvalidStreak = 0
+    udsInvalidStreak = 0
 end
 
 --- Tick function, called from main loop
@@ -437,6 +537,12 @@ function Actors.Tick()
         else
             return
         end
+    end
+
+    -- Settled (garage determined, or course sky gone post-race): zero object
+    -- touches until the next sky BeginPlay / map load
+    if (outgameSettled or courseSettled) and not State.HasActors() then
+        return
     end
 
     -- If we already have valid actors, just validate periodically
@@ -492,6 +598,9 @@ function Actors.GetStatus()
         discoveryAttempts = discoveryAttempts,
         lastDiscoveryTime = lastDiscoveryTime,
         suspendedForTeardown = suspendedForTeardown,
+        outgameSettled = outgameSettled,
+        courseSettled = courseSettled,
+        garageEvent = garageEventThisWorld,
     }
 end
 

@@ -20,6 +20,7 @@ local assetCache = {}  -- Cache loaded weather preset assets
 local lastApplyTime = 0
 local applyCount = 0
 local enabled = true   -- master switch (Config.Weather.Enabled); false = ToD/visuals only, no weather
+local lastApplyClock = 0.0  -- os.clock() of the last Weather.Apply (stars burst pacing)
 
 -- Pending rain activation for retry after map load
 local pendingRainActivation = false
@@ -194,6 +195,10 @@ function Weather.Apply(presetName, transitionTime)
         Log.Debug(MODULE, "Weather disabled: skipping apply", {preset = presetName})
         return false
     end
+    -- Timestamp for consumers that pace around weather churn (stars.lua
+    -- post-apply burst: transitions re-push sky-material params
+    -- unconditionally, 2026-07-23)
+    lastApplyClock = os.clock()
 
     -- A weather (re)apply re-establishes particles, so any transient tunnel
     -- suppression is void. Full restore path (NOT just a state clear): it
@@ -834,6 +839,13 @@ function Weather.ApplyFast(presetName)
     return Weather.Apply(presetName, fastTime)
 end
 
+--- os.clock() of the last Weather.Apply. Consumers pace around weather
+--- churn (weather transitions re-push sky-material params; stars.lua runs
+--- its re-assert burst for a few seconds after every apply).
+function Weather.GetLastApplyClock()
+    return lastApplyClock
+end
+
 --- Apply the default weather preset
 --- @return boolean success
 function Weather.ApplyDefault()
@@ -911,6 +923,12 @@ end
 --- Tick function (check for transition completion, etc.)
 function Weather.Tick()
     if not enabled then return end  -- master switch: no precip/weather processing
+
+    -- Teardown gate: both branches below sweep live components (the
+    -- suppression enforcement and the rain-activation retry are FindAllOf
+    -- passes); running them against a dying world is the uncatchable-AV
+    -- crash mechanism. Discovery suspension = the teardown window.
+    if Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended() then return end
 
     -- Check if transition should be complete
     if State.IsWeatherTransitioning() then
@@ -1020,32 +1038,52 @@ end
 -- containment poll both are).
 
 --- Find the live precip Niagara components (Rain/Snow by name or asset).
+--- Components with a nil/unreadable/invalid Asset are SKIPPED even when
+--- the name matches: on cooks where the rain assets never load (a beta
+--- tester's non-Steam build), UDW churns short-lived assetless rain
+--- components, and the one time a scan caught one alive and touched its
+--- render state the game died the same second (2026-07-16 log, the only
+--- components=1 restore of that session). Real precip components always
+--- carry a valid Niagara asset, so healthy installs are unaffected; the
+--- skipped count rides the suppress/restore log lines as the regression
+--- flag.
+--- @return table found, table names, number skippedAssetless
 local function findPrecipComponents()
-    local found = {}
+    local found, names, skipped = {}, {}, 0
     pcall(function()
         local comps = FindAllOf("NiagaraComponent")
         if not comps then return end
         for _, comp in ipairs(comps) do
             if comp and comp:IsValid() then
                 local hit = false
+                local n = ""
                 pcall(function()
-                    local n = comp:GetFullName() or ""
+                    n = comp:GetFullName() or ""
                     if n:find("Rain") or n:find("Snow") then hit = true end
                 end)
-                if not hit then
-                    pcall(function()
-                        local asset = comp.Asset
-                        if asset and asset:IsValid() then
+                local assetOk = false
+                pcall(function()
+                    local asset = comp.Asset
+                    if asset and asset:IsValid() then
+                        if not hit then
                             local an = asset:GetFullName() or ""
                             if an:find("Rain") or an:find("Snow") then hit = true end
                         end
-                    end)
+                        assetOk = true
+                    end
+                end)
+                if hit then
+                    if assetOk then
+                        found[#found + 1] = comp
+                        names[#names + 1] = n:match("([^%.:%s]+)$") or "?"
+                    else
+                        skipped = skipped + 1
+                    end
                 end
-                if hit then found[#found + 1] = comp end
             end
         end
     end)
-    return found
+    return found, names, skipped
 end
 
 --- Hide all live precip components (rescans; respawned components are new
@@ -1063,15 +1101,16 @@ end
 --- periodic particle update may freely re-Activate the components (they are
 --- already active); the ~1s enforcement rescan re-hides anything it
 --- respawns fresh (e.g. a weather change mid-tunnel).
---- @return number hidden
+--- @return number hidden, table names, number skippedAssetless
 function Weather._SuppressKill()
-    suppressedComps = findPrecipComponents()
+    local comps, names, skipped = findPrecipComponents()
+    suppressedComps = comps
     local n = 0
-    for _, comp in ipairs(suppressedComps) do
+    for _, comp in ipairs(comps) do
         local ok = pcall(function() comp:SetHiddenInGame(true, true) end)
         if ok then n = n + 1 end
     end
-    return n
+    return n, names, skipped
 end
 
 --- Suppress (true) or restore (false) precipitation VISIBILITY. Idempotent.
@@ -1085,8 +1124,12 @@ function Weather.SetPrecipSuppressed(on)
 
     if on then
         suppressEnforceClock = os.clock()
-        local n = Weather._SuppressKill()
-        Log.Info(MODULE, "Precip suppressed (tunnel)", {components = n, mode = "hidden"})
+        local n, names, skipped = Weather._SuppressKill()
+        Log.Info(MODULE, "Precip suppressed (tunnel)", {
+            components = n, mode = "hidden",
+            names = (#names > 0) and table.concat(names, " ") or nil,
+            skipped_assetless = (skipped > 0) and skipped or nil,
+        })
     else
         -- Unhide a FRESH scan (the suppress-time cache can be stale) plus
         -- the cached list. Nothing was ever stopped, so this is the whole
@@ -1105,16 +1148,35 @@ function Weather.SetPrecipSuppressed(on)
                 end)
             end
         end
-        unhideList(findPrecipComponents())
+        local freshList, freshNames, skipped = findPrecipComponents()
+        unhideList(freshList)
         unhideList(suppressedComps)
         suppressedComps = nil
-        Log.Info(MODULE, "Precip restored (tunnel exit)", {components = n})
+        Log.Info(MODULE, "Precip restored (tunnel exit)", {
+            components = n,
+            names = (#freshNames > 0) and table.concat(freshNames, " ") or nil,
+            skipped_assetless = (skipped > 0) and skipped or nil,
+        })
     end
 end
 
 --- @return boolean
 function Weather.IsPrecipSuppressed()
     return precipSuppressed
+end
+
+--- Map teardown (main.lua LoadMapPreHook): drop the suppression STATE
+--- without touching the components. They die with their world, and the new
+--- world's components spawn unhidden, so a state-only clear is the correct
+--- restore here; an unhide pass instead would poke freed old-world refs on
+--- the next Weather.Apply (IsValid can falsely pass on freed memory; the
+--- 2026-07-14 PA-crash class).
+function Weather.OnMapTeardown()
+    if precipSuppressed or suppressedComps then
+        Log.Info(MODULE, "Suppression state dropped (map teardown)")
+    end
+    precipSuppressed = false
+    suppressedComps = nil
 end
 
 -- Initialize on load

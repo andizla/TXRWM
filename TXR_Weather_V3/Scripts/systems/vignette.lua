@@ -135,6 +135,15 @@ end
 --- the ClientRestart hook might miss. No-op when the HUD isn't present.
 function Vignette.Tick()
     if not initialized or not enabled then return end
+    -- Course/PA only: the driving HUD this pokes exists only there. The old
+    -- ungated version ran FindFirstOf widget sweeps from the async tick in
+    -- garage/menu worlds every 1.5s, a guaranteed no-op that was still full
+    -- exposure to the map-open teardown AV (2026-07-21 dump verdict). The
+    -- ClientRestart hook path still covers every controller restart.
+    local actors = getActors()
+    if not actors then return end
+    local tag = actors.GetWorldTag and actors.GetWorldTag()
+    if tag ~= "course" and not (actors.IsInPAScene and actors.IsInPAScene()) then return end
     local now = os.clock()
     if (now - lastReassert) < REASSERT_INTERVAL then return end
     lastReassert = now

@@ -5,7 +5,7 @@ A modular UE4SS Lua mod for **Tokyo Xtreme Racer** that drives **Ultra Dynamic S
 full feature + configuration + developer reference. For install and a short feature list, see the
 landing `README.md`. For per-version changes, see `CHANGELOG.md`.
 
-**Current version: 3.6.0**
+**Current version: 3.7.0**
 
 ---
 
@@ -24,8 +24,9 @@ Same goal, drive UDS/UDW inside TXR, but **none of the 1.34 code**.
 **New in V3 that 1.34 did not have:** auto-exposure (ex-VEAO) on a 144-step day/night curve;
 exposure-driven auto headlights with animated pop-ups and a controller light-button gesture; a
 weighted, time-of-day-aware random weather scheduler; dawn/dusk slow-time + Tokyo tint; Tokyo city
-glow (light pollution + night sky glow); volumetric cloud light rays; wind debris; moon phases and a
-scalable moon; rainbows; a night-sky nebula; and an installer with Engine.ini graphics profiles.
+glow (light pollution + night sky glow); a real-star night sky with the Milky Way that rotates like
+the real thing; volumetric cloud light rays; wind debris; moon phases and a scalable moon; rainbows;
+and an installer with Engine.ini graphics profiles.
 
 **Intentionally dropped from 1.34:** surface/vehicle wetness and screen-space weather effects
 (rain-on-lens, frost, heat distortion). They rely on material/post-process paths TXR does not
@@ -74,8 +75,7 @@ base.
 | `Alt+X` / `Alt+Shift+X` | Skylight tuning: raise / lower the skylight leak roughness |
 | `Alt+C` / `Alt+Shift+C` | Skylight tuning: raise / lower the skylight intensity |
 | `Alt+V` / `Alt+Shift+V` | Skylight tuning: log a datapoint (tag `SkylightTune`) / reset overrides back to the exposure curve |
-| `Alt+W` / `Alt+Shift+W` | Force wetness / force dry (only if the WIP wetness module is enabled) |
-| `Alt+J` | Toggle rain/snow particles off/on without changing the weather (the tunnel system drives the same mechanism automatically) |
+| `Alt+K` / `Alt+Shift+K` | Night sky glow down / up (live look tuning; logged under tag `StarTune`). Glow never affects the stars, tune it freely |
 
 In **manual** headlight mode you can also use the car's own light button (keyboard or controller):
 a short press turns headlights on, a ~2-second hold turns them off.
@@ -92,11 +92,12 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Debug short cycle**: *new in 3.3.0, off by default.* Full-length dawn and dusk, but the flat
   midday and deep-night stretches are cut to about an hour each: a complete lighting cycle in
   minutes. `Config.TimeOfDay.DebugShortCycle`; wins over night-only if both are on.
-- **14 weather presets** (`presets.lua` / `weather.lua`): Clear_Skies, Partly_Cloudy, Cloudy,
-  Overcast, Overcast_Heavy *(new in 3.6.0: a denser, properly grey deck)*, Foggy, Rain_Light,
-  Rain, Rain_Thunderstorm, Snow_Light, Snow, Snow_Blizzard, Sand_Dust_Calm, Sand_Dust_Storm.
-  Cloudy-wet presets carry their own cool/grey sky grade (per-preset `skyGrade`), and thunder
-  has tiers: none in light rain, distant-only in rain, the full mix only in a thunderstorm.
+- **Weather presets** (`presets.lua` / `weather.lua`). The active rotation *(since 3.7.0)* is six
+  dry skies: Clear_Skies, Partly_Cloudy, Cloudy, Overcast, Overcast_Heavy *(new in 3.6.0: a
+  denser, properly grey deck)*, Foggy. Cloudy presets carry their own cool/grey sky grade
+  (per-preset `skyGrade`). Precipitation presets (rain/snow/dust tiers) are out of the rotation
+  for performance and particle-material reliability; their data is retained in `presets.lua` for
+  a future return, and old saves holding one fall back to the default preset.
   Rain/dry enforcement here is **stable, do not modify**.
 - **Random weather scheduler** (`scheduler.lua`): weighted pool with time-of-day multipliers and an
   `AllowPrecipitation` switch. A manual change re-arms the timer so it never overrides your pick.
@@ -108,37 +109,39 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Seasons**: *new in 3.4.0.* The in-game calendar advances every in-game midnight (the game
   saves it), so sunrise/sunset drift through the year like real Tokyo. Pin a fixed date with
   `Config.RealSun.PinMonth` / `PinDay` if you prefer consistency.
-- **Tunnels and overpasses**: *reworked in 3.5.0* (`tunnels.lua`). Rain/snow vanish under
-  covered road (bores, covered sections, overpass decks) and return instantly past the
-  exit, under a roof the rain is only hidden, still simulating, so there is no dry gap
-  when you leave. Fog is removed under roofs too (global fog is blind to ceilings; foggy
-  weather used to read as a white wall inside bores). Detection reads the game's own road
-  data (each road point carries a "roofed" attribute, so boundaries are exact and every
-  real bore is covered) plus a roof trace for lone overpasses the road data does not mark.
-  Also fixes the covered-section lighting: the course's covered-road volumes ship with a
-  skylight-leak override that floods interiors with flat sky ambient at the volume edge;
-  the mod clears it so tunnel light stays true to the scene (see Exposure below).
-  Knobs in `Config.Tunnels` (`TunnelRainKill`, `OverpassRainKill`, `CoveredFogMult`,
-  `KillVolumeSkylightLeak`).
+- **Tunnels and overpasses**: *reworked in 3.5.0* (`tunnels.lua`). Fog is removed under roofs
+  (global fog is blind to ceilings; foggy weather used to read as a white wall inside bores),
+  detection reading the game's own road data (each road point carries a "roofed" attribute, so
+  boundaries are exact and every real bore is covered). Also fixes the covered-section lighting:
+  the course's covered-road volumes ship with a skylight-leak override that floods interiors with
+  flat sky ambient at the volume edge; the mod clears it so tunnel light stays true to the scene
+  (see Exposure below). The under-roof rain suppression (hide, keep simulating, instant return
+  past the portal) is idle while no wet preset is in the rotation. Knobs in `Config.Tunnels`
+  (`TunnelRainKill`, `OverpassRainKill`, `CoveredFogMult`, `KillVolumeSkylightLeak`).
 - **Parking Area weather**: *new in 3.4.0.* The PA continues your course weather and time of day
   with the clock running, instead of the canned always-night look. `Config.PA.Mode`:
   `"continue"` (default) / `"freeze"` / `"stock"`.
-- **Weather sounds** (`audio.lua`): *working since 3.2.0.* Rain and wind loops that follow the live
-  weather intensity, plus distant/close thunder cracks on a randomized timer during thunderstorms.
-  Played directly from the UDS sound assets (the weather system's own sound path is inert in TXR).
-  Volumes and per-sound toggles in `Config.Audio`.
 - **Persistence** (`persistence.lua`): saves and restores the exact sky/weather snapshot, including
   across the parking area (PA). **Stable, do not modify.**
+  (The weather-sounds module from 3.2.0 was removed in 3.7.0 along with the precipitation
+  rotation; without rain and thunder it had nothing to play.)
 
 ### Sky and atmosphere
-- **Stars** (`stars.lua`): UDS real-stars night sky (safe bool + `Static Properties - Stars` on the
-  game thread, settle-gated).
+- **Stars** (`stars.lua`): *fixed for real in 3.7.0.* The real-star night sky, Milky Way band
+  included, rotating with time like the actual sky (`Config.Stars.SimulateRealStars`), fading
+  naturally at twilight and under cloud cover. Star brightness rides `Config.Stars.Intensity`
+  and, inversely, the city-glow light pollution level: the sky material dims stars as light
+  pollution rises (realistic), and pollution above 1.0 inverts the math entirely, which is what
+  made stars render as black dots in 3.0.15 through 3.6.0. Keep
+  `Config.Atmosphere.LightPollutionMax` at or below 1.0.
 - **Moon** (`moon.lua`): realistic phases, optional phase-over-time, and a `Scale` knob.
 - **Atmosphere** (`atmosphere.lua`): god rays (the sun's screen-space light-shaft bloom, brightened
   and warm-tinted, driving the real v1.5 controls since 3.3.0), soft cloud shadows, **Tokyo city
   glow** (light pollution lighting the cloud bases + a night sky glow) ramped in at night, and an
   optional second cloud layer (high cirrus; works since 3.3.0 but ships off, significant GPU cost).
-  (Auroras are off: TXR's content can't render them, see section 6.)
+  Night sky glow is independent of the stars and freely tunable (`Alt+K` live); light pollution
+  must stay at or below 1.0 (see Stars above). (Auroras are off: TXR's content can't render them,
+  see section 6.)
 - **Cinematic sky** (`cinematic_sky.lua`): *new in 3.3.0, on by default.* A daytime look pass:
   denser, darker cloud cores, stronger silver-lining glow, crisper cloud detail, visible high cirrus
   that lights up near the sun, richer sky color, luminous overcast, stronger sunset/sunrise colors,
@@ -151,9 +154,9 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Rainbow** (`rainbow.lua`): *new in 3.0.20.* UDW's rainbow, drawn on a world mesh (not a screen
   post-process), so it renders in TXR. UDW decides when it shows from the weather state: rain or fog
   feeding it, the camera in direct sun (not under overcast), and the sun low enough. On by default.
-- **Night-sky nebula / Space Layer** (`space_layer.lua`): *new in 3.0.20.* A faint nebula band
-  rendered into the sky like the stars/moon, fading in at night. Stylistic, on at a modest
-  intensity, easy to disable.
+- **Space Layer** (`space_layer.lua`): *off since 3.6.x.* The separate decal-rendered nebula
+  layer; superseded by the real-star map's own Milky Way band (see Stars), which renders more
+  reliably in TXR. Machinery kept behind `Config.SpaceLayer.Enabled`.
 
 ### Lighting and exposure
 - **Exposure and look** (`light_cycle.lua`): *settled in 3.5.0, shaped in 3.5.1.* The
@@ -165,16 +168,16 @@ a short press turns headlights on, a ~2-second hold turns them off.
   anchors to 0 for the plain stock picture. Dusk and dawn land wherever the sun
   actually is, any date, any season. On top sits a **post-process look layer**
   (`Config.LightCycle.PostProcess`): per-course, log-verified overrides for bloom,
-  vignette, reflections quality, interior global-illumination quality, shadow contrast,
+  vignette, interior global-illumination quality, shadow contrast, near-black lift,
   saturation and highlight rolloff, and it accepts any engine post-process field if you
   want to go further.
   Requires the 3.4+ Engine.ini (re-run the installer). Live **skylight tuning
   keybinds** still apply (`Alt+Z/X/C`, confirm with `Alt+V`, see Keybinds).
 - **Headlights** (`headlights.lua`): Auto mode follows the sun's real elevation (with hysteresis) so
   the lamps come on at dusk and go off after sunrise in any season, and *since 3.6.0* also inside
-  real tunnel bores and whenever a wet preset is active (lone overpasses deliberately do not flash
-  them); manual mode (`Alt+Q`, the garage, and the light-button gesture); adjustable brightness;
-  animated pop-ups via the game's native raise/lower.
+  real tunnel bores (lone overpasses deliberately do not flash them; the rain trigger exists but is
+  inert without wet presets); manual mode (`Alt+Q`, the garage, and the light-button gesture);
+  adjustable brightness; animated pop-ups via the game's native raise/lower.
 - **Display profiles (HDR/SDR)**: *new in 3.6.0.* The game applies a hidden shadow-lifting grade
   only on HDR output, so a look tuned on HDR crushes on SDR screens. The mod detects the display
   per session and on SDR backs the look off toward stock with a softer bias curve
@@ -183,11 +186,12 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Shadows** (`shadows.lua`): adaptive FOV-to-distance table so shadows survive photo-mode zoom.
 
 ### Driving
-- **Dynamic wet grip** (`wet_grip.lua`): *new in 3.1.0.* Tire grip drops as the road gets wet and
-  recovers as it dries, scaling with the live rain intensity (wets up fast, dries off slowly). It is
-  driven into the global tire model, so it applies to every car including the AI rivals and works in
-  parking-area battles. Cornering grip is hit a little harder than longitudinal. Tunable floors and
-  wet/dry timing in `Config.WetGrip`. On by default. Grip approach credited to Chrystales.
+- **Dynamic wet grip** (`wet_grip.lua`): *new in 3.1.0, ships disabled since 3.7.0* (no rain in the
+  rotation). Tire grip drops as the road gets wet and recovers as it dries, scaling with the live
+  rain intensity (wets up fast, dries off slowly). Driven into the global tire model, so it applies
+  to every car including the AI rivals and works in parking-area battles. Re-enable together with a
+  precipitation preset via `Config.WetGrip.Enabled` + `Config.ModuleToggles.WetGrip`. Grip approach
+  credited to Chrystales.
 - **Wider alignment sliders** (`tuning.lua`): *new in 3.2.0.* The garage alignment sliders (camber,
   toe, ride height, wheel offset, tire width) run to `RangeMultiplier` x their stock range (default
   3x), the displayed car previews values beyond stock live, and out-of-range values are re-applied
@@ -201,12 +205,15 @@ a short press turns headlights on, a ~2-second hold turns them off.
   pan, and a much wider zoom range at both ends (closer macro, wider angle). Free-camera movement is
   faster, rotation scales with the zoom so tight framing isn't twitchy, and the photo-mode vignette
   starts off. On by default; `Config.PhotoMode`.
-- **Photo mode sessions** (*new in 3.6.0*): time of day freezes for the whole session (sun, shadows
-  and clouds hold still, long exposures included) and exposure switches to manual metering so the
-  aperture option genuinely drives brightness like a real camera. The session's base level follows
-  the sun's position on the field-tuned 3.4.0 curve (`Config.PhotoMode.ManualCurve`); everything
-  restores the moment you close photo mode (`Config.PhotoMode.FreezeTime` / `ManualExposure`).
-- **Hide HUD vignette** (`vignette.lua`): *new in 3.0.20, OFF by default.* Removes the darkened
+- **Photo mode sessions** (*new in 3.6.0, sharpened in 3.7.0*): time of day freezes for the whole
+  session (sun, shadows and clouds hold still, long exposures included) and exposure switches to
+  manual metering so the aperture option genuinely drives brightness like a real camera. The
+  session's base level follows the sun's position on the field-tuned 3.4.0 curve
+  (`Config.PhotoMode.ManualCurve`); sessions opened inside covered road use a fixed indoor level
+  instead of the sun (`Config.PhotoMode.CoveredLens`), so day shots in bores aren't black. Session
+  detection is instant, and everything restores the moment you close photo mode
+  (`Config.PhotoMode.FreezeTime` / `ManualExposure`).
+- **Hide HUD vignette** (`vignette.lua`): *new in 3.0.20, ON by default.* Removes the darkened
   corner vignette the game draws during normal play (`WBP_Com_Vignette_Frame` on the in-game HUD).
   It's a HUD overlay, not a render setting, so Engine.ini can't touch it, this can. Pure HUD-widget
   toggle, no game files touched.
@@ -226,10 +233,15 @@ place). General highlights:
   grep the log for `ExposureTune` to see the sun elevation to nudge. Every feedback keypress is
   also appended to `Logs/tuning_feedback.log`, a small, session-marked file that is perfect to
   attach when reporting exposure that looks wrong (no need to send full session logs).
-- `Config.Tunnels.TunnelRainKill` / `TunnelAutoByBias` / `OverpassRainKill`, covered-road rain
-  handling: whether rain cuts inside covered road and under overpass decks, and whether the
-  course's own covered-road data picks the volumes (set `TunnelAutoByBias = false` to fall back
-  to the curated `TunnelVolumes` list only).
+- `Config.Tunnels.TunnelRainKill` / `OverpassRainKill`, covered-road rain handling (idle while no
+  wet preset is in the rotation): whether rain cuts inside covered road (the game's own road data
+  marks roofed stretches exactly) and under lone overpass decks (a roof trace, with
+  `OverpassTraceLength` setting the headroom).
+- `Config.Atmosphere.LightPollutionMax`, the city-glow light-pollution peak. **Keep at or below
+  1.0**: the sky material dims stars as pollution rises, and above 1.0 the star math inverts and
+  stars render as dark dots. `Config.Atmosphere.NightSkyGlowMax` is the star-safe glow knob.
+- `Config.Stars`: `SimulateRealStars` (the rotating real-star map with the Milky Way; false = a
+  static tiling star texture), `Intensity`, `Tiling`.
 - `Config.PA.Mode`, parking-area weather: `"continue"` (default), `"freeze"`, `"stock"`.
 - `Config.RealSun.PinMonth` / `PinDay`, pin the calendar to a fixed date (default: seasons drift).
 - `Config.Headlights.Mode`: `"auto"` (exposure-driven, untouchable at runtime), `"force_on"`, or
@@ -251,7 +263,6 @@ Feature blocks of note:
 - `Config.Rainbow`: `MaxStrength` / mask caps (nil = UDW defaults).
 - `Config.SpaceLayer`: `NebulaIntensity`, colors, brightness, `SetDBuffer`.
 - `Config.Vignette`: `Enabled` (default false), `Hide`.
-- `Config.Audio`, per-sound enables + `RainVolume` / `WindVolume` / `ThunderVolume`.
 - `Config.Tuning`: `RangeMultiplier` (slider widening factor), `ReapplyOnLoad`, `SkipLockedRows`.
 
 ---
@@ -280,8 +291,8 @@ sky/atmosphere/stars/moon, and mesh-drawn effects), but does **not** composite e
   aurora as active, but the shader has nothing to draw. Would need cooked content (pak) to revive;
   the module machinery is kept behind `Config.Atmosphere.EnableAurora = false`.
 - **UDW's own weather sounds**, the native sound path (enable + volumes + its apply functions) runs
-  but never plays in TXR. Weather audio works via directly spawned 2D sounds instead (see
-  `audio.lua`).
+  but never plays in TXR. (Versions 3.2.0-3.6.0 played weather audio via directly spawned 2D
+  sounds; that module was removed with the precipitation rotation in 3.7.0.)
 
 **Rainbow is NOT in this list** (3.0.20): it has a `Rainbow MID` but no weighted blendable, it's
 drawn on `Rainbow Mesh` with `Rainbow Material 2D` / `Rainbow Material Volumetric`, i.e. scene-
@@ -297,8 +308,13 @@ rendered, so it works.
 - **Off-thread footgun.** TXR calls the tick inside its `LoopAsync` callback with no
   `ExecuteInGameThread`, so module ticks run on UE4SS's **async thread**. Primitive reads/writes on
   UDS/UDW are tolerated, but: (1) `r.*` render cvar console commands **must** be marshalled to the
-  game thread (`Utils.ExecConsoleCommands` does this), and (2) object-typed writes / asset loads
-  during `BeginPlay` can corrupt reflection and hard-crash.
+  game thread (`Utils.ExecConsoleCommands` does this), (2) object-typed writes / asset loads
+  during `BeginPlay` can corrupt reflection and hard-crash, (3) object searches
+  (`FindFirstOf`/`FindAllOf`) and UFunction calls from the async thread can access-violate while
+  the game frees objects (menu/map streaming): probing must be gated, settled once its answer is
+  known, and event-driven where a hook already has the actor in hand (see `actors.lua`), and
+  (4) a UFunction's `FName` parameter must be passed as an `FName(...)` userdata, never a bare
+  Lua string (a bare string is a deterministic crash inside UE4SS's binding).
 - **Proven safe pattern for new native visuals** (stars / moon / wind debris / light rays / rainbow /
   space layer): set the primitive bools/scalars, then call the feature's own
   `Static Properties - <feature>` function **on the game thread**, **deferred** past BeginPlay by a
@@ -334,6 +350,13 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 
 See `CHANGELOG.md` for the full list. Most recent:
 
+- **3.7.0**: night stars fixed for real (bright, rotating real-star sky with the
+  Milky Way; the city-glow light pollution had been driving the sky's star math
+  out of range since 3.0.15); course-map/menu crash fixed (background polling
+  now settles instead of probing objects the game is freeing); photo mode
+  meters correctly in covered road and sessions engage instantly;
+  precipitation presets, weather sounds and wet grip removed from the rotation
+  (performance; data and modules retained for a future return).
 - **3.6.0**: crash fix for PA/world transitions; photo mode freezes time and the
   aperture works (manual metering on the 3.4.0 sun curve); Heavy Overcast preset +
   grey/cool grades for cloudy-wet weather; tiered thunder; auto headlights in

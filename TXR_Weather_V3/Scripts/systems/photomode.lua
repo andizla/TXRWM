@@ -335,11 +335,17 @@ end
 -- onApertureSet reads _sessionOpen from the hook callback)
 local _sessionOpen = false
 local _openSigWarned = false
+local _idleGtLast = 0.0   -- closed-session pass throttle (see reassert)
+-- IsOpenedPhotoMode fallback verdict, refreshed by the GT closure (it is a
+-- UFUNCTION and may not be called from the async thread; 2026-07-21 rework)
+local _fbWanted = false
+local _fbIsOpen = false
+local _fbAt = 0.0
 
 -- Photo-session side effects, fired on the open/close transitions of the
--- detect loop: freeze TOD (time_of_day, Animate Time of Day bool) and arm
--- the aperture EV rig (light_cycle; histogram AE stays live, the hooked
--- f-stop feeds the emulated aperture exposure). Both restore on close.
+-- detect loop: freeze TOD (time_of_day, Animate Time of Day bool) and
+-- switch to manual metering on the 3.4.0 lens curve (light_cycle; the
+-- aperture drives exposure physically). Both restore on close.
 -- A teardown counts as close: the writes land in a dying world and fail
 -- silently, and the next course load re-applies normal state on its own.
 local function setSessionFrozen(on)
@@ -355,13 +361,6 @@ local function setSessionFrozen(on)
             if lc and lc.SetPhotoExposureFreeze then lc.SetPhotoExposureFreeze(on) end
         end)
     end
-    -- Covered skylight damp, photomode-scoped: only if the session opens
-    -- with the car under a ceiling (light_cycle checks the cover and
-    -- no-ops when Config.PhotoMode.CoveredSkylightMult is unset)
-    pcall(function()
-        local lc = require("systems.light_cycle")
-        if lc and lc.SetPhotoCoveredSkyDamp then lc.SetPhotoCoveredSkyDamp(on) end
-    end)
 end
 
 -- (Aperture exposure emulation REMOVED 2026-07-15: every read of the
@@ -384,6 +383,20 @@ local function reassert()
         _loggedActive = false
         return
     end
+
+    -- IDLE THROTTLE, moved ahead of ALL object work (2026-07-21): while no
+    -- session is open, the find()+FindAllOf detection sweeps themselves now
+    -- run at the ~1s cadence, not just the GT dispatch. They used to sweep
+    -- the object array 5x/sec from the async thread in every world; the
+    -- map-open crash dumps are exactly this class of off-thread probe hitting
+    -- freed objects. Worst-case open-detect latency stays ~1.2s (the accepted
+    -- 2026-07-18 number); while a session is open every pass still runs.
+    if not _sessionOpen then
+        local nowIdle = os.clock()
+        if (nowIdle - _idleGtLast) < 1.0 then return end
+        _idleGtLast = nowIdle
+    end
+
     local comp = find("BPC_PhotoMode_C")
     local cam  = find("BP_FreeCamera_C")
     if not comp and not cam then
@@ -400,42 +413,75 @@ local function reassert()
         Log.Info(MODULE, "Photo mode detected: applying unlocks")
     end
 
-    -- Session freeze keys on the component's REAL open state, not object
-    -- existence: BPC_PhotoMode_C lives in every garage/course world from
-    -- load with photomode closed (proven by the 01:24 log, 2026-07-14,
-    -- "always applied, super bright daytime"). Primary signal: the
-    -- bIsUsingPhotoMode member. Fallback: the IsOpenedPhotoMode BP call,
-    -- whose bool arrives as an out-param table fill; it is a FUNCTION in
-    -- this cook, not a property (reading it property-style compares a
-    -- function ref and never fires; that was the 08:33 silent-freeze run).
+    -- Session freeze keys on the REAL open state, not object existence:
+    -- BPC_PhotoMode_C lives in every garage/course world from load with
+    -- photomode closed (the 01:24 lesson, 2026-07-14). THREE SIGNALS, ORed
+    -- (2026-07-18: the single member read lagged a real open by 22s in the
+    -- field while the photomode slider bar was already on screen; find()
+    -- also returns the FIRST valid component, not necessarily the live
+    -- one):
+    -- 1. bIsUsingPhotoMode on ANY live BPC_PhotoMode_C instance,
+    -- 2. the photomode slider bar existing (WBP_PhotoMode_* widgets only
+    --    exist while the photomode UI is up; the vignette machinery below
+    --    already relies on exactly that),
+    -- 3. the IsOpenedPhotoMode out-param call (fallback; it is a FUNCTION
+    --    in this cook, not a property, the 08:33 lesson).
     -- The unlock writes below stay existence-driven as ever.
     local isOpen = false
     local gotSignal = false
+    local openSrc = nil
     pcall(function()
-        local v = comp and comp.bIsUsingPhotoMode
-        if type(v) == "boolean" then
-            isOpen = v
-            gotSignal = true
+        local all = FindAllOf("BPC_PhotoMode_C")
+        if type(all) == "table" then
+            for _, c in ipairs(all) do
+                if valid(c) then
+                    local v = nil
+                    pcall(function() v = c.bIsUsingPhotoMode end)
+                    if type(v) == "boolean" then
+                        gotSignal = true
+                        if v then
+                            isOpen = true
+                            openSrc = "member"
+                            break
+                        end
+                    end
+                end
+            end
         end
     end)
+    -- (NO UI-widget signal. It failed three ways across 2026-07-18/20:
+    -- raw existence = false opens (template widgets in every world);
+    -- IsVisible() = a UFunction sweep and a crash suspect; the
+    -- Visibility PROPERTY = false opens again (the real root widget
+    -- reads "visible" outside photomode, hidden by other means; the
+    -- 23:22 log had signal=ui in the MENUS 17s after boot, metering
+    -- flapping = "exposure permanently off everywhere"). Do NOT re-add
+    -- a widget-based openness signal on this cook.)
     if not gotSignal and comp then
-        pcall(function()
-            local out = {}
-            comp:IsOpenedPhotoMode(out)
-            if type(out.IsOpenedPhoto) == "boolean" then
-                isOpen = out.IsOpenedPhoto
-                gotSignal = true
-            end
-        end)
+        -- IsOpenedPhotoMode is a UFUNCTION: calling it from this async thread
+        -- was a standing rule violation (2026-07-21 rework). The GT closure
+        -- below refreshes the verdict; we consume the cached one (at most a
+        -- pass stale, and this path only matters on cooks where the member
+        -- scan reads nothing).
+        _fbWanted = true
+        if _fbAt > 0 and (os.clock() - _fbAt) < 3.0 then
+            isOpen = _fbIsOpen
+            gotSignal = true
+            openSrc = "fallback"
+        end
     end
     if not gotSignal and not _openSigWarned then
         _openSigWarned = true
         Log.Warn(MODULE,
-            "Photo open signal unreadable (bIsUsingPhotoMode nil, IsOpenedPhotoMode call failed)")
+            "Photo open signal unreadable (bIsUsingPhotoMode nil, no UI, IsOpenedPhotoMode failed)")
     end
-    if isOpen ~= _sessionOpen then
+    local openEdge = (isOpen ~= _sessionOpen)
+    if openEdge then
         _sessionOpen = isOpen
         setSessionFrozen(isOpen)
+        if isOpen then
+            Log.Info(MODULE, "Photo session opened", {signal = openSrc or "?"})
+        end
     end
 
     -- Throttled diagnostic for the long-exposure dropout. Decided on the async side so
@@ -446,11 +492,28 @@ local function reassert()
         if (now - _dbgLastLog) >= 2.0 then _dbgLastLog = now; doDbg = true end
     end
 
+    -- (The idle throttle now sits at the TOP of this function and gates the
+    -- whole pass, detection sweeps included, so every pass reaching here may
+    -- dispatch: ~1/s while closed, every pass while a session is open.)
     if type(ExecuteInGameThread) == "function" then
         ExecuteInGameThread(function()
             -- Re-check at RUN time: comp/cam were found up to a pass ago on the
             -- async thread and a teardown may have started since
             if teardownActive() then return end
+            -- Refresh the IsOpenedPhotoMode fallback verdict here on the game
+            -- thread (UFunction; the async side only consumes the cache)
+            if _fbWanted then
+                _fbWanted = false
+                pcall(function()
+                    if not valid(comp) then return end
+                    local out = {}
+                    comp:IsOpenedPhotoMode(out)
+                    if type(out.IsOpenedPhoto) == "boolean" then
+                        _fbIsOpen = out.IsOpenedPhoto
+                        _fbAt = os.clock()
+                    end
+                end)
+            end
             if doDbg then
                 -- Read the live limits BEFORE we overwrite them: if these come back
                 -- "re-enabled" every log while pass= keeps climbing, the game is

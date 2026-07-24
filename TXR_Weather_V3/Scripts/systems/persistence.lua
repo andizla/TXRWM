@@ -214,12 +214,31 @@ function Persistence.Restore()
         end
     end
     
-    -- Restore preset
+    -- Restore preset. A persisted preset that is no longer in the active
+    -- cycle (e.g. a rain variant saved before the no-rain build) falls
+    -- back to the default: preset DATA may still exist, so Weather.Apply
+    -- would happily re-summon a disabled weather.
     if data.preset then
+        local applyPreset = data.preset
+        local cycle = Config.Weather and Config.Weather.PresetCycleOrder
+        if type(cycle) == "table" and #cycle > 0 then
+            local inCycle = false
+            for _, name in ipairs(cycle) do
+                if name == applyPreset then inCycle = true break end
+            end
+            if not inCycle then
+                local fallback = (Config.Weather and Config.Weather.DefaultPreset)
+                    or "Clear_Skies"
+                Log.Info(MODULE, "Persisted preset is disabled: falling back", {
+                    persisted = applyPreset, fallback = fallback,
+                })
+                applyPreset = fallback
+            end
+        end
         local Weather = nil
         pcall(function() Weather = require("systems.weather") end)
         if Weather and Weather.Apply then
-            Weather.Apply(data.preset, 1.0)
+            Weather.Apply(applyPreset, 1.0)
             restored = true
         end
     end

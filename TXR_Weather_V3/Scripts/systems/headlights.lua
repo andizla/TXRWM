@@ -279,10 +279,6 @@ local function setVehicleLights(obj, on)
     if not isValidActor(obj) then return false end
 
     local want = on
-    if Config.Headlights and Config.Headlights.Invert then
-        want = not on
-    end
-
     local success = false
 
     -- Drive the player's lights via SetLightOn, the game's input-path TOGGLE whose

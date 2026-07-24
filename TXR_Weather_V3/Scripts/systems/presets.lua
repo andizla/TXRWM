@@ -216,7 +216,11 @@ local PRESET_DATA = {
     },
 }
 
--- Ordered list for cycling (subset most relevant for TXR)
+-- Ordered list for cycling (subset most relevant for TXR).
+-- NO-RAIN BUILD (2026-07-17): the rain variants are DISABLED, dropped
+-- from this list, Config.Weather.PresetCycleOrder and the scheduler
+-- pool IN SYNC (the Heavy Overcast lesson: these lists must move
+-- together). Preset DATA above is retained for a future re-enable.
 local DEFAULT_CYCLE_ORDER = {
     "Clear_Skies",
     "Partly_Cloudy",
@@ -224,9 +228,6 @@ local DEFAULT_CYCLE_ORDER = {
     "Overcast",
     "Overcast_Heavy",
     "Foggy",
-    "Rain_Light",
-    "Rain",
-    "Rain_Thunderstorm",
 }
 
 -- ============== INTERNAL FUNCTIONS ==============

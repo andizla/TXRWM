@@ -31,12 +31,19 @@ local AURORA_NIGHT_START = 1950  -- 19:30, aurora becomes visible
 local AURORA_NIGHT_END = 550     -- 05:30, aurora fades out
 local AURORA_MAX_INTENSITY = 1.5
 
--- City glow (Tokyo night ambiance): light pollution + night sky glow, ramped in
--- at night on the same window as the aurora. Light pollution lights the cloud
--- bases from below; night sky glow adds a minimum ambient to the night sky.
+-- City glow (Tokyo night ambiance): light pollution + night sky glow.
+-- Ramped on the SUN'S ELEVATION (season-proof: the drifting in-game date
+-- moves the sun events, a clock window aims wrong within days): glow rises
+-- from CityGlowStartElev to full at CityGlowFullElev and holds a plateau
+-- all night (real city glow does not dim toward midnight). The TOD night
+-- window below is the fallback when no elevation is available (LightCycle
+-- off / first seconds after load). Light pollution lights the cloud bases
+-- from below; night sky glow adds a minimum ambient to the night sky.
 local ENABLE_CITY_GLOW = true
 local LIGHT_POLLUTION_MAX = 1.0   -- peak light-pollution intensity at deep night
 local NIGHT_SKY_GLOW_MAX = 0.5    -- peak ambient night-sky glow
+local CITY_GLOW_START_ELEV = 0.0  -- glow begins as the sun crosses the horizon
+local CITY_GLOW_FULL_ELEV = -8.0  -- full glow by the end of twilight
 local LIGHT_POLLUTION_COLOR = {R = 1.00, G = 0.55, B = 0.25, A = 1.0}  -- warm sodium amber
 local NIGHT_SKY_GLOW_COLOR  = {R = 0.45, G = 0.50, B = 0.65, A = 1.0}  -- faint cool
 
@@ -320,6 +327,37 @@ local function calculateAuroraIntensity(tod)
     return nightFactor01(tod) * AURORA_MAX_INTENSITY
 end
 
+-- Lazy LightCycle ref for the sun elevation (same pattern as transitions'
+-- slow windows; require here would be circular at load time)
+local LightCycleMod = nil
+local function getLightCycle()
+    if not LightCycleMod then
+        local ok, mod = pcall(require, "systems.light_cycle")
+        if ok then LightCycleMod = mod end
+    end
+    return LightCycleMod
+end
+
+--- City glow factor 0..1: sun elevation when available (0 above
+--- CITY_GLOW_START_ELEV, 1 below CITY_GLOW_FULL_ELEV, linear between =
+--- a plateau all night), TOD night window as the fallback.
+--- @param tod number
+--- @return number 0.0 to 1.0
+local function cityGlowFactor01(tod)
+    local lc = getLightCycle()
+    if lc and lc.IsActive and lc.IsActive() then
+        local elev = nil
+        pcall(function() elev = lc.GetSunElevation() end)
+        if type(elev) == "number" then
+            if elev >= CITY_GLOW_START_ELEV then return 0.0 end
+            if elev <= CITY_GLOW_FULL_ELEV then return 1.0 end
+            return (CITY_GLOW_START_ELEV - elev)
+                / (CITY_GLOW_START_ELEV - CITY_GLOW_FULL_ELEV)
+        end
+    end
+    return nightFactor01(tod)
+end
+
 --- Scale a numeric UDS property from its stock value (read -> multiply -> write).
 --- Setup runs once per course on a freshly spawned sky actor, so this never
 --- compounds. Skips silently if the property can't be read.
@@ -373,6 +411,12 @@ function Atmosphere.Init()
         end
         if Config.Atmosphere.NightSkyGlowMax ~= nil then
             NIGHT_SKY_GLOW_MAX = Config.Atmosphere.NightSkyGlowMax
+        end
+        if type(Config.Atmosphere.CityGlowStartElev) == "number" then
+            CITY_GLOW_START_ELEV = Config.Atmosphere.CityGlowStartElev
+        end
+        if type(Config.Atmosphere.CityGlowFullElev) == "number" then
+            CITY_GLOW_FULL_ELEV = Config.Atmosphere.CityGlowFullElev
         end
         if Config.Atmosphere.LightPollutionColor then
             LIGHT_POLLUTION_COLOR = Config.Atmosphere.LightPollutionColor
@@ -541,9 +585,10 @@ function Atmosphere.Tick()
     -- occlusion itself, so the old per-tick intensity drive (which wrote a
     -- nonexistent property anyway) is gone.)
 
-    -- City glow: light pollution + night sky glow, ramped in at night
+    -- City glow: light pollution + night sky glow, ramped on sun elevation
+    -- (TOD-window fallback inside cityGlowFactor01)
     if ENABLE_CITY_GLOW then
-        local nightF = nightFactor01(currentTOD)
+        local nightF = cityGlowFactor01(currentTOD)
         currentCityGlow = smoothStep(currentCityGlow, nightF, SMOOTHING_SPEED)
 
         local lightPollution = currentCityGlow * LIGHT_POLLUTION_MAX
@@ -558,6 +603,33 @@ function Atmosphere.Tick()
             lastNightSkyGlowWritten = nightGlow
         end
     end
+end
+
+--- Live city glow factor 0..1 (smoothed). stars.lua scales the star
+--- intensity on it: the glow lifts the night-sky background and undimmed
+--- stars read as dark holes against it.
+--- @return number
+function Atmosphere.GetCityGlowFactor()
+    return currentCityGlow
+end
+
+--- Live night-sky-glow nudge (Alt+K family). Field model 2026-07-18: the
+--- star layer's rendered luminance CLAMPS below a glow-lifted sky (no
+--- star lever can out-bright it; color multipliers only promote fainter
+--- map stars = more equally-dark dots), so star visibility is won by
+--- lowering THIS background. The Tick change gate pushes the new level
+--- on the next pass automatically.
+--- @param dir number +1 = more glow (fewer stars), -1 = less glow (stars cut through)
+function Atmosphere.NudgeNightGlow(dir)
+    local new = NIGHT_SKY_GLOW_MAX + dir * 0.1
+    if new < 0.0 then new = 0.0 end
+    if new > 3.0 then new = 3.0 end
+    if new == NIGHT_SKY_GLOW_MAX then return end
+    NIGHT_SKY_GLOW_MAX = new
+    Log.Info("StarTune", "NUDGE night sky glow " .. (dir > 0 and "+" or "-"), {
+        max = string.format("%.2f", new),
+        applied_now = string.format("%.2f", currentCityGlow * new),
+    })
 end
 
 --- Get current aurora intensity

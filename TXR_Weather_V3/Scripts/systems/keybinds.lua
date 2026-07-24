@@ -498,6 +498,22 @@ local function onSkylightReset()
     exposure.ResetSkylightTune()
 end
 
+--- Star visibility nudge (Alt+K family). The stars' rendered luminance
+--- clamps below a lifted night sky (2026-07-18 field model), so star
+--- visibility is dialed by moving the NIGHT SKY GLOW background:
+--- Alt+K = glow DOWN (stars cut through more), Alt+Shift+K = glow UP.
+local function nudgeStarIntensity(dir)
+    local ok, Atmo = pcall(require, "systems.atmosphere")
+    if not ok or not Atmo or not Atmo.NudgeNightGlow then
+        Log.Warn(MODULE, "Atmosphere module not available")
+        return
+    end
+    Atmo.NudgeNightGlow(dir)
+end
+
+local function onStarIntensityUp()   nudgeStarIntensity(-1) end  -- glow down = stars up
+local function onStarIntensityDown() nudgeStarIntensity(1)  end  -- glow up = stars down
+
 -- ============== PUBLIC API ==============
 
 --- Initialize keybinds module
@@ -652,6 +668,12 @@ function Keybinds.Init(config)
     end
     if config.SkylightReset then
         registerKeybind("SkylightReset", config.SkylightReset, onSkylightReset)
+    end
+    if config.StarIntensityUp then
+        registerKeybind("StarIntensityUp", config.StarIntensityUp, onStarIntensityUp)
+    end
+    if config.StarIntensityDown then
+        registerKeybind("StarIntensityDown", config.StarIntensityDown, onStarIntensityDown)
     end
 
     isInitialized = true

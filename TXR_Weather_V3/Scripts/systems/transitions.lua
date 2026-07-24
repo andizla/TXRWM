@@ -30,13 +30,22 @@ local NORMAL_SPEED = 53.333          -- overwritten from config in Init
 local SLOW_FACTOR  = 0.20            -- fraction of normal during the slow window
 local SLOW_SPEED   = NORMAL_SPEED * SLOW_FACTOR
 
--- Tokyo Tint timing (in TOD units, from V1.34)
+-- Tokyo Tint window: keyed to the SUN'S ELEVATION like the slow window
+-- (the old fixed clock shape drifted with the in-game date and peaked 18:00
+-- while the effective August sunset is ~19:30). Strength peaks at the sun
+-- event (elevation 0) and fades linearly to zero toward both anchors; the
+-- same pair serves dawn (rising) and dusk (sinking) symmetrically.
+local TINT_DAY_ELEV = 30.0    -- tint gone by this elevation on the day side
+local TINT_NIGHT_ELEV = -12.0 -- tint gone by this elevation on the night side
+
+-- Clock FALLBACK shape (V1.34), used only when no elevation is available
+-- (LightCycle off / first seconds after a load)
 local TINT_LEAD_TOD = 240        -- Start tint this much BEFORE slow window
 local TINT_FADE_OUT_EXTRA = 140  -- Continue tint this much AFTER slow window
 
--- Peak tint times (at actual sunrise/sunset)
-local DAWN_PEAK_TOD = 680     -- 06:48 (actual sunrise)
-local DUSK_PEAK_TOD = 1800    -- 18:00 (actual sunset)
+-- Peak tint times for the fallback (at the V1.34-era sun events)
+local DAWN_PEAK_TOD = 680     -- 06:48
+local DUSK_PEAK_TOD = 1800    -- 18:00
 
 -- Tokyo Tint colors (RGBA)
 local TOKYO_TINT_COLORS = {
@@ -123,19 +132,40 @@ local function isInSlowTimeWindow(tod)
     return false, nil
 end
 
---- Check if TOD is in tint window (extends beyond slow window)
+--- Elevation-keyed tint strength: 1.0 at the sun event (elevation 0),
+--- fading linearly to 0 at TINT_DAY_ELEV (sun-up side) and TINT_NIGHT_ELEV
+--- (sun-down side). Symmetric, so dawn and dusk both work from one pair.
+--- @param elev number sun elevation in degrees
+--- @return number strength 0.0-1.0
+local function tintStrengthForElev(elev)
+    if elev >= 0 then
+        if elev >= TINT_DAY_ELEV then return 0.0 end
+        return 1.0 - (elev / TINT_DAY_ELEV)
+    end
+    if elev <= TINT_NIGHT_ELEV then return 0.0 end
+    return 1.0 - (elev / TINT_NIGHT_ELEV)
+end
+
+--- Check if TOD is in tint window (extends beyond slow window).
+--- Elevation-keyed when the sun is readable; TOD windows as fallback.
 --- @param tod number Time of day (0-2400)
 --- @return boolean inWindow
 --- @return string|nil windowType "dawn" or "dusk" or nil
 local function isInTintWindow(tod)
-    -- Dawn tint: starts TINT_LEAD_TOD before slow window, ends TINT_FADE_OUT_EXTRA after
+    local elev = getSunElevation()
+    if type(elev) == "number" then
+        if tintStrengthForElev(elev) > 0.0 then
+            -- dawn vs dusk picks the palette; morning = dawn
+            return true, (tod < 1200 and "dawn" or "dusk")
+        end
+        return false, nil
+    end
+    -- Clock fallback: starts TINT_LEAD_TOD before the slow window, ends
+    -- TINT_FADE_OUT_EXTRA after it
     local dawnTintStart = SLOW_DAWN_START - TINT_LEAD_TOD
     local dawnTintEnd = SLOW_DAWN_END + TINT_FADE_OUT_EXTRA
-    
-    -- Dusk tint: same pattern
     local duskTintStart = SLOW_DUSK_START - TINT_LEAD_TOD
     local duskTintEnd = SLOW_DUSK_END + TINT_FADE_OUT_EXTRA
-    
     if tod >= dawnTintStart and tod <= dawnTintEnd then
         return true, "dawn"
     elseif tod >= duskTintStart and tod <= duskTintEnd then
@@ -144,13 +174,18 @@ local function isInTintWindow(tod)
     return false, nil
 end
 
---- Calculate tint strength based on TOD position in extended tint window
+--- Calculate tint strength: sun elevation when readable (peaks AT the sun
+--- event, any season), else the V1.34 clock shape.
 --- @param tod number
 --- @param windowType string "dawn" or "dusk"
 --- @return number strength 0.0-1.0
 local function calculateTintStrength(tod, windowType)
+    local elev = getSunElevation()
+    if type(elev) == "number" then
+        return tintStrengthForElev(elev)
+    end
+
     local windowStart, windowEnd, peakTOD, tintStart, tintEnd
-    
     if windowType == "dawn" then
         windowStart = SLOW_DAWN_START
         windowEnd = SLOW_DAWN_END
@@ -166,7 +201,7 @@ local function calculateTintStrength(tod, windowType)
     else
         return 0.0
     end
-    
+
     -- Before peak: fade in
     if tod < peakTOD then
         local fadeRange = peakTOD - tintStart
@@ -382,6 +417,12 @@ function Transitions.Init()
         if Config.Transitions.SlowFactor then SLOW_FACTOR = Config.Transitions.SlowFactor end
         if Config.Transitions.SlowElevMax then SLOW_ELEV_MAX = Config.Transitions.SlowElevMax end
         if Config.Transitions.SlowElevMin then SLOW_ELEV_MIN = Config.Transitions.SlowElevMin end
+        if type(Config.Transitions.TintDayElev) == "number" then
+            TINT_DAY_ELEV = Config.Transitions.TintDayElev
+        end
+        if type(Config.Transitions.TintNightElev) == "number" then
+            TINT_NIGHT_ELEV = Config.Transitions.TintNightElev
+        end
         -- Legacy absolute override still honored if someone set it.
         if Config.Transitions.SlowSpeed then SLOW_FACTOR = Config.Transitions.SlowSpeed / NORMAL_SPEED end
         if Config.Transitions.Enabled == false then

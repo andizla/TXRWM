@@ -21,9 +21,14 @@ Config.Weather = {
     -- leaving time-of-day + visuals running. For "ToD only" setups.
     Enabled = true,
 
-    -- Presets: Clear_Skies, Partly_Cloudy, Cloudy, Overcast, Foggy,
-    -- Rain_Light, Rain, Rain_Thunderstorm, Snow_Light, Snow, Snow_Blizzard,
-    -- Sand_Dust_Calm, Sand_Dust_Storm
+    -- Active presets: Clear_Skies, Partly_Cloudy, Cloudy, Overcast,
+    -- Overcast_Heavy, Foggy.
+    -- NO-RAIN BUILD (2026-07-17, performance): the rain variants
+    -- (Rain_Light/Rain/Rain_Thunderstorm) are DISABLED (dropped from this
+    -- cycle, the scheduler pool and presets.lua's DEFAULT_CYCLE_ORDER, all
+    -- in sync). Snow/dust were never in the cycle. Preset DATA is retained
+    -- in presets.lua for a future re-enable; persistence falls back to the
+    -- default if an old save carries a disabled preset.
     DefaultPreset = "Clear_Skies",
     DefaultTransitionTime = 5.0,  -- seconds
     FastTransitionTime = 2.0,     -- seconds (keybind cycling)
@@ -33,7 +38,7 @@ Config.Weather = {
     -- over presets.lua's DEFAULT_CYCLE_ORDER; keep both in sync)
     PresetCycleOrder = {
         "Clear_Skies", "Partly_Cloudy", "Cloudy", "Overcast", "Overcast_Heavy",
-        "Foggy", "Rain_Light", "Rain", "Rain_Thunderstorm",
+        "Foggy",
     },
 }
 
@@ -62,9 +67,6 @@ Config.Scheduler = {
         Overcast          = 2.0,
         Overcast_Heavy    = 1.0,
         Foggy             = 1.0,
-        Rain_Light        = 2.0,
-        Rain              = 1.0,
-        Rain_Thunderstorm = 0.5,
     },
 
     -- Time-of-day weight MULTIPLIERS, applied on top of the base weight depending
@@ -127,7 +129,8 @@ Config.Wetness = {
 -- entry). The global-tire-table grip approach is credited to Chrystales. See
 -- systems/wet_grip.lua.
 Config.WetGrip = {
-    Enabled = true,    -- master switch for the dynamic wet grip effect
+    Enabled = false,   -- NO-RAIN BUILD: no rain = no wet grip (module also
+                       -- toggled off below; flip both to re-enable)
 
     -- Grip multipliers at FULL wetness (heaviest rain). 1.0 = unchanged, lower = less
     -- grip. Grip interpolates from 1.0 (bone dry) down to these floors. Lateral
@@ -163,6 +166,52 @@ Config.Stars = {
     -- object write was the old course-load crash). Apply is deferred past BeginPlay.
     Tiling = nil,    -- nil = keep UDS default
     Intensity = 3.0, -- nil = keep UDS default (1.5 -> 3.0 2026-07-06: "stars quite dim")
+
+    -- RESTORED true 2026-07-24: the real-star 360 map with real
+    -- movement and the Milky Way band. Safe again because the actual
+    -- black-stars root cause was LightPollutionMax > 1.0 (see
+    -- Atmosphere); with pollution in range, UDS's own star pushes are
+    -- CORRECT and the whole override war is retired.
+    SimulateRealStars = true,
+
+    -- Tiling-mode texture pan; irrelevant while SimulateRealStars=true.
+    TilingStarSpeed = 0.0,
+
+    -- OFF (2026-07-18 field model, built from three observations:
+    -- intensity up = DARKER specks; nebula off = specks remain; glow up =
+    -- brighter background): stars composite as opacity-weighted holes in
+    -- the glow layer. Intensity = hole opacity, Stars Color = the fill.
+    -- Scaling OPACITY with glow while the fill is dimmer than the sky
+    -- makes the black dots MORE solid, so this boost was amplifying the
+    -- problem. Re-raise only after ColorBoost wins the luminance race.
+    CityGlowBoost = 1.0,
+
+    -- Stars Color multiplier (stock color x this, captured fresh per
+    -- course so it never compounds). Field verdict 2026-07-18: NOT a
+    -- luminance lever; the rendered star clamps below a lifted sky, and
+    -- this multiplier only promotes fainter map stars past visibility =
+    -- a star DENSITY knob (more dots, same brightness). 1.0 = the stock
+    -- field. Raise deliberately for a denser sky once the glow crossover
+    -- is settled (Config.Atmosphere.NightSkyGlowMax).
+    ColorBoost = 1.0,
+
+    -- ROOT CAUSE FIX, PARKED (2026-07-18, from the Sky MID dump): UDS's
+    -- RETIRED 2026-07-24 (nil = the entire MID-override machinery off:
+    -- belt, stomp watch, burst, BP-input writes). The black dots were
+    -- never a material/MID problem: Atmosphere.LightPollutionMax 1.5
+    -- made the star formula's (1 - pollution) term negative. With
+    -- pollution <= 1.0 UDS pushes correct star colors itself, moving
+    -- stars included. Star brightness knobs are now the NATIVE ones:
+    -- Stars.Intensity above, and pollution's distance from 1.0.
+    -- (The machinery stays in stars.lua, config-keyed, for emergencies;
+    -- the FName("Stars Color") lesson lives in the footguns memory.)
+    MIDStarColor = nil,
+
+    -- Diagnostic: once per boot, dump the Sky Sphere MID's scalar +
+    -- vector parameters (grep "Sky MID"). BAKED OFF 2026-07-24: the star
+    -- saga is verified closed (moving bright stars via the pollution
+    -- fix); re-enable only for future MID forensics.
+    DumpSkyMIDParams = false,
 }
 
 -- ============== WIND DEBRIS ==============
@@ -217,6 +266,13 @@ Config.Transitions = {
     SlowDawnStart = 500, SlowDawnEnd = 700,    -- 05:00-07:00
     SlowDuskStart = 1730, SlowDuskEnd = 1930,  -- 17:30-19:30
 
+    -- Tokyo tint window, also SUN-KEYED: strength peaks at the sun event
+    -- (elevation 0 = the actual sunrise/sunset, any season) and fades
+    -- linearly to zero at these elevations. One pair serves dawn and dusk.
+    -- The old clock shape remains the no-elevation fallback.
+    TintDayElev = 30.0,     -- gone by this elevation on the day side
+    TintNightElev = -12.0,  -- gone by this elevation on the night side
+
     -- Time speed during dawn/dusk as a FRACTION of normal. Lower = slower, so the
     -- window lingers longer in real time. 0.40 = original feel (~5.7 min dusk).
     -- NOTE: slow-time applies at NORMAL speed only (fast-forward is exempt).
@@ -232,8 +288,9 @@ Config.Keybinds = {
     ResetWeather     = { Key = "R", Modifiers = {"Alt"} },
     RandomPreset     = { Key = "P", Modifiers = {"Alt"} },          -- scheduler: random preset now
     ForceClear       = { Key = "P", Modifiers = {"Alt", "Shift"} }, -- force Clear Skies
-    DebugForceWetness= { Key = "W", Modifiers = {"Alt"} },
-    DebugForceDry    = { Key = "W", Modifiers = {"Alt", "Shift"} },
+    -- NO-RAIN BUILD: the wetness debug keys are retired (module off).
+    -- DebugForceWetness= { Key = "W", Modifiers = {"Alt"} },
+    -- DebugForceDry    = { Key = "W", Modifiers = {"Alt", "Shift"} },
     ShadowDistanceUp = { Key = "L", Modifiers = {"Alt"} },
     ShadowDistanceDown = { Key = "L", Modifiers = {"Alt", "Shift"} },
     CycleHeadlights    = { Key = "Q", Modifiers = {"Alt"} },          -- manual headlights on/off (garage too); auto is config-only
@@ -243,17 +300,10 @@ Config.Keybinds = {
     -- again to restore). Unbound for release; uncomment to re-enable.
     -- ExposureDebugOverlay = { Key = "H", Modifiers = {"Alt"} },
 
-    -- Manual rain suppression: toggles the rain/snow particles off/on at the
-    -- component level (weather state untouched; it keeps "raining"). The
-    -- tunnel system drives the same mechanism automatically.
-    PrecipSuppressTest = { Key = "J", Modifiers = {"Alt"} },
-
-    -- Rain-spot datapoint: press at any spot where rain presence looks wrong
-    -- (missing on open road, falling under a roof, not restarting after a
-    -- bore). Logs position, the road-data tunnel bits, a fresh roof-trace
-    -- result with hit distance/name, and the kill state; lines land in
-    -- Logs/tuning_feedback.log too (grep for "RainSpot").
-    NoteRainSpot = { Key = "N", Modifiers = {"Alt"} },
+    -- NO-RAIN BUILD: the rain suppression test and rain-spot datapoint
+    -- keys are retired with the rain kill (handlers remain in code).
+    -- PrecipSuppressTest = { Key = "J", Modifiers = {"Alt"} },
+    -- NoteRainSpot = { Key = "N", Modifiers = {"Alt"} },
 
     -- Exposure tuning feedback: press when the picture looks wrong; logs time,
     -- weather, and the exposure values in effect (grep the log for "ExposureTune").
@@ -270,6 +320,14 @@ Config.Keybinds = {
     SkylightMultDown   = { Key = "C", Modifiers = {"Alt", "Shift"} },
     SkylightConfirm    = { Key = "V", Modifiers = {"Alt"} },          -- log the datapoint
     SkylightReset      = { Key = "V", Modifiers = {"Alt", "Shift"} }, -- drop overrides, back to slot curve
+
+    -- Star visibility nudge: the stars' rendered luminance CLAMPS below a
+    -- lifted night sky, so this dials the NIGHT SKY GLOW background.
+    -- Alt+K = glow DOWN 0.1 (stars cut through more), Alt+Shift+K = glow
+    -- UP. Lines land in tuning_feedback.log (grep "StarTune"); settle the
+    -- crossover, then bake it into Config.Atmosphere.NightSkyGlowMax.
+    StarIntensityUp   = { Key = "K", Modifiers = {"Alt"} },
+    StarIntensityDown = { Key = "K", Modifiers = {"Alt", "Shift"} },
 }
 
 -- ============== PA (PARKING AREA) ==============
@@ -281,6 +339,12 @@ Config.Keybinds = {
 --   "stock":    leave the canned PA night alone (pre-3.4 behavior)
 Config.PA = {
     Mode = "continue",
+
+    -- Cap the PA clock at normal speed: continue mode carries the COURSE
+    -- time speed, so an Alt+T fast-forward keeps racing the clock while
+    -- you sit in the PA menu. true = clamp back to TimeOfDay.DefaultSpeed
+    -- on PA entry (fast mode resumes when you drive out).
+    ForceNormalSpeed = false,
 }
 
 -- ============== PERSISTENCE ==============
@@ -337,10 +401,7 @@ Config.MainLoop = {
 
 -- ============== DEBUG ==============
 Config.Debug = {
-    VerboseLogging = false,
-    LogPropertyAccess = false,
     LogActorDiscovery = true,
-    LogWeatherTransitions = true,
 }
 
 -- ============== ATMOSPHERE (god rays, aurora, cloud shadows) ==============
@@ -361,14 +422,31 @@ Config.Atmosphere = {
     -- to confirm or clear it.
     EnableSecondCloudLayer = false,
 
-    -- City glow (Tokyo night ambiance): light pollution + night sky glow, ramped
-    -- in at night. Light pollution lights cloud bases from below (warm sodium
-    -- amber by default); night sky glow keeps the night sky from going pitch black.
+    -- City glow (Tokyo night ambiance): light pollution + night sky glow.
+    -- Ramped on the SUN'S ELEVATION (season-proof; the old clock window is
+    -- the fallback): rises from StartElev at the horizon to full at
+    -- FullElev, then holds a plateau all night (real city glow does not
+    -- dim toward midnight). Light pollution lights cloud bases from below
+    -- (warm sodium amber by default); night sky glow keeps the night sky
+    -- from going pitch black.
     EnableCityGlow = true,
-    LightPollutionMax = 1.5,   -- peak light-pollution intensity at deep night
-                               -- (1.0 -> 1.5 2026-07-07: night-floor lift first
-                               -- pass toward the real-Tokyo city-glow reference)
-    NightSkyGlowMax = 1.5,     -- peak ambient night-sky glow (0.5 -> 1.5 2026-07-06, night-feel test)
+    CityGlowStartElev = 0.0,   -- glow begins as the sun crosses the horizon
+    CityGlowFullElev = -8.0,   -- full glow by the end of twilight
+    -- THE THREE-WEEK BLACK-STARS ROOT CAUSE (2026-07-24, decompiled from
+    -- the UDS blueprint bytecode): the sky material's star color =
+    -- StarsColor x StarsIntensity x (1 - Overcast) x 0.62 x
+    -- (1 - LIGHT POLLUTION INTENSITY). Pollution is a 0..1 design range;
+    -- our 1.5 (the 07-07 night-floor lift, the exact era stars broke)
+    -- made the last term -0.5 = NEGATIVE star intensity = the black dots
+    -- (3.0 x 0.62 x -0.5 = -0.93, the measured value to the decimal).
+    -- KEEP THIS <= 1.0 FOREVER; stars fade toward zero as it approaches
+    -- 1.0 (realistic: city glare hides stars), so 0.5-0.7 = city feel
+    -- WITH stars. NightSkyGlow does NOT appear in the star formula: lift
+    -- the glow look with NightSkyGlowMax instead, it cannot hurt stars.
+    LightPollutionMax = 0.6,   -- was 1.5 = the star killer; see above
+    NightSkyGlowMax = 1.0,     -- glow is star-safe (not in the formula);
+                               -- raise toward 1.5 freely for the night
+                               -- feel. Alt+K still nudges it live.
     -- Colors are LinearColor {R,G,B,A}; defaults live in atmosphere.lua. Uncomment to override:
     -- LightPollutionColor = {R = 1.00, G = 0.55, B = 0.25, A = 1.0},
     -- NightSkyGlowColor   = {R = 0.45, G = 0.50, B = 0.65, A = 1.0},
@@ -405,7 +483,12 @@ Config.Rainbow = {
 -- Stylistic (real Tokyo skies are light-polluted); keep the intensity modest or set
 -- Enabled=false if you prefer a plain night sky.
 Config.SpaceLayer = {
-    Enabled = true,
+    -- TEMP A/B (2026-07-18): OFF to settle whether the dark sky speckles
+    -- are the NEBULA (DBuffer decal compositing, the broken-materials
+    -- family) or the star layer. Next night boot: speckles gone = nebula
+    -- guilty (keep off or fix its compositing); speckles remain = truly
+    -- stars, then Alt+K (the untested Stars Color lever) is the tool.
+    Enabled = false,
     RenderNebula = true,
     NebulaIntensity = 1.6,      -- nil = UDS default; modest so it reads as faint depth
     NebulaNoiseScale = nil,     -- nil = UDS default
@@ -478,7 +561,7 @@ Config.CinematicSky = {
 -- sun path; expect dawn/dusk timing shifts on dates far from late July
 -- (Tokyo sunset ~18:50, the closest match to the current curve).
 Config.RealSun = {
-    Enabled = true,       -- flip true to run the experiment
+    Enabled = true,       -- real-sun simulation (see date policy below)
 
     Latitude  = 35.676,    -- Tokyo
     Longitude = 139.650,
@@ -501,10 +584,10 @@ Config.RealSun = {
 
 }
 
--- ============== VIGNETTE (hide HUD vignette, opt-in) ==============
+-- ============== VIGNETTE (hide HUD vignette) ==============
 -- Hide TXR's in-game HUD vignette (the darkened corner frame) for a cleaner,
--- photographic look. Pure UI-widget toggle on TXR's own HUD (no game files). Default
--- OFF: it removes a vanilla HUD element, so it's opt-in.
+-- photographic look. Pure UI-widget toggle on TXR's own HUD (no game files).
+-- ON by default; set Enabled = false to keep the vanilla HUD frame.
 Config.Vignette = {
     Enabled = true,
     Hide = true,    -- true = hide the vignette (set false to force it visible)
@@ -520,11 +603,8 @@ Config.PhotoMode = {
 
     -- While a photo session is open: freeze time of day (UDS Animate Time
     -- of Day off; sun and shadows hold still through composing and long
-    -- shutters) and make the APERTURE slider drive exposure. Auto-exposure
-    -- stays live (scene-correct in tunnels/night/day); the live f-stop is
-    -- converted to its exact EV equivalent and applied as exposure
-    -- compensation (f/2 from the f/4 base = +2 EV, like a real camera).
-    -- Both restore on close; a user Alt+T pause is respected either way.
+    -- shutters). Restores on close; a user Alt+T pause is respected
+    -- either way.
     FreezeTime = true,
 
     -- Photomode exposure = MANUAL METERING (r.EyeAdaptation.MethodOverride
@@ -536,10 +616,11 @@ Config.PhotoMode = {
 
     -- The 3.4.0 cvar curve, verbatim (elevation anchors in degrees; +90
     -- zenith, 0 horizon; piecewise-linear, clamped flat outside the ends):
-    -- sky  = r.SkylightIntensityMultiplier (scene-ambient brightness)
-    -- lens = r.EyeAdaptation.LensAttenuation (3D-scene EV trim)
-    -- Field-tuned across the 07-07/07-08 sweeps for manual metering; time
-    -- is frozen in photomode so each session gets one steady pair.
+    -- lens = r.EyeAdaptation.LensAttenuation (3D-scene EV trim) = the
+    -- manual exposure level. The sky column is 3.4.0 REFERENCE DATA only
+    -- (not applied; photomode never scales the skylight). Field-tuned
+    -- across the 07-07/07-08 sweeps for manual metering; time is frozen
+    -- in photomode so each session gets one steady value.
     ManualCurve = {
         { elev =  30, sky = 0.100, lens =  1.0 },   -- day core
         { elev =  15, sky = 0.105, lens =  1.25 },
@@ -549,31 +630,25 @@ Config.PhotoMode = {
         { elev =   0, sky = 0.420, lens =  3.8 },   -- sunset/sunrise moment
         { elev =  -3, sky = 0.860, lens =  5.5 },   -- civil twilight
         { elev =  -5, sky = 0.950, lens =  9.0 },
-        { elev =  -7, sky = 1.000, lens = 14.0 },
-        { elev = -10, sky = 1.050, lens = 22.0 },   -- night
+        { elev =  -7, sky = 1.000, lens = 17.0 },
+        { elev = -10, sky = 1.050, lens = 27.0 },   -- night (14/22 -> 17/27
+                                    -- 2026-07-17: a max-aperture night shot
+                                    -- still read dark; day anchors untouched)
     },
 
     -- Garage / PA-menu sessions (artificial light, no sun): the fixed
-    -- 3.4.0 garage pair.
+    -- 3.4.0 garage values (Sky = reference data, like the curve's sky
+    -- column; only Lens applies).
     ManualGarage = { Sky = 1.005, Lens = 30.0 },
 
-    -- Apply the curve's SKY column too (the 3.4.0 pairing dimmed the
-    -- skylight by day, sky 0.1). DISABLED 2026-07-15: it scales the
-    -- skylight in photomode and masks the translucent-skylight fix being
-    -- judged; lens carries the exposure alone. If day photomode reads too
-    -- bright with sky untouched, lower the day lens anchors (the legacy
-    -- eras always paired a day-sky dim with these lens values) or flip
-    -- this back on.
-    ManualCurveSky = false,
-
-    -- Covered-session skylight damp: when a photo session opens with the
-    -- car under road-data cover, r.SkylightIntensityMultiplier drops to
-    -- this value and restores on close. nil = OFF (2026-07-15: disabled so
-    -- the real fix, KillSkylightTranslucentLighting + the finer
-    -- translucency grid, can be judged unmasked; this damp zeroed the
-    -- skylight in exactly the test scenario). Re-arm with 0.0 only if the
-    -- real fix fails.
-    CoveredSkylightMult = nil,
+    -- Covered sessions: opening photomode under a road-data roof uses
+    -- this fixed lens instead of the sun curve. A lit bore's brightness
+    -- does not follow the sun (the day anchor lens 1.0 read near-black
+    -- in tunnels); like the garage it gets an indoor level. Checked once
+    -- at session open. FIRST GUESS between the night anchor (22) and
+    -- day; raise if bore shots still read dark, lower toward the curve
+    -- if they blow out. nil = off (sun curve everywhere).
+    CoveredLens = 14.0,
 
     -- Let the camera pass through geometry and leave the track (disables the
     -- free-camera collision sphere and the spring-arm collision pull-in).
@@ -658,7 +733,7 @@ Config.Headlights = {
     -- lone overpasses deliberately do NOT flash the lights) and wet weather
     -- presets. When the context ends, the elevation logic takes back over.
     AutoOnInTunnel = true,
-    AutoOnInRain = true,
+    AutoOnInRain = false,  -- NO-RAIN BUILD: no wet presets exist (inert either way)
 
     DefaultBrightnessLevel = 3,  -- 1=0.5x 2=1.0x 3=2.0x 4=3.0x 5=5.0x
 
@@ -676,16 +751,9 @@ Config.Headlights = {
 }
 
 -- ============== AUDIO ==============
-Config.Audio = {
-    Enabled = true,
-    EnableRain = true, EnableWind = true, EnableThunder = true,
-    RainVolume = 1.0, WindVolume = 0.8, ThunderVolume = 1.0,
-
-    -- Thunder/Lightning level below which only DISTANT rumbles play (Rain
-    -- runs 4 = distant only; Thunderstorm runs 10 = distant + close mix;
-    -- Light Rain carries no thunder at all).
-    CloseThunderMin = 7.0,
-}
+-- Module REMOVED in the no-rain build (2026-07-17): weather sound was
+-- rain/wind/thunder. Reference copy of the module + this config block:
+-- C:\möd\.backup\removed_modules + the full backup zip.
 
 -- ============== TUNING SLIDER RANGE (garage alignment tab) ==============
 -- Widens the alignment sliders (camber/toe/ride height/wheel offset) to
@@ -709,9 +777,6 @@ Config.Tuning = {
 Config.LightCycle = {
     Enabled = true,
     UpdateIntervalSeconds = 1.0,  -- update cadence; writes are change-gated
-
-    -- Diagnostic: push neutral cvars only, no shaping (raw UDS light).
-    DiagnosticNeutralCvars = false,
 
     -- EXPOSURE POLICY: the stock pipeline runs untouched apart from the
     -- skylight-leak kill (Config.Tunnels.KillVolumeSkylightLeak) and the
@@ -748,10 +813,6 @@ Config.LightCycle = {
     AbsentBrightnessMult = 1.0,    -- "Directional Lights Absent Brightness" (stock 1.5)
     NightCloudyBrightness = nil,   -- "Extra Night Brightness When Cloudy" (stock 0.0)
     OvercastBrightnessNight = nil, -- "Overcast Brightness (Night)" (stock 0.2)
-
-    -- Clear the game's Curve_ExposureCompensation per course. Keep false:
-    -- the stock curve reads right with the skylight leak dead.
-    KillExposureCompCurve = false,
 
     -- Stop the course skylights from lighting TRANSLUCENTS
     -- (bAffectTranslucentLighting=false, once per course). The translucency
@@ -852,15 +913,6 @@ Config.LightCycle = {
 
     -- Skylight tuning keybinds (Alt+Z/X/C, Alt+V, Alt+Shift+V)
     Tune = { Step = 0.05, RoughnessBaseline = 1.0 },
-
-    -- TEMP DIAGNOSTIC (2026-07-13, HDR/SDR look split): once per session,
-    -- ~8s after course arm, dump every live PostProcessComponent's full
-    -- FPostProcessSettings (all 246 fields + override flags + blend state)
-    -- to Logs/pp_values_<ts>_hdr-<on|off>.txt with the GameUserSettings
-    -- HDR output state in the header. The hdr-on/hdr-off pair was captured
-    -- 2026-07-14 (verdict: BP_HDR bEnabled flip is the only delta); flip
-    -- true again only for a fresh capture.
-    DumpDisplayPP = false,
 }
 
 -- ============== TUNNELS (covered road: rain hide + GI fix) ==============
@@ -873,18 +925,14 @@ Config.LightCycle = {
 Config.Tunnels = {
     Enabled = true,
 
-    -- Research reference for the ProbePPVolumes ENTER/EXIT classification
-    -- lines; no longer drives the rain logic.
-    TunnelVolumes = {
-        "9C6B0021494DE9FA01_1223679167",  -- Takebashi east
-        "9C6B0021494DE9FA01_1415472168",  -- Takebashi west
-        "PostProcessVolume_20",           -- long C1 (Miyakezaka JCT)
-        "PostProcessVolume_19",           -- Kasumigaseki
-        "PostProcessVolume_24",           -- Ginza (C1 inner)
-    },
-    TunnelAutoByBias = true,
-
-    TunnelRainKill = true,      -- hide precipitation on covered road
+    -- NO-RAIN BUILD (2026-07-17, performance): the rain kill and the
+    -- overpass roof TRACE are OFF (no precipitation exists to kill; the
+    -- trace had no other consumer). Covered-road detection itself stays
+    -- LIVE via the road-data attribute (cheap property read): it feeds
+    -- the fog damp below, headlights AutoOnInTunnel and the photomode
+    -- CoveredLens. The poll also stays at the slow 1s cadence
+    -- permanently (no wet preset can hold it fast).
+    TunnelRainKill = false,     -- hide precipitation on covered road
     TunnelRainLookahead = 1.2,  -- seconds of travel the roof trace probes ahead
 
     -- Fog on covered road: global fog is blind to ceilings, so foggy
@@ -901,9 +949,8 @@ Config.Tunnels = {
     -- Roof trace for lone overpasses: downward Visibility leg for deck
     -- tops + upward leg for tunnel linings. Shorten the trace if rain dies
     -- under tall gantries.
-    OverpassRainKill = true,
+    OverpassRainKill = false,    -- NO-RAIN BUILD: trace off (see note above)
     OverpassTraceLength = 5000,  -- units (50 m)
-    OverpassDebug = false,       -- throttled "Roof trace debug" lines
 
     -- Trace-cover release hold (uncovered polls) so girder gaps don't
     -- strobe rain; road-data cover releases on the first uncovered poll.
@@ -912,9 +959,6 @@ Config.Tunnels = {
     -- Poll cadence: fast while it can rain, relaxed when dry.
     PollSecondsRain = 0.25,
     PollSecondsDry = 1.0,
-
-    -- Research: revive the PP-volume ENTER/EXIT classification lines.
-    ProbePPVolumes = false,
 }
 
 -- ============== MODULE TOGGLES ==============
@@ -930,7 +974,6 @@ Config.ModuleToggles = {
     Transitions = true,
     Headlights  = true,
     Atmosphere  = true,
-    Audio       = true,
     WindDebris  = true,
     LightRays   = true,
     Moon        = true,
@@ -943,16 +986,16 @@ Config.ModuleToggles = {
     RealSun     = true,   -- real-sun probe + experiment (see Config.RealSun)
     Vignette    = true,   -- hide the HUD vignette (see Config.Vignette)
     PhotoMode   = true,   -- photo mode free-camera unlocks
-    WetGrip     = true,   -- dynamic wet grip
+    WetGrip     = false,  -- NO-RAIN BUILD: no rain = no wet grip
     Tuning      = true,   -- alignment slider-range widening (see Config.Tuning)
 }
 
 -- ============== VERSION ==============
 Config.Version = {
     Major = 3, Minor = 6, Patch = 0,
-    String = "3.6.0",
+    String = "3.7.0",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.6.0",
+    FullName = "TXR Weather Mod v3.7.0",
 }
 
 return Config

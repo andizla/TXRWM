@@ -3,6 +3,58 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.7.0]: 2026-07-24
+
+### Fixed
+- **Night stars finally work: bright, moving, Milky Way included.** The Tokyo
+  city-glow feature was driving the sky's light-pollution intensity past its
+  valid range, which inverts the star brightness math inside the sky material:
+  stars rendered *darker* than the sky (black dots) whenever glow was up, and
+  fighting it produced flicker. Pollution now stays in range
+  (`Config.Atmosphere.LightPollutionMax`, keep it at or below 1.0). Stars
+  render bright through city glow, rotate with the real night sky
+  (`Config.Stars.SimulateRealStars`), and fade naturally at twilight and under
+  cloud cover, that fading is correct behavior. Night sky glow itself never
+  affects stars and can be raised freely for the night look (`Alt+K` /
+  `Alt+Shift+K` nudge it live).
+- **Crash when opening the course map or navigating garage menus.** Background
+  actor polling could touch objects the game was freeing during menu
+  streaming, a hard crash with no error. Discovery now stops the moment it has
+  its answer (garage detection is event-driven; probing settles per world,
+  including on the post-race result screens) and the remaining polls are
+  throttled and gated. Verified against a previously reproducible
+  crash-on-map-open.
+- **Photo mode meters correctly inside covered road**
+  (`Config.PhotoMode.CoveredLens`): day sessions in bores no longer expose for
+  the open sky (near-black shots); covered sessions use a fixed indoor level
+  like the garage.
+- **Photo mode sessions engage instantly** (the open/close signal now reads the
+  live component state across all instances; the freeze/metering no longer
+  lags a session open).
+
+### Removed
+- **Rain, snow and dust are out of the weather rotation** (performance, and
+  the precipitation particle materials misbehave on some systems). The active
+  cycle: Clear Skies, Partly Cloudy, Cloudy, Overcast, Heavy Overcast, Foggy.
+  All precipitation preset data is retained for a future return; an old save
+  holding a removed preset falls back to the default.
+- **Weather sounds module removed** (rain/wind/thunder audio; without
+  precipitation it had nothing to play).
+- **Dynamic wet grip ships disabled** (no rain in the rotation; the module
+  remains and re-enables with `Config.WetGrip.Enabled` +
+  `Config.ModuleToggles.WetGrip`).
+- Retired keybinds: `Alt+J` (precipitation toggle), `Alt+N` (rain-spot
+  datapoint), `Alt+W` (wetness). `Alt+K` / `Alt+Shift+K` are now the night-sky
+  glow nudge.
+
+### Changed
+- Tokyo city glow retuned around the star fix: light pollution 0.6 (in range,
+  star-safe), night sky glow unchanged and freely tunable.
+- Under-roof rain suppression idles while no wet preset exists; covered-road
+  fog removal and the covered-road lighting fix remain fully active.
+- Auto headlights: the rain trigger is inert without wet presets; tunnel and
+  sun-elevation behavior unchanged.
+
 ## [3.6.0]: 2026-07-15
 
 ### Fixed

@@ -33,17 +33,12 @@ local MODULE = "Tunnels"
 
 -- ============== CONFIG-DERIVED (filled in Init, with safe fallbacks) ==============
 local enabled = true
-local PROBE_PP = false           -- research flag: poll alive with features off
-local TUNNEL_VOLUMES = {}        -- set: [shortName] = true (curated bores)
-local TUNNEL_AUTO = true         -- authored-bias volumes count as covered too
-local TUNNEL_AUTO_MIN = 0.05     -- authored-bias threshold for auto membership
 local TUNNEL_RAIN_KILL = true
 local TUNNEL_LOOKAHEAD_S = 1.2   -- rain-kill lookahead seconds
 local KILL_SKY_LEAK = true       -- clear the volumes' authored
                                  -- LumenSkylightLeaking override (see header)
 local OVERPASS_KILL = true
 local OVERPASS_TRACE_LEN = 5000.0 -- cm of headroom checked (50 m)
-local OVERPASS_DEBUG = false     -- throttled probe logging (dist + hit name)
 local RAIN_CLEAR_POLLS = 4       -- uncovered polls before the kill releases
 local POLL_RAIN_S = 0.25         -- poll cadence while precipitation can fall
 local POLL_DRY_S = 1.0           -- poll cadence when dry
@@ -52,16 +47,13 @@ local POLL_DRY_S = 1.0           -- poll cadence when dry
 local isInitialized = false
 local featuresActive = false     -- computed in Init: any feature on
 local armed = false              -- course gate (set by main via OnCourseLoad)
-local ppRefs = nil               -- per-course volume list (cleared on unload)
-local ppInside = {}              -- [index] = true while the pawn is inside
+local ppArmed = false            -- per-course one-shot latch (leak kill ran)
 local ppNextPoll = 0.0
-local ppShapeLogged = false      -- one-shot out-table diagnostic if capture fails
 local tunnelNow = false          -- car inside a covered volume
 local rainZoneNow = false        -- car/lookahead/roof covered (drives the kill)
 local rainClearCount = 0
 local roofNow = false            -- roof signal from the last poll
 local coverWasRoad = false       -- last covered poll included the road-data bit
-local roofDbgLast = 0.0
 local roofProbeLogged = false    -- one-shot per course: proves the trace call works
 local hitShapeLogged = false     -- one-shot per session: FHitResult shape dump
 local lastPX, lastPY, lastPZ, lastPollClock = nil, nil, nil, nil
@@ -290,102 +282,24 @@ end
 local function ppPollGT()
     local actors = getActors()
     if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
-        ppRefs = nil
-        ppInside = {}
+        ppArmed = false
         tunnelReset()
         return
     end
 
-    if not ppRefs then
-        ppRefs = {}
-        ppInside = {}
+    if not ppArmed then
+        ppArmed = true
         tunnelReset()
-        local leakCleared = 0
+        -- SKYLIGHT LEAK KILL (see header): clear the authored
+        -- LumenSkylightLeaking override on EVERY course volume (all 33
+        -- carry it), so no volume boundary changes the world's GI anymore.
+        -- Idempotent; volumes spawn fresh per course.
+        local volumes, leakCleared = 0, 0
         pcall(function()
             local vols = FindAllOf("PostProcessVolume")
             if not vols then return end
             for _, v in ipairs(vols) do
-                local e = { v = v }
-                pcall(function()
-                    local s = v.Settings
-                    e.biasNum = tonumber(s.AutoExposureBias) or 0.0
-                    e.bias = tostring(s.AutoExposureBias)
-                end)
-                -- Short name (same extraction as real_sun's ID dump): the
-                -- stable key for the config tunnel list.
-                pcall(function()
-                    local fn = v:GetFullName() or ""
-                    e.name = fn:match("PostProcessVolume_UAID_([^%s]+)$")
-                        or fn:match("PersistentLevel%.([^%s]+)")
-                end)
-                if (e.name and TUNNEL_VOLUMES[e.name])
-                    or (TUNNEL_AUTO and (e.biasNum or 0) > TUNNEL_AUTO_MIN) then
-                    e.isTunnel = true
-                end
-                -- Bounds capture v4: Origin/BoxExtent are OUT-PARAMS, and
-                -- UE4SS hands those back by FILLING a passed-in Lua table
-                -- keyed by the param name, the convention already proven in
-                -- this mod (GetDisplayVehicle/out_vehicle, GetIsMovingRHL/
-                -- out_is_moving in headlights.lua). Accepts every plausible
-                -- shape: param-name key holding an FVector, fields written
-                -- straight into the table, or true return values.
-                local function takeBounds(oT, xT)
-                    if not (oT and xT) then return end
-                    -- Each shape probed in its OWN pcall: indexing a missing
-                    -- field on userdata ERRORS (does not return nil), so a
-                    -- combined read would abort before trying the next shape.
-                    local origin, extent
-                    pcall(function() origin = oT.Origin end)
-                    if origin == nil then origin = oT end
-                    pcall(function() extent = xT.BoxExtent end)
-                    if extent == nil then extent = xT end
-                    local ox, oy, oz, ex, ey, ez
-                    pcall(function()
-                        ox, oy, oz = origin.X, origin.Y, origin.Z
-                        ex, ey, ez = extent.X, extent.Y, extent.Z
-                    end)
-                    if ox and ex then
-                        e.ox, e.oy, e.oz = ox, oy, oz
-                        e.ex, e.ey, e.ez = ex, ey, ez
-                    end
-                end
-                pcall(function()
-                    local ksl = getKslRef()
-                    if ksl then
-                        local oT, xT = {}, {}
-                        local r1, r2 = ksl:GetActorBounds(v, oT, xT)
-                        takeBounds(oT, xT)
-                        if not e.ox then takeBounds(r1, r2) end
-                    end
-                end)
-                if not e.ox then
-                    pcall(function()
-                        local oT, xT = {}, {}
-                        local r1, r2 = v:GetActorBounds(false, oT, xT, false)
-                        takeBounds(oT, xT)
-                        if not e.ox then takeBounds(r1, r2) end
-                    end)
-                end
-                -- If v4 fails too, log what UE4SS actually put in the out
-                -- tables (once) so the next log settles the convention
-                -- instead of another silent failure.
-                if not e.ox and not ppShapeLogged then
-                    ppShapeLogged = true
-                    pcall(function()
-                        local oT, xT = {}, {}
-                        local ksl = getKslRef()
-                        if ksl then ksl:GetActorBounds(v, oT, xT) end
-                        local keys = {}
-                        for k, val in pairs(oT) do keys[#keys + 1] = "o." .. tostring(k) .. "=" .. type(val) end
-                        for k, val in pairs(xT) do keys[#keys + 1] = "x." .. tostring(k) .. "=" .. type(val) end
-                        Log.Info(MODULE, "Bounds shape debug",
-                            {keys = (#keys > 0) and table.concat(keys, " ") or "BOTH EMPTY"})
-                    end)
-                end
-                -- SKYLIGHT LEAK KILL (see header): clear the authored
-                -- LumenSkylightLeaking override on EVERY volume (all 33
-                -- carry it), so no volume boundary changes the world's GI
-                -- anymore. Idempotent; volumes spawn fresh per course.
+                volumes = volumes + 1
                 if KILL_SKY_LEAK then
                     pcall(function()
                         local s = v.Settings
@@ -395,24 +309,16 @@ local function ppPollGT()
                         end
                     end)
                 end
-                ppRefs[#ppRefs + 1] = e
-            end
-            local withBounds, tunnels = 0, 0
-            for _, e2 in ipairs(ppRefs) do
-                if e2.ox then withBounds = withBounds + 1 end
-                if e2.isTunnel then tunnels = tunnels + 1 end
             end
             Log.Info(MODULE, "PP watcher armed", {
-                volumes = #ppRefs, withBounds = withBounds, tunnels = tunnels,
-                leakCleared = leakCleared,
+                volumes = volumes, leakCleared = leakCleared,
             })
         end)
         return
     end
 
-    -- Containment: which volume is the car inside right now? ENTER/EXIT logs
-    -- identify tunnel volumes as the user simply drives around. The pawn ref
-    -- is kept for the roof probe (trace WorldContextObject).
+    -- Pawn position: feeds the road-data read, the lookahead projection and
+    -- the roof probe (which needs the pawn as trace WorldContextObject).
     local px, py, pz = nil, nil, nil
     local pawnObj = nil
     pcall(function()
@@ -452,31 +358,6 @@ local function ppPollGT()
             end
         end
     end)
-
-    -- Volume containment (RESEARCH ONLY since the road-data switch): the
-    -- ENTER/EXIT lines remain the volume-classification tool but no longer
-    -- feed the rain kill. Config.Tunnels.ProbePPVolumes revives them.
-    if PROBE_PP then
-        for i, e in ipairs(ppRefs) do
-            if e.ox then
-                local inside = math.abs(px - e.ox) <= e.ex
-                    and math.abs(py - e.oy) <= e.ey
-                    and math.abs(pz - e.oz) <= e.ez
-                if inside and not ppInside[i] then
-                    ppInside[i] = true
-                    Log.Info(MODULE, "PP volume ENTER [" .. i .. "]", {
-                        name = e.name or "?",
-                        tunnel = e.isTunnel and "YES" or nil,
-                        bias_authored = e.bias,
-                        extent = string.format("%.0f,%.0f,%.0f", e.ex, e.ey, e.ez),
-                    })
-                elseif not inside and ppInside[i] then
-                    ppInside[i] = nil
-                    Log.Info(MODULE, "PP volume EXIT [" .. i .. "]", {name = e.name or "?"})
-                end
-            end
-        end
-    end
 
     -- Roof-trace lookahead point: project the car ~TUNNEL_LOOKAHEAD_S ahead
     -- using the position delta between polls (no reflection dependency),
@@ -527,26 +408,6 @@ local function ppPollGT()
                     signal = "visDown",
                 })
             end
-            -- Diagnosis aid (throttled): the probe with hit distance + hit
-            -- component name, so a drive shows WHAT counts as cover and how
-            -- high (deck tops expected; gantries = the false-positive
-            -- candidates to tune the trace length against).
-            if OVERPASS_DEBUG then
-                local nowDbg = os.clock()
-                if nowDbg - roofDbgLast >= 2.0 then
-                    roofDbgLast = nowDbg
-                    local h, okc, dist, hitName, leg = roofProbeGT(ksl, pawnObj, px, py, pz)
-                    local field = "miss"
-                    if h then
-                        field = string.format("HIT(%s)@%s:%s", leg or "?",
-                            dist and string.format("%.0f", dist) or "?",
-                            hitName or "?")
-                    elseif not okc then
-                        field = "ERR"
-                    end
-                    Log.Info(MODULE, "Roof trace debug", {probe = field})
-                end
-            end
         end
         if roofSeen ~= roofNow then
             roofNow = roofSeen
@@ -584,7 +445,7 @@ local function ppWatchTick(now)
     local actors = getActors()
     local suspended = actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended()
     if suspended then
-        ppRefs = nil
+        ppArmed = false
         -- Async side: tunnelReset is pure state (no weather calls); the
         -- next Weather.Apply clears any lingering suppression itself.
         tunnelReset()
@@ -601,25 +462,17 @@ function Tunnels.Init()
     local cfg = Config.Tunnels
     if cfg then
         if cfg.Enabled ~= nil then enabled = cfg.Enabled end
-        if cfg.ProbePPVolumes ~= nil then PROBE_PP = cfg.ProbePPVolumes end
-        if type(cfg.TunnelVolumes) == "table" then
-            TUNNEL_VOLUMES = {}
-            for _, n in ipairs(cfg.TunnelVolumes) do TUNNEL_VOLUMES[n] = true end
-        end
-        if cfg.TunnelAutoByBias ~= nil then TUNNEL_AUTO = cfg.TunnelAutoByBias end
         if cfg.TunnelRainKill ~= nil then TUNNEL_RAIN_KILL = cfg.TunnelRainKill end
         if cfg.TunnelRainLookahead ~= nil then TUNNEL_LOOKAHEAD_S = cfg.TunnelRainLookahead end
         if cfg.KillVolumeSkylightLeak ~= nil then KILL_SKY_LEAK = cfg.KillVolumeSkylightLeak end
         if cfg.OverpassRainKill ~= nil then OVERPASS_KILL = cfg.OverpassRainKill end
         if cfg.OverpassTraceLength then OVERPASS_TRACE_LEN = cfg.OverpassTraceLength end
-        if cfg.OverpassDebug ~= nil then OVERPASS_DEBUG = cfg.OverpassDebug end
         if cfg.RainClearPolls then RAIN_CLEAR_POLLS = cfg.RainClearPolls end
         if cfg.PollSecondsRain then POLL_RAIN_S = cfg.PollSecondsRain end
         if cfg.PollSecondsDry then POLL_DRY_S = cfg.PollSecondsDry end
     end
 
     featuresActive = TUNNEL_RAIN_KILL
-        or PROBE_PP
         or KILL_SKY_LEAK
 
     isInitialized = true
@@ -633,14 +486,12 @@ function Tunnels.Init()
     Log.Info(MODULE, "Initializing tunnels module", {
         rainKill = TUNNEL_RAIN_KILL,
         overpass = OVERPASS_KILL,
-        autoByBias = TUNNEL_AUTO,
-        curated = (function() local n = 0 for _ in pairs(TUNNEL_VOLUMES) do n = n + 1 end return n end)(),
     })
     return true
 end
 
 function Tunnels.OnCourseLoad()
-    ppRefs = nil            -- cached volume refs are course-world objects
+    ppArmed = false         -- fresh course volumes: re-run the leak kill
     ppNextPoll = 0.0
     roofProbeLogged = false
     tunnelReset()           -- Weather.Apply on load clears any suppression
@@ -649,7 +500,7 @@ end
 
 function Tunnels.OnCourseUnload()
     armed = false
-    ppRefs = nil
+    ppArmed = false
     tunnelReset()
 end
 

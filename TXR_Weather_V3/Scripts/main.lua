@@ -86,7 +86,6 @@ local Shadows = nil
 local Transitions = nil
 local Atmosphere = nil
 local Headlights = nil
-local Audio = nil
 local Stars = nil
 local LightCycle = nil
 local Tunnels = nil
@@ -218,14 +217,8 @@ local function loadSystemModules()
         Log.Debug("Main", "Headlights module not loaded")
     end
     
-    -- Phase 10: Audio (weather sounds)
-    Audio = safeRequire("systems.audio", "Audio")
-    if Audio then
-        Log.Info("Main", "System module loaded: Audio")
-        if Audio.Init then Audio.Init() end
-    else
-        Log.Debug("Main", "Audio module not loaded")
-    end
+    -- (Phase 10 Audio module removed in the no-rain build 2026-07-17;
+    -- reference copy in C:\möd\.backup\removed_modules)
 
     -- Phase 12: Stars (HD night sky)
     Stars = safeRequire("systems.stars", "Stars")
@@ -408,6 +401,10 @@ local _CourseStateBeforePA = nil
 --   "freeze":   same carry, then freeze time (the original V1.32 behavior).
 --   "stock":    leave the canned PA night alone.
 local paStateApplied = false
+local paCarry = nil        -- carried cloud/fog for the delayed re-assert
+local paReassertAt = nil   -- os.clock() deadline for it (nil = none due)
+local paClockLast = nil    -- {tod, clock}: last agreed PA clock reading
+local paClockNext = 0.0    -- next clock-watch poll (throttle)
 
 local function applyPAState()
     local mode = "continue"
@@ -437,8 +434,19 @@ local function applyPAState()
         if speed == nil and cap.speed then speed = cap.speed end
     end
 
+    -- PRESET FIRST (order matters, field-confirmed 2026-07-15 23:35 log):
+    -- Weather.Apply re-applies the preset's OWN cloud/fog baselines through
+    -- the pipeline (immediate), so writing the carried values before it
+    -- meant the carry lost to its own preset re-apply every time = the
+    -- "PA state applied but nothing visibly takes" bug. Preset for
+    -- rain/effects, THEN the carried sky state on top.
+    if preset and Weather and Weather.Apply then
+        pcall(function() Weather.Apply(preset, 0) end)
+    end
+
     if tod and tod >= 0 and tod <= 2400 then
         pcall(function() uds["Time Of Day"] = tod end)
+        paClockLast = { tod = tod, clock = os.clock() }  -- seed the clock watch
     end
     if udw then
         if cloud and cloud >= 0 then
@@ -450,10 +458,14 @@ local function applyPAState()
             pcall(function() udw["Fog"] = fog end)
         end
     end
-    -- Re-apply the preset for rain/effects (Weather.Apply accepts the PA
-    -- scene: its actors validate, unlike the garage's)
-    if preset and Weather and Weather.Apply then
-        pcall(function() Weather.Apply(preset, 0) end)
+
+    -- One-shot delayed re-assert (~2s, PA lifecycle block): UDW's own
+    -- periodic pushes right after an apply can still revert the carried
+    -- pair; the re-assert logs what the first write left behind, so the
+    -- field says whether the carry holds now.
+    if (cloud and cloud >= 0) or fog ~= nil then
+        paCarry = { cloud = cloud, fog = fog }
+        paReassertAt = os.clock() + 2.0
     end
 
     if mode == "freeze" then
@@ -467,6 +479,13 @@ local function applyPAState()
         pcall(function() uds["Animate Time of Day"] = true end)
         local spd = speed
         if not spd and State and State.GetTimeSpeed then spd = State.GetTimeSpeed() end
+        -- Optional cap (Config.PA.ForceNormalSpeed): an Alt+T fast-forward
+        -- carried into the PA keeps racing the clock while you sit in a
+        -- menu; cap it back to normal speed when set.
+        if Config.PA and Config.PA.ForceNormalSpeed then
+            local normal = (Config.TimeOfDay and Config.TimeOfDay.DefaultSpeed) or 53.333
+            if spd and spd > normal then spd = normal end
+        end
         if spd and spd > 0 then
             pcall(function() uds["Time Speed"] = 1.0 end)
             pcall(function() uds["Simulation Speed"] = spd end)
@@ -490,6 +509,62 @@ local function applyPAState()
         preset = preset or "?",
         speed = speed or -1,
     })
+end
+
+--- PA continue-mode clock watch (~1s poll): the PA scene re-cans its own
+--- clock AFTER we carry the course time in (field log 2026-07-16 00:18:
+--- TOD teleported to the canned 1950 about a minute after the bind), so a
+--- write-once carry cannot hold it. Each poll predicts where the carried
+--- clock should be (last agreed reading + elapsed at the LIVE simulation
+--- speed; 53.333 speed = 2400 units per 30 min = speed/40 units per
+--- second) and snaps back + re-asserts the speed when the actual clock
+--- has teleported (>100 units off the prediction). User speed changes
+--- (Alt+T) stay under the threshold because the prediction reads the
+--- live speed every poll.
+local function paClockWatchTick()
+    local now = os.clock()
+    if now < paClockNext then return end
+    paClockNext = now + 1.0
+
+    local uds = Actors and Actors.GetUDS and Actors.GetUDS()
+    if not uds then return end
+    local tod, spd = nil, nil
+    pcall(function() tod = tonumber(uds["Time Of Day"]) end)
+    if tod == nil then return end
+    pcall(function() spd = tonumber(uds["Simulation Speed"]) end)
+
+    if not paClockLast then
+        paClockLast = { tod = tod, clock = now }
+        return
+    end
+
+    local predicted = (paClockLast.tod
+        + (now - paClockLast.clock) * ((spd or 0) / 40.0)) % 2400
+    local diff = math.abs(tod - predicted)
+    if diff > 1200 then diff = 2400 - diff end  -- shortest way around midnight
+
+    if diff > 100 then
+        -- The scene re-canned the clock; restore the carried timeline and
+        -- re-assert the running speed (the canned push can zero it too)
+        local speed = State and State.GetTimeSpeed and State.GetTimeSpeed() or nil
+        if Config.PA and Config.PA.ForceNormalSpeed then
+            local normal = (Config.TimeOfDay and Config.TimeOfDay.DefaultSpeed) or 53.333
+            if speed and speed > normal then speed = normal end
+        end
+        pcall(function() uds["Time Of Day"] = predicted end)
+        pcall(function() uds["Animate Time of Day"] = true end)
+        if speed and speed > 0 then
+            pcall(function() uds["Time Speed"] = 1.0 end)
+            pcall(function() uds["Simulation Speed"] = speed end)
+        end
+        Log.Info("Main", "PA clock re-synced (scene re-canned it)", {
+            was = string.format("%.0f", tod),
+            restored = string.format("%.0f", predicted),
+        })
+        paClockLast = { tod = predicted, clock = now }
+    else
+        paClockLast = { tod = tod, clock = now }
+    end
 end
 
 local function onTick()
@@ -603,10 +678,8 @@ local function onTick()
                     Atmosphere.Setup()
                 end
                 
-                -- Initialize audio (weather sounds)
-                if Audio and Audio.Setup then
-                    Audio.Setup()
-                end
+                -- (Audio module removed in the no-rain build 2026-07-17;
+                -- reference copy in C:\möd\.backup\removed_modules)
 
                 -- Apply HD stars (night sky)
                 if Stars and Stars.Setup then
@@ -642,8 +715,37 @@ local function onTick()
             if not paStateApplied and Actors and Actors.IsInPAScene and Actors.IsInPAScene() then
                 paStateApplied = true
                 applyPAState()
+            elseif paStateApplied and paReassertAt and os.clock() >= paReassertAt then
+                -- Delayed carry re-assert: log what the apply-time write
+                -- left (was_*), then write the carried pair again. was_*
+                -- at the preset's values = something reverted the first
+                -- write after Weather.Apply; at the carried values = the
+                -- carry held and this re-write is a no-op.
+                paReassertAt = nil
+                local c = paCarry
+                paCarry = nil
+                local udw = Actors and Actors.GetUDW and Actors.GetUDW()
+                if udw and c then
+                    local wasCloud, wasFog = nil, nil
+                    pcall(function() wasCloud = tonumber(udw["Cloud Coverage"]) end)
+                    pcall(function() wasFog = tonumber(udw["Fog"]) end)
+                    if c.cloud and c.cloud >= 0 then
+                        pcall(function() udw["Cloud Coverage - Manual Override"] = true end)
+                        pcall(function() udw["Cloud Coverage"] = c.cloud end)
+                    end
+                    if c.fog ~= nil then
+                        pcall(function() udw["Fog - Manual Override"] = true end)
+                        pcall(function() udw["Fog"] = c.fog end)
+                    end
+                    Log.Info("Main", "PA carry re-assert", {
+                        was_cloud = wasCloud or -1, was_fog = wasFog or -1,
+                        cloud = c.cloud or -1, fog = c.fog or -1,
+                    })
+                end
             elseif paStateApplied and Actors and not Actors.HasActors() then
                 paStateApplied = false
+                paCarry, paReassertAt = nil, nil
+                paClockLast, paClockNext = nil, 0.0
                 if State and State.IsPAFrozen and State.IsPAFrozen() then
                     State.SetPAFrozen(false)
                 end
@@ -654,6 +756,10 @@ local function onTick()
                     Tunnels.OnCourseUnload()
                 end
                 Log.Info("Main", "PA state cleared (actors lost)")
+            end
+            -- Continue-mode clock watch (freeze mode has its own watchdog)
+            if paStateApplied and not State.IsPAFrozen() then
+                paClockWatchTick()
             end
         end
 
@@ -776,11 +882,6 @@ local function onTick()
         -- Real sun probe/experiment (settle-gated one-shot)
         if RealSun and RealSun.Tick and not State.IsPAFrozen() then
             RealSun.Tick()
-        end
-
-        -- Weather audio (settle-gated one-shot apply of UDW's native sounds)
-        if Audio and Audio.Tick and not State.IsPAFrozen() then
-            Audio.Tick()
         end
 
         -- Vignette HUD toggle (throttled re-assert; runs in/out of course like the
@@ -960,7 +1061,6 @@ local function initialize()
         if tg.Transitions == false then Transitions = nil end
         if tg.Atmosphere  == false then Atmosphere = nil end
         if tg.Headlights  == false then Headlights = nil end
-        if tg.Audio       == false then Audio = nil end
         if tg.WindDebris  == false then WindDebris = nil end
         if tg.LightRays   == false then LightRays = nil end
         if tg.Moon        == false then Moon = nil end
@@ -980,7 +1080,7 @@ local function initialize()
             Weather = Weather ~= nil, TimeOfDay = TimeOfDay ~= nil,
             CloudsFog = CloudsFog ~= nil, Shadows = Shadows ~= nil,
             Transitions = Transitions ~= nil, Atmosphere = Atmosphere ~= nil,
-            Headlights = Headlights ~= nil, Audio = Audio ~= nil,
+            Headlights = Headlights ~= nil,
             Stars = Stars ~= nil, Persistence = Persistence ~= nil,
         })
     end
@@ -1091,9 +1191,16 @@ if RegisterLoadMapPreHook then
             if Log then Log.Debug("Main", "No valid actors on unload: cannot capture state") end
         end
         
-        -- Save persistence if on course (still before the cache drop, so the
-        -- save can read live values)
-        if currentTag == "course" and Persistence and Persistence.Save then
+        -- Save persistence if on course OR leaving the PA scene (still
+        -- before the cache drop, so the save reads live values). The PA
+        -- leg matters for clock sync: in continue mode time keeps running
+        -- there, and without this save the next course restores from an
+        -- up-to-30s-stale autosave instead of the exact PA-exit time.
+        local leavingPA = false
+        pcall(function()
+            leavingPA = Actors and Actors.IsInPAScene and Actors.IsInPAScene() or false
+        end)
+        if (currentTag == "course" or leavingPA) and Persistence and Persistence.Save then
             Persistence.Save("map_unload_pre")
         end
 
@@ -1103,6 +1210,12 @@ if RegisterLoadMapPreHook then
         -- the course->PA return; dump held the previous course's UDS).
         if Actors and Actors.SuspendDiscovery then
             Actors.SuspendDiscovery()
+        end
+        -- Same rule for weather's cached precip-component list: drop the
+        -- suppression state (no object touches) so the next Weather.Apply
+        -- can't unhide dead old-world components.
+        if Weather and Weather.OnMapTeardown then
+            Weather.OnMapTeardown()
         end
 
         _LastWorldTag = currentTag
@@ -1216,9 +1329,19 @@ if RegisterBeginPlayPreHook then
             -- resume signal.
             if type(actorName) == "string"
                and (actorName:find("OutGameGarageManager") or actorName:find("OutGameMode"))
-               and Actors and Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended()
-               and Actors.ResumeDiscovery then
-                Actors.ResumeDiscovery()
+               and Actors then
+                -- Event-driven outgame signal (2026-07-21 map-open crash fix):
+                -- this actor constructing IS the outgame world; game-thread
+                -- context with the actor in hand, so the async garage probe
+                -- (FindFirstOf x2 every 1.5s) never needs to run there.
+                if Actors.OnOutgameManagerBeginPlay then
+                    Actors.OnOutgameManagerBeginPlay()
+                end
+                if State and State.SetWorldContext then State.SetWorldContext("outgame") end
+                if Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended()
+                   and Actors.ResumeDiscovery then
+                    Actors.ResumeDiscovery()
+                end
             end
             return
         end
@@ -1290,7 +1413,6 @@ return {
     Transitions = Transitions,
     Atmosphere = Atmosphere,
     Headlights = Headlights,
-    Audio = Audio,
     Stars = Stars,
     LightCycle = LightCycle,
     Tunnels = Tunnels,
