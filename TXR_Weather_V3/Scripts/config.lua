@@ -22,13 +22,12 @@ Config.Weather = {
     Enabled = true,
 
     -- Active presets: Clear_Skies, Partly_Cloudy, Cloudy, Overcast,
-    -- Overcast_Heavy, Foggy.
-    -- NO-RAIN BUILD (2026-07-17, performance): the rain variants
-    -- (Rain_Light/Rain/Rain_Thunderstorm) are DISABLED (dropped from this
-    -- cycle, the scheduler pool and presets.lua's DEFAULT_CYCLE_ORDER, all
-    -- in sync). Snow/dust were never in the cycle. Preset DATA is retained
-    -- in presets.lua for a future re-enable; persistence falls back to the
-    -- default if an old save carries a disabled preset.
+    -- Overcast_Heavy, Foggy, Rain_Light, Rain, Rain_Thunderstorm.
+    -- RAIN RETURNS (3.8.0): the rain variants are BACK (this cycle, the
+    -- scheduler pool and presets.lua's DEFAULT_CYCLE_ORDER, all in sync:
+    -- the lists must always move together) now that rain occludes natively
+    -- on real geometry (Config.RainCollision). Snow/dust were never in
+    -- the cycle.
     DefaultPreset = "Clear_Skies",
     DefaultTransitionTime = 5.0,  -- seconds
     FastTransitionTime = 2.0,     -- seconds (keybind cycling)
@@ -38,7 +37,7 @@ Config.Weather = {
     -- over presets.lua's DEFAULT_CYCLE_ORDER; keep both in sync)
     PresetCycleOrder = {
         "Clear_Skies", "Partly_Cloudy", "Cloudy", "Overcast", "Overcast_Heavy",
-        "Foggy",
+        "Foggy", "Rain_Light", "Rain", "Rain_Thunderstorm",
     },
 }
 
@@ -60,13 +59,18 @@ Config.Scheduler = {
 
     -- Base weighted pool. Higher = more likely. Any PRESET_DATA name is valid;
     -- snow/dust are omitted by default (Tokyo expressway vibe). Set 0 to exclude.
+    -- Rebalanced 3.8.0 (field: clear skies held too long): clear tiers
+    -- down, cloudy/wet tiers up, so the sky changes character more often.
     Weights = {
-        Clear_Skies       = 4.0,
-        Partly_Cloudy     = 4.0,
+        Clear_Skies       = 2.5,
+        Partly_Cloudy     = 3.5,
         Cloudy            = 3.0,
         Overcast          = 2.0,
-        Overcast_Heavy    = 1.0,
+        Overcast_Heavy    = 1.5,
         Foggy             = 1.0,
+        Rain_Light        = 2.0,
+        Rain              = 1.5,
+        Rain_Thunderstorm = 0.5,
     },
 
     -- Time-of-day weight MULTIPLIERS, applied on top of the base weight depending
@@ -129,8 +133,8 @@ Config.Wetness = {
 -- entry). The global-tire-table grip approach is credited to Chrystales. See
 -- systems/wet_grip.lua.
 Config.WetGrip = {
-    Enabled = false,   -- NO-RAIN BUILD: no rain = no wet grip (module also
-                       -- toggled off below; flip both to re-enable)
+    Enabled = true,    -- RAIN RETURNS (3.8.0): re-enabled with the native
+                       -- occlusion work (ModuleToggles.WetGrip also true)
 
     -- Grip multipliers at FULL wetness (heaviest rain). 1.0 = unchanged, lower = less
     -- grip. Grip interpolates from 1.0 (bone dry) down to these floors. Lateral
@@ -245,6 +249,24 @@ Config.LightRays = {
     IndividualClouds = 1.0,  -- 0-1: rays through natural cloud gaps (0 = painted gaps only)
     UsingSun = true,         -- sun as the ray source
     Debug = false,           -- periodic readback while enabled (one-shot at apply always logs)
+    -- Plausibility gate (2026-07-28): sun shafts are forced OFF while any
+    -- of these presets is active (solid deck / fog / rain = no visible sun
+    -- to shaft) and return when the sky breaks up again.
+    DisabledPresets = {
+        "Overcast", "Overcast_Heavy", "Foggy",
+        "Rain_Light", "Rain", "Rain_Thunderstorm",
+    },
+    -- Distance/geometry shaping (2026-07-28, "rays fire off buildings"):
+    -- nil = keep the UDS default. STOCK VALUES LAND IN THE "Light rays
+    -- readback" LOG LINE at apply: read them once, then tune here.
+    -- DepthFadeDistance is the anti-building knob (rays fade against
+    -- nearby scene depth: RAISE it to soften/suppress rays that overlap
+    -- close structures); MaxDistanceKm bounds how far out rays exist.
+    MaxDistanceKm     = nil,
+    DepthFadeDistance = nil,
+    PointSpacing      = nil,
+    RayLength         = nil,
+    MaxRayLength      = nil,
 }
 
 -- ============== TRANSITIONS (dawn/dusk slow-time + Tokyo tint) ==============
@@ -296,14 +318,33 @@ Config.Keybinds = {
     CycleHeadlights    = { Key = "Q", Modifiers = {"Alt"} },          -- manual headlights on/off (garage too); auto is config-only
     BrightnessUp     = { Key = "B", Modifiers = {"Alt"} },
     BrightnessDown   = { Key = "B", Modifiers = {"Alt", "Shift"} },
+    -- Exposure trim + dark look: live during a photo session AND in the
+    -- plain garage (no photomode needed there). Session and garage keep
+    -- separate values; both reset when their context ends.
+    PhotoExposureUp   = { Key = "E", Modifiers = {"Alt"} },          -- brighter
+    PhotoExposureDown = { Key = "E", Modifiers = {"Alt", "Shift"} }, -- darker
+    PhotoDarkLook     = { Key = "G", Modifiers = {"Alt"} },          -- crushed low-key toggle
     -- DEV: UDS exposure-bias liveness test (+2 EV on all five knobs, press
     -- again to restore). Unbound for release; uncomment to re-enable.
     -- ExposureDebugOverlay = { Key = "H", Modifiers = {"Alt"} },
 
-    -- NO-RAIN BUILD: the rain suppression test and rain-spot datapoint
-    -- keys are retired with the rain kill (handlers remain in code).
+    -- Rain-spot datapoint key, REINSTATED with the rain return: press at
+    -- any wrong-rain spot (raining under cover, dry in the open); the
+    -- logged mesh names feed Config.RainCollision.TargetPatterns.
+    NoteRainSpot = { Key = "N", Modifiers = {"Alt"} },
     -- PrecipSuppressTest = { Key = "J", Modifiers = {"Alt"} },
-    -- NoteRainSpot = { Key = "N", Modifiers = {"Alt"} },
+    -- RETIRED occlusion-experiment keys (2026-07-28, the discovery phase
+    -- is over: rain occludes natively via Config.RainCollision). Handlers
+    -- remain in tunnels.lua; uncomment a line to re-arm its diagnostic.
+    -- Alt+O = UDW props + channel sweep, Alt+Shift+O = test rain toggle,
+    -- Alt+U = manual roof slab, Alt+I / Alt+Shift+I = census / world
+    -- flip, Alt+Y = UDW rain-channel cycler.
+    -- OcclusionProbe = { Key = "O", Modifiers = {"Alt"} },
+    -- OcclusionTestRain   = { Key = "O", Modifiers = {"Alt", "Shift"} },
+    -- OcclusionTestVolume = { Key = "U", Modifiers = {"Alt"} },
+    -- CeilingCensus = { Key = "I", Modifiers = {"Alt"} },
+    -- CeilingFlip   = { Key = "I", Modifiers = {"Alt", "Shift"} },
+    -- RainChannelCycle = { Key = "Y", Modifiers = {"Alt"} },
 
     -- Exposure tuning feedback: press when the picture looks wrong; logs time,
     -- weather, and the exposure values in effect (grep the log for "ExposureTune").
@@ -650,6 +691,19 @@ Config.PhotoMode = {
     -- if they blow out. nil = off (sun curve everywhere).
     CoveredLens = 14.0,
 
+    -- Live exposure trim inside a photo session (Alt+E brighter,
+    -- Alt+Shift+E darker): each press multiplies/divides the session's
+    -- lens level by this step. Session-scoped (fresh session = neutral);
+    -- every press logs the resulting level, so field use doubles as
+    -- calibration telemetry for the curve/garage/covered values above.
+    NudgeStep = 1.25,
+
+    -- Alt+G "dark look" toggle inside a photo session: forces this lens
+    -- regardless of the sun/garage/covered branch. Born from the 07-22
+    -- tester's accidental garage render (crushed low-key, underglow and
+    -- emissives pop); the nudge still applies on top. Session-scoped.
+    DarkLook = { Lens = 30.0 },
+
     -- Let the camera pass through geometry and leave the track (disables the
     -- free-camera collision sphere and the spring-arm collision pull-in).
     DisableCameraCollision = true,
@@ -733,7 +787,7 @@ Config.Headlights = {
     -- lone overpasses deliberately do NOT flash the lights) and wet weather
     -- presets. When the context ends, the elevation logic takes back over.
     AutoOnInTunnel = true,
-    AutoOnInRain = false,  -- NO-RAIN BUILD: no wet presets exist (inert either way)
+    AutoOnInRain = true,   -- RAIN RETURNS (3.8.0)
 
     DefaultBrightnessLevel = 3,  -- 1=0.5x 2=1.0x 3=2.0x 4=3.0x 5=5.0x
 
@@ -751,9 +805,19 @@ Config.Headlights = {
 }
 
 -- ============== AUDIO ==============
--- Module REMOVED in the no-rain build (2026-07-17): weather sound was
--- rain/wind/thunder. Reference copy of the module + this config block:
--- C:\möd\.backup\removed_modules + the full backup zip.
+-- Weather sound (rain/wind/thunder loops on cooked UDS sound assets).
+-- Removed in the no-rain build 2026-07-17, RESTORED for 3.8.0 with the
+-- rain return.
+Config.Audio = {
+    Enabled = true,
+    EnableRain = true, EnableWind = true, EnableThunder = true,
+    RainVolume = 1.0, WindVolume = 0.8, ThunderVolume = 1.0,
+
+    -- Thunder/Lightning level below which only DISTANT rumbles play (Rain
+    -- runs 4 = distant only; Thunderstorm runs 10 = distant + close mix;
+    -- Light Rain carries no thunder at all).
+    CloseThunderMin = 7.0,
+}
 
 -- ============== TUNING SLIDER RANGE (garage alignment tab) ==============
 -- Widens the alignment sliders (camber/toe/ride height/wheel offset) to
@@ -935,6 +999,32 @@ Config.Tunnels = {
     TunnelRainKill = false,     -- hide precipitation on covered road
     TunnelRainLookahead = 1.2,  -- seconds of travel the roof trace probes ahead
 
+    -- RAIN BLOCKER (2026-07-28, the occlusion solution; mechanism
+    -- field-proven, dig verdict in reference\udwdig\OCCLUSION_FINDINGS.md):
+    -- while the road data says covered, ONE invisible collision slab
+    -- follows the car above the roofline; UDW's native per-particle rain
+    -- traces hit it and rain stops under cover, natively. Replaces the
+    -- retired TunnelRainKill particle machinery (leave that false).
+    -- The slab exists ONLY while covered; it blocks ONLY Visibility
+    -- queries. Known v1 limits: rain persists a few seconds into portal
+    -- entries (UDW particle path reuse) and lone overpasses over open
+    -- road are not covered (road data has no bit for them; a later
+    -- iteration can re-arm the downward roof trace as the signal).
+    RainBlocker = {
+        Enabled = false,    -- SUPERSEDED by Config.RainCollision (v8): the
+                            -- world itself is rain-solid now; machinery kept
+        ZOffset = 1500.0,   -- slab height above the car (cm)
+        HalfXY  = 12000.0,  -- half extent (cm): 240 m square
+        HalfZ   = 200.0,    -- half thickness (cm)
+        HoldS   = 2.0,      -- keep the slab this long after cover ends
+    },
+
+    -- Auto-census RETIRED (2026-07-28 late: it was the bore-entry HITCH:
+    -- a full world component sweep with a location call per component on
+    -- every bore entry; the collision model is settled, the data served
+    -- its purpose). Manual Alt+I census still available as a diagnostic.
+    AutoCensus = false,
+
     -- Fog on covered road: global fog is blind to ceilings, so foggy
     -- weather reads as a white wall inside bores. Scale Fog Density is
     -- multiplied by this while the road data says roofed. 0.0 = no fog at
@@ -961,6 +1051,34 @@ Config.Tunnels = {
     PollSecondsDry = 1.0,
 }
 
+-- ============== RAIN COLLISION (v9 targeted, 2026-07-28) ==============
+-- Native rain occlusion on the game's real geometry, pure Lua (the whole
+-- discovery arc lives in HANDOFF.md; occlusion internals in
+-- reference\udwdig\OCCLUSION_FINDINGS.md). The pass flips ONLY the meshes
+-- that matter (tunnel linings + interior sets + overpass decks, matched
+-- by asset path) rain-solid, as STEALTH BODIES: object type on a
+-- game-undefined channel + Ignore-all responses + Block on the rain
+-- channel alone, so the AI and every other game query never see them
+-- (the world-wide v7/v8 flip broke AI by sheer mass enablement).
+-- Re-runs on a cadence while wet so streamed-in cells get flipped too.
+Config.RainCollision = {
+    Enabled = true,
+    -- ECollisionChannel index for rain particle traces. 3 = stock
+    -- ECC_Visibility (field-verified: occlusion correct). 22..31 = the
+    -- private-channel experiment (25 verified game-unused): arms the
+    -- containment-fan/shape-neutralization machinery too, but field
+    -- round 1 showed mid-air rain loss there: parked, see HANDOFF.
+    Channel = 3,
+    -- Lua patterns matched against disabled mesh components' static-mesh
+    -- asset paths; matching meshes become rain-solid stealth bodies.
+    -- Extend from field evidence (Alt+N / Alt+O mesh names) when a
+    -- covered spot still rains inside.
+    TargetPatterns = { "tnl", "Mesh_tn", "_br%.", "_br$" },
+    ReapplySeconds = 20.0,  -- streamed-cell re-pass cadence while wet
+    SettleSeconds = 3.0,    -- course-arm settle before the first pass
+    Debug = false,          -- log quiet periodic no-op passes too
+}
+
 -- ============== MODULE TOGGLES ==============
 -- Per-module on/off. false = the module's handle is nil-ed in main.lua, so its
 -- tick/setup never runs. (Actors/Presets/Keybinds are core and not toggleable.)
@@ -983,19 +1101,21 @@ Config.ModuleToggles = {
     CinematicSky= true,   -- daytime cloud/atmosphere grade (see Config.CinematicSky)
     LightCycle  = true,   -- sun-elevation exposure (see Config.LightCycle)
     Tunnels     = true,   -- covered-road rain kill (see Config.Tunnels)
+    RainCollision = true, -- native rain occlusion v8 (see Config.RainCollision)
     RealSun     = true,   -- real-sun probe + experiment (see Config.RealSun)
     Vignette    = true,   -- hide the HUD vignette (see Config.Vignette)
     PhotoMode   = true,   -- photo mode free-camera unlocks
-    WetGrip     = false,  -- NO-RAIN BUILD: no rain = no wet grip
+    WetGrip     = true,   -- RAIN RETURNS (3.8.0): dynamic wet grip back on
+    Audio       = true,   -- RAIN RETURNS (3.8.0): weather sound restored
     Tuning      = true,   -- alignment slider-range widening (see Config.Tuning)
 }
 
 -- ============== VERSION ==============
 Config.Version = {
-    Major = 3, Minor = 6, Patch = 0,
-    String = "3.7.0",
+    Major = 3, Minor = 8, Patch = 0,
+    String = "3.8.0",
     Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.7.0",
+    FullName = "TXR Weather Mod v3.8.0",
 }
 
 return Config

@@ -397,9 +397,36 @@ local function onBrightnessDown()
         Log.Warn(MODULE, "Headlights module not available")
         return
     end
-    
+
     local level, multiplier = headlights.CycleBrightnessDown()
     Log.Info(MODULE, "Brightness decreased", {level = level, multiplier = multiplier})
+end
+
+--- Photomode exposure trim (Alt+E brighter / Alt+Shift+E darker) and the
+--- Alt+G dark-look toggle. Only live during a photo session; a press outside
+--- one logs at Debug and does nothing (the provider returns nil).
+local function onPhotoExposureUp()
+    local lc = getExposure()
+    if not lc or not lc.NudgePhotoExposure then return end
+    if lc.NudgePhotoExposure(1) == nil then
+        Log.Debug(MODULE, "Photo exposure nudge ignored (no photo session)")
+    end
+end
+
+local function onPhotoExposureDown()
+    local lc = getExposure()
+    if not lc or not lc.NudgePhotoExposure then return end
+    if lc.NudgePhotoExposure(-1) == nil then
+        Log.Debug(MODULE, "Photo exposure nudge ignored (no photo session)")
+    end
+end
+
+local function onPhotoDarkLook()
+    local lc = getExposure()
+    if not lc or not lc.TogglePhotoDarkLook then return end
+    if lc.TogglePhotoDarkLook() == nil then
+        Log.Debug(MODULE, "Photo dark look ignored (no photo session)")
+    end
 end
 
 --- Exposure tuning feedback: flag the current picture as too dark / too bright.
@@ -621,6 +648,90 @@ function Keybinds.Init(config)
         end
     else
         Log.Debug(MODULE, "BrightnessDown not in config")
+    end
+
+    -- Occlusion dig probe (Alt+O; see tunnels.OcclusionProbe)
+    if config.OcclusionProbe then
+        registerKeybind("OcclusionProbe", config.OcclusionProbe, function()
+            local ok, Tunnels = pcall(require, "systems.tunnels")
+            if not ok or not Tunnels or not Tunnels.OcclusionProbe then
+                Log.Warn(MODULE, "Tunnels module not available")
+                return
+            end
+            Tunnels.OcclusionProbe()
+        end)
+    end
+
+    -- Occlusion experiment round 2: test rain toggle + roof-slab blocker
+    if config.OcclusionTestRain then
+        registerKeybind("OcclusionTestRain", config.OcclusionTestRain, function()
+            local okW, Weather = pcall(require, "systems.weather")
+            if not okW or not Weather or not Weather.Apply then
+                Log.Warn(MODULE, "Weather module not available")
+                return
+            end
+            local raining = false
+            pcall(function()
+                local okP, Presets = pcall(require, "systems.presets")
+                local cur = Weather.GetCurrent and Weather.GetCurrent()
+                local d = okP and Presets and Presets.Get and cur and Presets.Get(cur)
+                raining = (d and d.hasRain) == true
+            end)
+            if raining then
+                Log.Info(MODULE, "TEST RAIN OFF (back to Clear Skies, 10s)")
+                Weather.Apply("Clear_Skies", 10)
+            else
+                Log.Info(MODULE, "TEST RAIN ON (forcing Rain preset, 10s)")
+                Weather.Apply("Rain", 10)
+            end
+            -- Keep the scheduler's hands off the experiment (30 min while
+            -- test rain is on; normal-ish resume 2 min after turning it off)
+            pcall(function()
+                local okS, Scheduler = pcall(require, "systems.scheduler")
+                if okS and Scheduler and Scheduler.HoldFor then
+                    Scheduler.HoldFor(raining and 120 or 1800)
+                end
+            end)
+        end)
+    end
+    if config.OcclusionTestVolume then
+        registerKeybind("OcclusionTestVolume", config.OcclusionTestVolume, function()
+            local ok, Tunnels = pcall(require, "systems.tunnels")
+            if not ok or not Tunnels or not Tunnels.OcclusionVolumeToggle then
+                Log.Warn(MODULE, "Tunnels module not available")
+                return
+            end
+            Tunnels.OcclusionVolumeToggle()
+        end)
+    end
+    if config.CeilingCensus then
+        registerKeybind("CeilingCensus", config.CeilingCensus, function()
+            local ok, Tunnels = pcall(require, "systems.tunnels")
+            if ok and Tunnels and Tunnels.CeilingCensus then Tunnels.CeilingCensus() end
+        end)
+    end
+    if config.CeilingFlip then
+        registerKeybind("CeilingFlip", config.CeilingFlip, function()
+            local ok, Tunnels = pcall(require, "systems.tunnels")
+            if ok and Tunnels and Tunnels.CeilingFlip then Tunnels.CeilingFlip() end
+        end)
+    end
+    if config.RainChannelCycle then
+        registerKeybind("RainChannelCycle", config.RainChannelCycle, function()
+            local ok, Tunnels = pcall(require, "systems.tunnels")
+            if ok and Tunnels and Tunnels.CycleRainChannel then Tunnels.CycleRainChannel() end
+        end)
+    end
+
+    -- Photomode exposure trim + dark look (Alt+E / Alt+Shift+E / Alt+G)
+    if config.PhotoExposureUp then
+        registerKeybind("PhotoExposureUp", config.PhotoExposureUp, onPhotoExposureUp)
+    end
+    if config.PhotoExposureDown then
+        registerKeybind("PhotoExposureDown", config.PhotoExposureDown, onPhotoExposureDown)
+    end
+    if config.PhotoDarkLook then
+        registerKeybind("PhotoDarkLook", config.PhotoDarkLook, onPhotoDarkLook)
     end
 
     -- Exposure tuning feedback (Alt+D too dark, Alt+Shift+D too bright)

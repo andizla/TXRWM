@@ -3,6 +3,48 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.8.0]: 2026-07-28
+
+### Added
+- **Rain is back, and it stops at tunnel portals.** Light Rain, Rain and
+  Thunderstorm return to the weather rotation, and rain now collides with
+  the game's real geometry: it dies in tunnel bores, under overpasses and
+  bridge decks instead of falling through the roof. The game ships no
+  ceiling collision at all; the mod gives tunnel and bridge meshes
+  invisible collision bodies that only rain traces can hit, so the AI,
+  the camera and every other game system see nothing new. Pure script,
+  no game files replaced. The pass re-applies as the world streams in,
+  spread across frames so it costs no visible frame time
+  (`Config.RainCollision`).
+- **Weather sounds return** with the rain: rain, wind and thunder loops,
+  with thunder tiers per preset (Light Rain none, Rain distant rumbles,
+  Thunderstorm the full mix).
+- **Dynamic wet grip is on by default again.** Every car, the AI
+  included, loses grip as the road wets and recovers as it dries.
+- **Auto headlights come on in rain again** (tunnel and sun-elevation
+  behavior unchanged).
+- **Exposure trim and dark look, in photo mode and in the garage.**
+  `Alt+E` / `Alt+Shift+E` step the exposure up or down; `Alt+G` toggles
+  a crushed low-key look that makes underglow and emissives pop. Both
+  work during any photo session and in the plain garage with no photo
+  mode open. Session and garage keep separate values and reset when you
+  leave.
+- `Alt+N` rain-spot report returns: press it wherever rain looks wrong
+  (raining under a roof, dry in the open) and send the feedback log.
+
+### Fixed
+- **Hitch on tunnel entry** (a leftover diagnostic sweep ran every time
+  the car entered a bore; removed).
+
+### Changed
+- The old under-roof rain suppression (hiding particles on covered road)
+  is retired; portal behavior now comes from the collision itself.
+- Persisted saves holding a rain preset restore it again instead of
+  falling back to clear.
+- Scheduler pool rebalanced: clear skies holds less often, cloudy and
+  wet picks come up more (clear drops from roughly a fifth of picks to a
+  seventh, and about a quarter of picks are now rain).
+
 ## [3.7.0]: 2026-07-24
 
 ### Fixed

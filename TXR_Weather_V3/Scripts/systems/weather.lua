@@ -299,6 +299,26 @@ function Weather.Apply(presetName, transitionTime)
             if Wetness and Wetness.ApplyFromPreset then
                 Wetness.ApplyFromPreset(presetData)
             end
+
+            -- God-ray plausibility gate (2026-07-28): sun shafts are forced
+            -- off under solid decks/fog/rain; the module re-applies on its
+            -- own GT path only when the blocked state actually changes
+            pcall(function()
+                local LR = require("systems.volumetric_light_rays")
+                if LR and LR.OnWeatherChange then
+                    LR.OnWeatherChange(presetName)
+                end
+            end)
+
+            -- Rain collision v8 (2026-07-28): a flip to a wet preset
+            -- requests an immediate world pass so rain never falls through
+            -- art meshes while the periodic cadence winds up
+            pcall(function()
+                local RC = require("systems.rain_collision")
+                if RC and RC.OnWeatherChange then
+                    RC.OnWeatherChange(presetName)
+                end
+            end)
             
             -- Log particle expectations (Change Weather should handle this internally)
             Log.Debug(MODULE, "Particle expectations", {

@@ -72,6 +72,9 @@ local function getFrame()
 end
 
 --- Apply the current hide/show state to the frame widget. Returns true if applied.
+--- (2026-07-27: briefly GT-marshalled after the 12:52 crash; REVERTED same day,
+--- object-array walks on the game thread = frame hitches. Runs async as it
+--- always did; the teardown gate plus pcall is the historical protection.)
 local function applyOnce()
     if teardownActive() then return false end
     local v = getFrame()

@@ -27,6 +27,14 @@ local PROP_INDIVIDUAL = "Individual Clouds Light Rays"        -- Double 0-1 (>0 
 local PROP_INTENSITY  = "Light Ray Intensity"                -- Double
 local FN_STATIC       = "Static Properties - Volumetric Cloud Light Rays"
 local PROP_INTERNAL   = "Using Volumetric Light Rays"        -- Bool (UDS internal state, readback only)
+-- Distance/geometry knobs (2026-07-28, user: rays fire off nearby
+-- buildings): depth fade softens rays against close scene depth, max
+-- distance bounds the field, spacing/length shape the cards.
+local PROP_MAXDIST    = "Light Rays Max Distance (Km)"       -- Double
+local PROP_DEPTHFADE  = "Light Rays Depth Fade Distance"     -- Double
+local PROP_SPACING    = "Light Rays Point Spacing"           -- Double
+local PROP_LEN        = "Light Ray Length"                   -- Double
+local PROP_MAXLEN     = "Max Light Ray Length"               -- Double
 
 local SETTLE_TICKS = 32  -- ~4s at 8 Hz before applying, to clear the BeginPlay window
 local DIAG_INTERVAL_TICKS = 24  -- ~3s readback cadence while Debug
@@ -40,6 +48,22 @@ local applied = false
 local settleTicks = 0
 local appliedThisCourse = false
 local diagTicks = 0
+-- Plausibility gate (2026-07-28, user ask): sun shafts through cloud gaps
+-- are nonsense under a solid deck, in fog, or in rain: these presets force
+-- the rays OFF; a change back to broken cover brings them back. Override
+-- the set via Config.LightRays.DisabledPresets (array of preset names).
+local weatherBlocked = false
+local DISABLED_PRESETS = {
+    Overcast = true, Overcast_Heavy = true, Foggy = true,
+    Rain_Light = true, Rain = true, Rain_Thunderstorm = true,
+}
+-- nil = keep the UDS default (stock values land in the apply readback:
+-- tune Config.LightRays from a logged session)
+local maxDistanceKm = nil
+local depthFade = nil
+local pointSpacing = nil
+local rayLength = nil
+local maxRayLength = nil
 
 local function getActors()
     if not Actors then
@@ -69,6 +93,11 @@ local function logReadback(tag)
         individual = tostring(rd(PROP_INDIVIDUAL)),
         intensity = tostring(rd(PROP_INTENSITY)),
         active = tostring(rd(PROP_INTERNAL)),  -- UDS says the rays are actually in use
+        maxDistKm = tostring(rd(PROP_MAXDIST)),
+        depthFade = tostring(rd(PROP_DEPTHFADE)),
+        spacing = tostring(rd(PROP_SPACING)),
+        rayLen = tostring(rd(PROP_LEN)),
+        maxRayLen = tostring(rd(PROP_MAXLEN)),
     })
 end
 
@@ -76,10 +105,16 @@ local function applyOnGameThread()
     local uds = getUDS()
     if not uds then return end
 
-    pcall(function() uds[PROP_ENABLE] = true end)
+    local rayOn = enabled and not weatherBlocked
+    pcall(function() uds[PROP_ENABLE] = rayOn end)
     pcall(function() uds[PROP_USING_SUN] = usingSun end)
     if individual ~= nil then pcall(function() uds[PROP_INDIVIDUAL] = individual end) end
     if intensity ~= nil then pcall(function() uds[PROP_INTENSITY] = intensity end) end
+    if maxDistanceKm ~= nil then pcall(function() uds[PROP_MAXDIST] = maxDistanceKm end) end
+    if depthFade ~= nil then pcall(function() uds[PROP_DEPTHFADE] = depthFade end) end
+    if pointSpacing ~= nil then pcall(function() uds[PROP_SPACING] = pointSpacing end) end
+    if rayLength ~= nil then pcall(function() uds[PROP_LEN] = rayLength end) end
+    if maxRayLength ~= nil then pcall(function() uds[PROP_MAXLEN] = maxRayLength end) end
 
     local fn = nil
     pcall(function() fn = uds[FN_STATIC] end)
@@ -117,6 +152,17 @@ function LightRays.Init()
         if cfg.Intensity ~= nil then intensity = cfg.Intensity end
         if cfg.IndividualClouds ~= nil then individual = cfg.IndividualClouds end
         if cfg.UsingSun ~= nil then usingSun = cfg.UsingSun end
+        if type(cfg.DisabledPresets) == "table" then
+            DISABLED_PRESETS = {}
+            for _, name in ipairs(cfg.DisabledPresets) do
+                DISABLED_PRESETS[name] = true
+            end
+        end
+        if tonumber(cfg.MaxDistanceKm) then maxDistanceKm = tonumber(cfg.MaxDistanceKm) end
+        if tonumber(cfg.DepthFadeDistance) then depthFade = tonumber(cfg.DepthFadeDistance) end
+        if tonumber(cfg.PointSpacing) then pointSpacing = tonumber(cfg.PointSpacing) end
+        if tonumber(cfg.RayLength) then rayLength = tonumber(cfg.RayLength) end
+        if tonumber(cfg.MaxRayLength) then maxRayLength = tonumber(cfg.MaxRayLength) end
     end
     initialized = true
     Log.Info(MODULE, "Initializing volumetric light rays module", { enabled = enabled })
@@ -149,6 +195,22 @@ function LightRays.Tick()
             diagTicks = 0
             logReadback("tick")
         end
+    end
+end
+
+--- Weather plausibility: weather.Apply reports every preset change here.
+--- On a state change the same GT apply path re-runs (no extra settle: any
+--- mid-course weather change means the course settled long ago), so a
+--- turn to Overcast kills the rays and a clearing sky restores them.
+function LightRays.OnWeatherChange(presetName)
+    if not initialized then return end
+    local blocked = DISABLED_PRESETS[presetName] == true
+    if blocked == weatherBlocked then return end
+    weatherBlocked = blocked
+    Log.Info(MODULE, blocked and "Light rays OFF (implausible weather)"
+        or "Light rays ON (weather clears)", { preset = tostring(presetName) })
+    if appliedThisCourse and enabled then
+        apply()
     end
 end
 

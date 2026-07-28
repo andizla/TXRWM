@@ -113,6 +113,19 @@ local PHOTO_GARAGE_LENS = 30.0   -- the 3.4.0 garage value (no sun there)
 -- indoor value applies instead; nil = feature off.
 local PHOTO_COVERED_LENS = nil
 local photoCoveredLatch = false  -- latched at session open (car is parked)
+-- Live per-session exposure trim (Alt+E family, 2026-07-27): each step
+-- multiplies the branch's lens by NudgeStep^steps. Session-scoped (reset
+-- at open); every press logs the resulting level = field telemetry for
+-- retuning the curve/garage/covered constants ("often not bright enough
+-- or too bright").
+local PHOTO_NUDGE_STEP = 1.25
+local photoNudgeSteps = 0
+-- Alt+G "dark look" (2026-07-27): forces this lens regardless of branch =
+-- the crushed low-key look the 07-22 tester screenshotted in the garage
+-- (their SDR render of garage lens 30) as a deliberate feature. Session
+-- scoped; the nudge still applies on top.
+local PHOTO_DARK_LENS = 30.0
+local photoDarkOn = false
 
 -- UDS sun-vector vertical convention: the cached vector is the LIGHT direction,
 -- so raw Z = -sin(elevation) and the sign is a CONSTANT -1 (measured across
@@ -263,9 +276,21 @@ local function scheduleExec(cmds)
     return true
 end
 
+-- Garage exposure trim + dark look (the Alt+E/Alt+G family OUTSIDE photo
+-- sessions; user call 2026-07-28: the garage look should be dialable
+-- while just browsing cars, no photomode needed). Same levers as the
+-- photo-session versions, applied on the garage-neutral lens; scoped to
+-- the garage visit (reset on leaving).
+local garageNudgeSteps = 0
+local garageDarkOn = false
+
 local lastDriveState = nil
 local function noteDriveState(state)
     if state == lastDriveState then return end
+    if lastDriveState == "garage" and (garageNudgeSteps ~= 0 or garageDarkOn) then
+        garageNudgeSteps = 0
+        garageDarkOn = false
+    end
     lastDriveState = state
     local tag = "?"
     local actors = getActors()
@@ -288,12 +313,17 @@ local function applyValues(sky, leak, lens, elev, reason)
     -- alone: photomode never scales the skylight (the config ManualCurve
     -- sky column is 3.4.0 reference data only).
     if photoExpFrozen and #PHOTO_LENS_CURVE > 0 then
-        if photoCoveredLatch and PHOTO_COVERED_LENS then
+        if photoDarkOn then
+            lens = PHOTO_DARK_LENS            -- Alt+G dark look wins the branch
+        elseif photoCoveredLatch and PHOTO_COVERED_LENS then
             lens = PHOTO_COVERED_LENS
         elseif elev == nil then
             lens = PHOTO_GARAGE_LENS
         else
             lens = curveLookup(PHOTO_LENS_CURVE, elev)
+        end
+        if photoNudgeSteps ~= 0 then          -- Alt+E trim rides on top
+            lens = lens * (PHOTO_NUDGE_STEP ^ photoNudgeSteps)
         end
     end
     local cmds = {}
@@ -640,6 +670,12 @@ end
 function LightCycle.SetPhotoExposureFreeze(on)
     if on == photoExpFrozen then return end
     photoExpFrozen = on
+    -- Fresh session = default look: drop the previous session's Alt+E trim
+    -- and Alt+G dark look (predictable open state)
+    if on then
+        photoNudgeSteps = 0
+        photoDarkOn = false
+    end
     -- Covered check, latched once at open (the car is parked during a
     -- session): road-data roof = lit-interior session = fixed indoor lens
     photoCoveredLatch = false
@@ -649,13 +685,87 @@ function LightCycle.SetPhotoExposureFreeze(on)
             photoCoveredLatch = (T and T.IsCovered and T.IsCovered()) or false
         end)
     end
-    scheduleExec({ "r.EyeAdaptation.MethodOverride " .. (on and "3" or "-1") })
+    if on then
+        scheduleExec({ "r.EyeAdaptation.MethodOverride 3" })
+    else
+        -- Restore the NEUTRAL LENS in the SAME batch as the metering switch
+        -- (field bug 2026-07-27 23:48): the restore used to ride the next
+        -- Update tick, but a close at world teardown (quitting the course
+        -- from inside photomode) has no armed Update: the session lens
+        -- (nudged to 15.28 that night) stayed in the process-global cvar
+        -- into the menus = "exposure never came back". The batch below is
+        -- world-independent; Update re-tunes once a course arms again.
+        scheduleExec({
+            "r.EyeAdaptation.MethodOverride -1",
+            string.format("%s %.6f", CVAR_LENS, NEUTRAL_LENS),
+        })
+        lastApplied.lens = NEUTRAL_LENS
+    end
     -- Re-push the cvar trio on the next main tick (125ms): the lens value
     -- must land with the metering switch
     lastCheckClock = 0.0
     Log.Info(MODULE, on and "Photo session: manual metering ON (legacy lens curve)"
         or "Photo session: manual metering OFF",
         on and {covered = photoCoveredLatch and "YES (indoor lens)" or nil} or nil)
+end
+
+--- Alt+E family: exposure trim. dir > 0 = brighter step, dir < 0 =
+--- darker. Live during a photo session (photoExpFrozen branch) AND in
+--- the plain garage (garage branch; the garage look is cvar-driven, so
+--- the same lens lever works there without photomode). Returns the new
+--- step count and effective multiplier for the keybind log, nil when
+--- neither context is active.
+function LightCycle.NudgePhotoExposure(dir)
+    if photoExpFrozen then
+        photoNudgeSteps = photoNudgeSteps + ((dir or 1) > 0 and 1 or -1)
+        lastApplied.lens = nil  -- force the cvar push even on a same-value round trip
+        lastCheckClock = 0.0    -- apply on the next main tick (125ms)
+        local mult = PHOTO_NUDGE_STEP ^ photoNudgeSteps
+        Log.Info(MODULE, "Photo exposure nudge", {
+            steps = photoNudgeSteps,
+            mult = string.format("%.3f", mult),
+            dark = photoDarkOn or nil,
+            covered = photoCoveredLatch or nil,
+        })
+        return photoNudgeSteps, mult
+    end
+    if lastDriveState == "garage" then
+        garageNudgeSteps = garageNudgeSteps + ((dir or 1) > 0 and 1 or -1)
+        lastApplied.lens = nil
+        lastCheckClock = 0.0
+        local mult = PHOTO_NUDGE_STEP ^ garageNudgeSteps
+        Log.Info(MODULE, "Garage exposure nudge", {
+            steps = garageNudgeSteps,
+            mult = string.format("%.3f", mult),
+            dark = garageDarkOn or nil,
+        })
+        return garageNudgeSteps, mult
+    end
+    return nil
+end
+
+--- Alt+G: toggle the dark look inside a photo session, or the garage's
+--- own dark look outside one (the tester render the user liked, live in
+--- the garage without photomode). Returns the new state, nil when
+--- neither context is active.
+function LightCycle.TogglePhotoDarkLook()
+    if photoExpFrozen then
+        photoDarkOn = not photoDarkOn
+        lastApplied.lens = nil
+        lastCheckClock = 0.0
+        Log.Info(MODULE, "Photo dark look " .. (photoDarkOn and "ON" or "OFF"),
+            {lens = photoDarkOn and PHOTO_DARK_LENS or nil})
+        return photoDarkOn
+    end
+    if lastDriveState == "garage" then
+        garageDarkOn = not garageDarkOn
+        lastApplied.lens = nil
+        lastCheckClock = 0.0
+        Log.Info(MODULE, "Garage dark look " .. (garageDarkOn and "ON" or "OFF"),
+            {lens = garageDarkOn and PHOTO_DARK_LENS or nil})
+        return garageDarkOn
+    end
+    return nil
 end
 
 -- ============== DISPLAY PROFILE (HDR vs SDR) ==============
@@ -771,6 +881,14 @@ function LightCycle.Init()
         if type(cl) == "number" and cl > 0 then
             PHOTO_COVERED_LENS = cl
         end
+        local ns = Config.PhotoMode and Config.PhotoMode.NudgeStep
+        if type(ns) == "number" and ns > 1.0 then
+            PHOTO_NUDGE_STEP = ns
+        end
+        local dl = Config.PhotoMode and Config.PhotoMode.DarkLook
+        if type(dl) == "table" and tonumber(dl.Lens) then
+            PHOTO_DARK_LENS = tonumber(dl.Lens)
+        end
     end)
 
     -- PA mode lives OUTSIDE the LightCycle block (Config.PA, shared with
@@ -826,9 +944,14 @@ function LightCycle.OnCourseLoad()
     -- set; the cvar is process-global, so assert the restore too
     if photoExpFrozen then
         photoExpFrozen = false
-        scheduleExec({ "r.EyeAdaptation.MethodOverride -1" })
+        scheduleExec({
+            "r.EyeAdaptation.MethodOverride -1",
+            string.format("%s %.6f", CVAR_LENS, NEUTRAL_LENS),
+        })
     end
     photoCoveredLatch = false
+    photoNudgeSteps = 0
+    photoDarkOn = false
     armed = true
 end
 
@@ -861,7 +984,15 @@ function LightCycle.Update()
         local paScene = PA_FOLLOW and actors.IsInPAScene and actors.IsInPAScene()
         if not paScene then
             noteDriveState("garage")
-            applyValues(NEUTRAL_SKY, LEAK_ALBEDO, NEUTRAL_LENS, nil, "garage-neutral")
+            -- Garage Alt+G/Alt+E ride on the neutral lens exactly like
+            -- their photo-session versions ride the session branch
+            local gLens = garageDarkOn and PHOTO_DARK_LENS or NEUTRAL_LENS
+            if garageNudgeSteps ~= 0 then
+                gLens = gLens * (PHOTO_NUDGE_STEP ^ garageNudgeSteps)
+            end
+            applyValues(NEUTRAL_SKY, LEAK_ALBEDO, gLens, nil,
+                (garageDarkOn or garageNudgeSteps ~= 0)
+                    and "garage-trimmed" or "garage-neutral")
             return true
         end
     end

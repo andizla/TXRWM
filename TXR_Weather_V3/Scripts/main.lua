@@ -86,9 +86,11 @@ local Shadows = nil
 local Transitions = nil
 local Atmosphere = nil
 local Headlights = nil
+local Audio = nil
 local Stars = nil
 local LightCycle = nil
 local Tunnels = nil
+local RainCollision = nil
 local WindDebris = nil
 local LightRays = nil
 local Moon = nil
@@ -245,6 +247,24 @@ local function loadSystemModules()
         if Tunnels.Init then Tunnels.Init() end
     else
         Log.Debug("Main", "Tunnels module not loaded")
+    end
+
+    -- Weather audio (rain/wind/thunder loops; restored for 3.8.0)
+    Audio = safeRequire("systems.audio", "Audio")
+    if Audio then
+        Log.Info("Main", "System module loaded: Audio")
+        if Audio.Init then Audio.Init() end
+    else
+        Log.Debug("Main", "Audio module not loaded")
+    end
+
+    -- Rain collision v8: private rain channel + rain-solid world pass
+    RainCollision = safeRequire("systems.rain_collision", "RainCollision")
+    if RainCollision then
+        Log.Info("Main", "System module loaded: RainCollision")
+        if RainCollision.Init then RainCollision.Init() end
+    else
+        Log.Debug("Main", "RainCollision module not loaded")
     end
 
     -- Wind debris (UDW Niagara debris, scales with wind intensity)
@@ -500,6 +520,9 @@ local function applyPAState()
     if Tunnels and Tunnels.OnCourseLoad then
         Tunnels.OnCourseLoad()
     end
+    if RainCollision and RainCollision.OnCourseLoad then
+        RainCollision.OnCourseLoad()
+    end
 
     Log.Info("Main", "PA state applied", {
         mode = mode,
@@ -678,8 +701,10 @@ local function onTick()
                     Atmosphere.Setup()
                 end
                 
-                -- (Audio module removed in the no-rain build 2026-07-17;
-                -- reference copy in C:\möd\.backup\removed_modules)
+                -- Initialize audio (weather sounds; restored for 3.8.0)
+                if Audio and Audio.Setup then
+                    Audio.Setup()
+                end
 
                 -- Apply HD stars (night sky)
                 if Stars and Stars.Setup then
@@ -692,6 +717,9 @@ local function onTick()
                 end
                 if Tunnels and Tunnels.OnCourseLoad then
                     Tunnels.OnCourseLoad()
+                end
+                if RainCollision and RainCollision.OnCourseLoad then
+                    RainCollision.OnCourseLoad()
                 end
 
                 -- Reconcile headlights: clear any cast-only desync the game's native
@@ -755,6 +783,9 @@ local function onTick()
                 if Tunnels and Tunnels.OnCourseUnload then
                     Tunnels.OnCourseUnload()
                 end
+                if RainCollision and RainCollision.OnCourseUnload then
+                    RainCollision.OnCourseUnload()
+                end
                 Log.Info("Main", "PA state cleared (actors lost)")
             end
             -- Continue-mode clock watch (freeze mode has its own watchdog)
@@ -789,6 +820,9 @@ local function onTick()
             end
             if Tunnels and Tunnels.OnCourseUnload then
                 Tunnels.OnCourseUnload()
+            end
+            if RainCollision and RainCollision.OnCourseUnload then
+                RainCollision.OnCourseUnload()
             end
             initialWeatherApplied = false
             _pendingRestore = true  -- Signal to restore on next actor detection
@@ -849,6 +883,11 @@ local function onTick()
             Stars.Tick()
         end
 
+        -- Weather audio (rain/wind/thunder loops follow the weather state)
+        if Audio and Audio.Tick and not State.IsPAFrozen() then
+            Audio.Tick()
+        end
+
         -- Wind debris (settle-gated one-shot apply)
         if WindDebris and WindDebris.Tick and not State.IsPAFrozen() then
             WindDebris.Tick()
@@ -900,6 +939,12 @@ local function onTick()
         -- self-paced inside, so portal reactions stay at the 0.25s budget)
         if Tunnels and Tunnels.Tick then
             Tunnels.Tick()
+        end
+
+        -- Rain collision v8 (channel enforcement + streamed-cell re-pass;
+        -- self-paced inside, near-free while dry)
+        if RainCollision and RainCollision.Tick then
+            RainCollision.Tick()
         end
 
         -- Tuning slider widening (the alignment menu lives in the garage, so
@@ -1070,17 +1115,19 @@ local function initialize()
         if tg.CinematicSky== false then CinematicSky = nil end
         if tg.LightCycle  == false then LightCycle = nil end
         if tg.Tunnels     == false then Tunnels = nil end
+        if tg.RainCollision == false then RainCollision = nil end
         if tg.RealSun     == false then RealSun = nil end
         if tg.Vignette    == false then Vignette = nil end
         if tg.PhotoMode   == false then PhotoMode = nil end
         if tg.WetGrip     == false then WetGrip = nil end
         if tg.Tuning      == false then Tuning = nil end
+        if tg.Audio       == false then Audio = nil end
         if tg.Persistence == false then Persistence = nil end
         Log.Info("Main", "Module toggles applied", {
             Weather = Weather ~= nil, TimeOfDay = TimeOfDay ~= nil,
             CloudsFog = CloudsFog ~= nil, Shadows = Shadows ~= nil,
             Transitions = Transitions ~= nil, Atmosphere = Atmosphere ~= nil,
-            Headlights = Headlights ~= nil,
+            Headlights = Headlights ~= nil, Audio = Audio ~= nil,
             Stars = Stars ~= nil, Persistence = Persistence ~= nil,
         })
     end
@@ -1413,9 +1460,11 @@ return {
     Transitions = Transitions,
     Atmosphere = Atmosphere,
     Headlights = Headlights,
+    Audio = Audio,
     Stars = Stars,
     LightCycle = LightCycle,
     Tunnels = Tunnels,
+    RainCollision = RainCollision,
     Rainbow = Rainbow,
     SpaceLayer = SpaceLayer,
     CinematicSky = CinematicSky,

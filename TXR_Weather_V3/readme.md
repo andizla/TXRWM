@@ -5,7 +5,7 @@ A modular UE4SS Lua mod for **Tokyo Xtreme Racer** that drives **Ultra Dynamic S
 full feature + configuration + developer reference. For install and a short feature list, see the
 landing `README.md`. For per-version changes, see `CHANGELOG.md`.
 
-**Current version: 3.7.0**
+**Current version: 3.8.0**
 
 ---
 
@@ -76,6 +76,9 @@ base.
 | `Alt+C` / `Alt+Shift+C` | Skylight tuning: raise / lower the skylight intensity |
 | `Alt+V` / `Alt+Shift+V` | Skylight tuning: log a datapoint (tag `SkylightTune`) / reset overrides back to the exposure curve |
 | `Alt+K` / `Alt+Shift+K` | Night sky glow down / up (live look tuning; logged under tag `StarTune`). Glow never affects the stars, tune it freely |
+| `Alt+E` / `Alt+Shift+E` | Exposure trim brighter / darker. Works during any photo session and in the plain garage (no photo mode needed). Session and garage keep separate values; each resets when its context ends |
+| `Alt+G` | Dark look toggle: a crushed low-key render that makes underglow and emissives pop. Same contexts as `Alt+E` |
+| `Alt+N` | Rain-spot report: press wherever rain looks wrong (raining under a roof, dry in the open); logs position, cover state and the overhead mesh to `Logs/tuning_feedback.log` for sharing |
 
 In **manual** headlight mode you can also use the car's own light button (keyboard or controller):
 a short press turns headlights on, a ~2-second hold turns them off.
@@ -92,12 +95,11 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Debug short cycle**: *new in 3.3.0, off by default.* Full-length dawn and dusk, but the flat
   midday and deep-night stretches are cut to about an hour each: a complete lighting cycle in
   minutes. `Config.TimeOfDay.DebugShortCycle`; wins over night-only if both are on.
-- **Weather presets** (`presets.lua` / `weather.lua`). The active rotation *(since 3.7.0)* is six
-  dry skies: Clear_Skies, Partly_Cloudy, Cloudy, Overcast, Overcast_Heavy *(new in 3.6.0: a
-  denser, properly grey deck)*, Foggy. Cloudy presets carry their own cool/grey sky grade
-  (per-preset `skyGrade`). Precipitation presets (rain/snow/dust tiers) are out of the rotation
-  for performance and particle-material reliability; their data is retained in `presets.lua` for
-  a future return, and old saves holding one fall back to the default preset.
+- **Weather presets** (`presets.lua` / `weather.lua`). The active rotation *(since 3.8.0)* is nine
+  presets: Clear_Skies, Partly_Cloudy, Cloudy, Overcast, Overcast_Heavy *(new in 3.6.0: a
+  denser, properly grey deck)*, Foggy, Rain_Light, Rain, Rain_Thunderstorm. Cloudy and rain
+  presets carry their own cool/grey sky grade (per-preset `skyGrade`). Rain returned in 3.8.0
+  with native occlusion (see Tunnels below); snow/dust data exists but stays out of the rotation.
   Rain/dry enforcement here is **stable, do not modify**.
 - **Random weather scheduler** (`scheduler.lua`): weighted pool with time-of-day multipliers and an
   `AllowPrecipitation` switch. A manual change re-arms the timer so it never overrides your pick.
@@ -115,16 +117,26 @@ a short press turns headlights on, a ~2-second hold turns them off.
   boundaries are exact and every real bore is covered). Also fixes the covered-section lighting:
   the course's covered-road volumes ship with a skylight-leak override that floods interiors with
   flat sky ambient at the volume edge; the mod clears it so tunnel light stays true to the scene
-  (see Exposure below). The under-roof rain suppression (hide, keep simulating, instant return
-  past the portal) is idle while no wet preset is in the rotation. Knobs in `Config.Tunnels`
-  (`TunnelRainKill`, `OverpassRainKill`, `CoveredFogMult`, `KillVolumeSkylightLeak`).
+  (see Exposure below). Knobs in `Config.Tunnels` (`CoveredFogMult`,
+  `KillVolumeSkylightLeak`; the older particle-hiding rain kill is retired and its knobs idle).
+- **Native rain occlusion**: *new in 3.8.0* (`rain_collision.lua`). The game ships no overhead
+  collision that rain could hit, so rain used to fall straight through tunnel roofs and bridge
+  decks. The mod gives the tunnel and bridge meshes invisible collision bodies that only rain
+  traces can see: the AI, the camera and every other game system are unaffected, and nothing in
+  the game files is replaced. Rain now dies inside bores and under overpasses and returns past
+  the portal, all from the game's own particle physics. The pass re-applies as the world streams
+  in, spread across frames so it costs no visible frame time. `Config.RainCollision`
+  (`TargetPatterns` names which meshes get flipped; extend it from `Alt+N` reports if you find a
+  covered spot that still rains).
 - **Parking Area weather**: *new in 3.4.0.* The PA continues your course weather and time of day
   with the clock running, instead of the canned always-night look. `Config.PA.Mode`:
   `"continue"` (default) / `"freeze"` / `"stock"`.
 - **Persistence** (`persistence.lua`): saves and restores the exact sky/weather snapshot, including
   across the parking area (PA). **Stable, do not modify.**
-  (The weather-sounds module from 3.2.0 was removed in 3.7.0 along with the precipitation
-  rotation; without rain and thunder it had nothing to play.)
+- **Weather sounds** (`audio.lua`): *back in 3.8.0 with the rain.* Rain, wind and thunder loops
+  from the sky package's own cooked sounds, with per-preset thunder tiers: Light Rain carries no
+  thunder, Rain plays distant rumbles only, Thunderstorm mixes distant and close strikes
+  (`Config.Audio`, `CloseThunderMin`).
 
 ### Sky and atmosphere
 - **Stars** (`stars.lua`): *fixed for real in 3.7.0.* The real-star night sky, Milky Way band
@@ -175,8 +187,8 @@ a short press turns headlights on, a ~2-second hold turns them off.
   keybinds** still apply (`Alt+Z/X/C`, confirm with `Alt+V`, see Keybinds).
 - **Headlights** (`headlights.lua`): Auto mode follows the sun's real elevation (with hysteresis) so
   the lamps come on at dusk and go off after sunrise in any season, and *since 3.6.0* also inside
-  real tunnel bores (lone overpasses deliberately do not flash them; the rain trigger exists but is
-  inert without wet presets); manual mode (`Alt+Q`, the garage, and the light-button gesture);
+  real tunnel bores (lone overpasses deliberately do not flash them) and in rain *(active again
+  in 3.8.0)*; manual mode (`Alt+Q`, the garage, and the light-button gesture);
   adjustable brightness; animated pop-ups via the game's native raise/lower.
 - **Display profiles (HDR/SDR)**: *new in 3.6.0.* The game applies a hidden shadow-lifting grade
   only on HDR output, so a look tuned on HDR crushes on SDR screens. The mod detects the display
@@ -186,12 +198,11 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Shadows** (`shadows.lua`): adaptive FOV-to-distance table so shadows survive photo-mode zoom.
 
 ### Driving
-- **Dynamic wet grip** (`wet_grip.lua`): *new in 3.1.0, ships disabled since 3.7.0* (no rain in the
-  rotation). Tire grip drops as the road gets wet and recovers as it dries, scaling with the live
-  rain intensity (wets up fast, dries off slowly). Driven into the global tire model, so it applies
-  to every car including the AI rivals and works in parking-area battles. Re-enable together with a
-  precipitation preset via `Config.WetGrip.Enabled` + `Config.ModuleToggles.WetGrip`. Grip approach
-  credited to Chrystales.
+- **Dynamic wet grip** (`wet_grip.lua`): *new in 3.1.0, on by default again since 3.8.0.* Tire
+  grip drops as the road gets wet and recovers as it dries, scaling with the live rain intensity
+  (wets up fast, dries off slowly). Driven into the global tire model, so it applies to every car
+  including the AI rivals and works in parking-area battles. `Config.WetGrip` (grip floors,
+  wet/dry ramp times). Grip approach credited to Chrystales.
 - **Wider alignment sliders** (`tuning.lua`): *new in 3.2.0.* The garage alignment sliders (camber,
   toe, ride height, wheel offset, tire width) run to `RangeMultiplier` x their stock range (default
   3x), the displayed car previews values beyond stock live, and out-of-range values are re-applied
@@ -213,6 +224,11 @@ a short press turns headlights on, a ~2-second hold turns them off.
   instead of the sun (`Config.PhotoMode.CoveredLens`), so day shots in bores aren't black. Session
   detection is instant, and everything restores the moment you close photo mode
   (`Config.PhotoMode.FreezeTime` / `ManualExposure`).
+- **Exposure trim and dark look** (*new in 3.8.0*): `Alt+E` / `Alt+Shift+E` step the current
+  render brighter or darker, and `Alt+G` toggles a crushed low-key look (the accidental garage
+  render testers liked: underglow and emissives pop against deep shadow). Both work during any
+  photo session and in the plain garage without opening photo mode. Every press logs the level,
+  so a look you like can be baked into `Config.PhotoMode` (`NudgeStep`, `DarkLook.Lens`).
 - **Hide HUD vignette** (`vignette.lua`): *new in 3.0.20, ON by default.* Removes the darkened
   corner vignette the game draws during normal play (`WBP_Com_Vignette_Frame` on the in-game HUD).
   It's a HUD overlay, not a render setting, so Engine.ini can't touch it, this can. Pure HUD-widget
@@ -233,10 +249,11 @@ place). General highlights:
   grep the log for `ExposureTune` to see the sun elevation to nudge. Every feedback keypress is
   also appended to `Logs/tuning_feedback.log`, a small, session-marked file that is perfect to
   attach when reporting exposure that looks wrong (no need to send full session logs).
-- `Config.Tunnels.TunnelRainKill` / `OverpassRainKill`, covered-road rain handling (idle while no
-  wet preset is in the rotation): whether rain cuts inside covered road (the game's own road data
-  marks roofed stretches exactly) and under lone overpass decks (a roof trace, with
-  `OverpassTraceLength` setting the headroom).
+- `Config.RainCollision`, the native rain occlusion (3.8.0): `Channel` (the collision channel
+  rain traces on), `TargetPatterns` (which meshes become rain-solid; extend from `Alt+N`
+  reports), `ReapplySeconds` (streaming re-apply cadence while wet).
+- `Config.Audio`: rain/wind/thunder enables and volumes, plus `CloseThunderMin` (the
+  thunder level where close strikes join the distant rumbles).
 - `Config.Atmosphere.LightPollutionMax`, the city-glow light-pollution peak. **Keep at or below
   1.0**: the sky material dims stars as pollution rises, and above 1.0 the star math inverts and
   stars render as dark dots. `Config.Atmosphere.NightSkyGlowMax` is the star-safe glow knob.
@@ -282,17 +299,17 @@ sky/atmosphere/stars/moon, and mesh-drawn effects), but does **not** composite e
   water rain ripples. The game's road/ground materials don't sample UDW's parameters, and material
   graph nodes can't be added from Lua. (`wetness.lua` exists but is disabled, logic runs, nothing
   draws.)
-- **Native rain occlusion**: UDW's own weather-exposure occlusion never sees TXR's tunnel
-  geometry (no usable overhead query collision), so rain would fall indoors if left to it. The
-  mod's own covered-road detection (`tunnels.lua`) suppresses the particles instead; a few short
-  bores with unusual meshes still slip through both its signals.
+- ~~Native rain occlusion~~ **solved in 3.8.0**: the game ships no overhead collision rain could
+  hit, so rain used to fall straight through roofs. The mod now provides that collision itself
+  (`rain_collision.lua`, see Features), so this is no longer a dead-end; the entry stays here as
+  history because the *detection-based* suppression it replaced is retired.
 - **Auroras**, the 2D aurora is a sky-material shader that samples UDS's `Aurora_Clouds` texture,
   and that texture is not in TXR's cooked content (a runtime load fails). UDS happily computes the
   aurora as active, but the shader has nothing to draw. Would need cooked content (pak) to revive;
   the module machinery is kept behind `Config.Atmosphere.EnableAurora = false`.
 - **UDW's own weather sounds**, the native sound path (enable + volumes + its apply functions) runs
-  but never plays in TXR. (Versions 3.2.0-3.6.0 played weather audio via directly spawned 2D
-  sounds; that module was removed with the precipitation rotation in 3.7.0.)
+  but never plays in TXR. The mod plays weather audio via directly spawned 2D sounds instead
+  (`audio.lua`, back since 3.8.0).
 
 **Rainbow is NOT in this list** (3.0.20): it has a `Rainbow MID` but no weighted blendable, it's
 drawn on `Rainbow Mesh` with `Rainbow Material 2D` / `Rainbow Material Volumetric`, i.e. scene-
@@ -350,6 +367,11 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 
 See `CHANGELOG.md` for the full list. Most recent:
 
+- **3.8.0**: the rain returns, with native occlusion: rain collides with real
+  tunnel and bridge geometry (invisible rain-only collision bodies, pure
+  script) and dies under cover instead of falling through; weather sounds,
+  wet grip and rain headlights are back; exposure trim + dark look keys
+  (`Alt+E`, `Alt+G`) in photo mode and the garage; tunnel-entry hitch fixed.
 - **3.7.0**: night stars fixed for real (bright, rotating real-star sky with the
   Milky Way; the city-glow light pollution had been driving the sky's star math
   out of range since 3.0.15); course-map/menu crash fixed (background polling

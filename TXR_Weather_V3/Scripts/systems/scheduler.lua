@@ -210,6 +210,22 @@ function Scheduler.PickNow()
     return Scheduler.PickAndApply()
 end
 
+--- Hold automatic changes for the given seconds. Test-rain support
+--- (2026-07-28): a forced experiment preset must not be scheduler-swapped
+--- mid-test (the 01:21 log: Rain -> Overcast landed mid-occlusion-run).
+--- Also adopts the current preset so external-change detection does not
+--- shorten the hold.
+function Scheduler.HoldFor(seconds)
+    nextChangeAt = os.time() + (tonumber(seconds) or 300)
+    pcall(function()
+        local weather = getWeather()
+        if weather and weather.GetCurrent then
+            lastSetPreset = weather.GetCurrent()
+        end
+    end)
+    Log.Info(MODULE, "Auto changes held", {seconds = tonumber(seconds) or 300})
+end
+
 --- Per-tick update. Gated in main.lua by PA-freeze; we add the on-course /
 --- master-switch / external-change handling here.
 function Scheduler.Tick()

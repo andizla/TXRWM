@@ -166,6 +166,8 @@ function Shadows.Update()
     -- async tick 8x/sec in EVERY world, ungated; the garage map screen swaps
     -- exactly that camera manager, and probing it off-thread mid-swap is the
     -- reflection AV in the 2026-07-18/20 crash dumps (map-open crashes).
+    -- (2026-07-27: briefly GT-marshalled after the 12:52 crash; REVERTED same
+    -- day, an 8Hz object-array walk on the game thread = frame hitches.)
     local actors = getActors()
     if not actors then return false end
     if actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then return false end
@@ -173,7 +175,7 @@ function Shadows.Update()
 
     local fov = getCurrentFOV()
     local distance = calculateDistance(fov)
-    
+
     -- Only apply if changed significantly
     if math.abs(distance - currentDistance) >= 1000 or math.abs(fov - currentFOV) >= 1 then
         local ok = applyDistance(distance)
@@ -184,7 +186,7 @@ function Shadows.Update()
         end
         return ok
     end
-    
+
     return true
 end
 
@@ -193,7 +195,7 @@ end
 function Shadows.Apply()
     local fov = getCurrentFOV()
     local distance = calculateDistance(fov)
-    
+
     local ok = applyDistance(distance)
     if ok then
         currentDistance = distance
@@ -202,7 +204,7 @@ function Shadows.Apply()
     else
         Log.Warn(MODULE, "Failed to apply shadow distance")
     end
-    
+
     return ok
 end
 

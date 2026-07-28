@@ -12,14 +12,20 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 - **Tunnels (3.4.0, lighting root-fixed 3.5.0)** - daylight tunnel exposure adapts like your
   eyes would, true interior lighting (no flat sky ambient flooding in), and fog is removed under
   roofs so foggy weather doesn't read as a white wall inside bores
+- **Native rain occlusion (3.8.0)**: rain collides with real tunnel and bridge geometry and dies
+  under cover instead of falling through the roof. The game ships no overhead collision at all;
+  the mod gives those meshes invisible collision bodies only rain can see (the AI and every game
+  system are untouched, no game files replaced)
 - **Parking Area weather (3.4.0)** - the PA continues your course weather and time of day with
   the clock running (no more canned always-night)
 - **Night-only mode** - dusk, night, dawn, then straight back to dusk: the day is skipped entirely (off by default; installer option)
 - **Cinematic sky** - a daytime look pass: denser cloud cores, silver-lining glow, high cirrus that lights up near the sun, richer sky color, luminous overcast, stronger sunsets, slower cloud drift
 - **Per-weather exposure compensation** - overcast, rain, fog and snow scenes automatically get brighter instead of gray mush
-- Weather preset cycling - six dry skies since 3.7.0 (clear through heavy overcast and fog);
-  precipitation presets are out of the rotation for performance, data retained for a future return
+- Weather preset cycling: nine presets since 3.8.0, clear skies through heavy overcast and fog
+  to light rain, rain and thunderstorm
 - Random weather scheduler - weighted and time-of-day aware (clear skies rarer by day)
+- **Weather sounds (back in 3.8.0)**: rain, wind and thunder, with per-preset thunder tiers
+  (light rain silent, rain distant rumbles, storms the full mix)
 - Enhanced volumetric fog
 - Daytime + FOV-scaled shadows (work with photomode zoom)
 - **Real-star night sky (fixed for real in 3.7.0)** - bright through the city glow, Milky Way
@@ -29,7 +35,7 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 - Wind debris, and moon phases / scalable moon
 - **Wider garage alignment sliders** - camber, toe, ride height, wheel offset and tire width run to 3x their stock range, and out-of-range setups persist and apply on spawn (nothing is unlocked)
 - **Rainbows** when fog feeds them and the sun comes through (drawn on a world mesh, so it renders in TXR)
-- **Dynamic wet grip** - tire grip drops in the rain for every car including the AI rivals (ships disabled while no rain is in the rotation)
+- **Dynamic wet grip** - tire grip drops in the rain for every car including the AI rivals (on by default since 3.8.0)
 - **Photo mode camera unlocked** - no collision (fly anywhere), no distance cap, a much wider zoom range, faster free-cam, and the photo vignette off for clean shots
 - **Hide HUD vignette** - optional cleaner look for screenshots / photo driving
 - Auto-exposure / photomode aperture (ported from VEAO)
@@ -104,6 +110,9 @@ profile, so try Photomode if a lighter profile looks flat.
 | `Alt+L` / `Alt+Shift+L` | Re-apply shadow distance |
 | `Alt+D` / `Alt+Shift+D` | Exposure feedback: too dark / too bright (appends a datapoint to `Logs/tuning_feedback.log` - attach that file when reporting) |
 | `Alt+K` / `Alt+Shift+K` | Night sky glow down / up (live night-look tuning; never affects the stars) |
+| `Alt+E` / `Alt+Shift+E` | Exposure trim brighter / darker, in photo sessions and in the plain garage |
+| `Alt+G` | Dark look toggle (crushed low-key render; same contexts as `Alt+E`) |
+| `Alt+N` | Rain-spot report: press where rain looks wrong; attach `Logs/tuning_feedback.log` |
 
 In **manual** headlight mode you can also use the car's own light button (keyboard or
 controller): a short press turns the headlights on, a ~2-second hold turns them off.
@@ -119,8 +128,10 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
   1.0**: the sky dims stars as pollution rises, and above 1.0 the star math inverts (dark dots).
   `NightSkyGlowMax` is the star-safe glow knob (`Alt+K` live).
 - `Config.Rainbow` - rainbows (on; tune or disable).
-- `Config.WetGrip` - dynamic wet grip: grip floors, the full-wet rain threshold, and wet/dry timing
-  (ships disabled while no rain is in the rotation).
+- `Config.WetGrip` - dynamic wet grip: grip floors, the full-wet rain threshold, and wet/dry timing.
+- `Config.RainCollision` - the native rain occlusion: which meshes turn rain-solid and how often
+  the pass re-applies as the world streams.
+- `Config.Audio` - rain/wind/thunder volumes and the close-thunder threshold.
 - `Config.PhotoMode` - photo mode camera unlocks: collision, distance, zoom range, and speed (on by default).
 - `Config.Tuning` - alignment slider widening factor and spawn re-apply (on by default).
 - `Config.Vignette.Enabled = true` - hide the in-game HUD vignette for a cleaner photo look.
