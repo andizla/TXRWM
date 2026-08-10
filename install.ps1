@@ -15,42 +15,27 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 
 $Root     = $PSScriptRoot
 $ModName  = 'TXR_Weather_V3'
-$UE4SSUrl = 'https://github.com/CookiePLMonster/UE4SS-Bakery/releases/latest/download/UE4SS-TXR25.zip'
+# PINNED UE4SS build (since 3.9.0): upstream experimental nightly g1c1a1497
+# (2026-08-08) repacked with the TXR signature + tuned settings, hosted as a
+# release asset on this repo so the link can never be overwritten by a newer
+# nightly. Contains the upstream fix for the crash class that plagued the
+# old 2025-09 build.
+$UE4SSUrl = 'https://github.com/andizla/TXRWM/releases/download/v3.9.0/UE4SS-TXR-g1c1a1497.zip'
 
 # GitHub release asset. Name the release zip 'TXR_Weather_V3.zip' so this resolves.
 # Leave as '' to install from a local TXR_Weather_V3 folder next to this script
 # (pre-release testing) - the repo/release don't exist yet as of writing.
 $ModUrl   = 'https://github.com/andizla/TXRWM/releases/latest/download/TXR_Weather_V3.zip'
 
-# Mod-required console variables the installer OWNS. They are stripped from any
-# chosen base ini and re-appended as one managed block, so the installer is the
-# single source of truth for them on every graphics profile.
-$FogCvars = @(
-    'r.fog=1',
-    'r.Lumen.SampleFog=1'
-)
-# Always applied, regardless of profile - on-by-default visual features need these.
-$AlwaysCvars = @(
-    'r.DBuffer=1'   # DBuffer decals - required for the night-sky nebula (Space Layer)
-)
-# NOTE (3.4.0): r.EyeAdaptation.MethodOverride is GONE from the on-set - the
-# dynamic exposure now rides the game's own auto-exposure (UDS bias knobs).
-# It stays in $ManagedKeys below so upgrades STRIP it from existing files:
-# a leftover MethodOverride=3 breaks the whole 3.4+ exposure system.
-$ExpOnCvars = @(
+# Minimal required engine.ini (the only cvars the mod needs to function).
+$MinIni = @(
+    '[ConsoleVariables]',
     'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=1',
+    'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=True',
+    'r.EyeAdaptation.MethodOverride=3',
+    'r.fog=1',
+    'r.Lumen.SampleFog=1',
     'r.NGX.DLSS.AutoExposure=0'
-)
-$ExpOffCvars = @(
-    'r.NGX.DLSS.AutoExposure=1'
-)
-$ManagedKeys = @(
-    'r.fog',
-    'r.Lumen.SampleFog',
-    'r.DBuffer',
-    'r.EyeAdaptation.MethodOverride',
-    'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange',
-    'r.NGX.DLSS.AutoExposure'
 )
 
 # ----- helpers ---------------------------------------------------------------
@@ -92,18 +77,11 @@ function Find-GameWin64 {
     }
     $hits = @()
     foreach($lib in ($libs | Select-Object -Unique)){
-        # Steam keeps STALE library entries in libraryfolders.vdf after a
-        # drive is removed/renamed. Join-Path validates the drive letter and
-        # throws DriveNotFoundException on those; with ErrorActionPreference
-        # 'Stop' that killed the whole install (field report 2026-07-09).
-        # Skip anything unreachable instead.
-        try {
-            $common = Join-Path $lib 'steamapps\common\TokyoXtremeRacer'
-            if(Test-Path $common){
-                $exe = Get-ChildItem -Path $common -Recurse -Filter 'TokyoXtremeRacer-Win64-Shipping.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-                if($exe){ $hits += $exe.DirectoryName }
-            }
-        } catch {}
+        $common = Join-Path $lib 'steamapps\common\TokyoXtremeRacer'
+        if(Test-Path $common){
+            $exe = Get-ChildItem -Path $common -Recurse -Filter 'TokyoXtremeRacer-Win64-Shipping.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if($exe){ $hits += $exe.DirectoryName }
+        }
     }
     return ($hits | Select-Object -Unique)
 }
@@ -122,121 +100,35 @@ function Find-ModRoot($base){
     return $null
 }
 
-# Build an Engine.ini from a base profile: strip the installer-managed cvars from
-# the base, then append one managed [ConsoleVariables] block (fog always, plus the
-# on or off exposure set). A base of @() yields the "minimal" profile.
-function Compose-Ini($baseLines, $exposureOn){
+# Merge our required cvars as a managed block at the END of an existing ini so
+# they apply last and win over any conflicting earlier values. Idempotent.
+function Merge-Cvars($path, $minLines){
+    $marker    = '; === TXR Weather Mod (required cvars) - managed by installer ==='
+    $endMarker = '; === end TXR Weather Mod ==='
+    $existing  = @(Get-Content $path)
     $out = New-Object System.Collections.Generic.List[string]
-    foreach($l in $baseLines){
-        $key = (($l -split '=', 2)[0]).Trim()
-        if($ManagedKeys -contains $key){ continue }   # drop managed cvars from base
-        $out.Add($l)
+    $inBlock = $false
+    foreach($l in $existing){
+        if($l -eq $marker){ $inBlock = $true; continue }
+        if($l -eq $endMarker){ $inBlock = $false; continue }
+        if(-not $inBlock){ $out.Add($l) }
     }
-    $out.Add('')
-    $out.Add('; === TXR Weather Mod - required cvars (managed by installer) ===')
-    $out.Add('[ConsoleVariables]')
-    foreach($c in $FogCvars){ $out.Add($c) }
-    foreach($c in $AlwaysCvars){ $out.Add($c) }
-    $expSet = if($exposureOn){ $ExpOnCvars } else { $ExpOffCvars }
-    foreach($c in $expSet){ $out.Add($c) }
-    return [string[]]$out
-}
-
-# Set Config.ModuleToggles.LightCycle in the installed mod's config.lua to
-# match the chosen exposure mode. LightCycle is the 3.4+ dynamic day/night
-# exposure module (sun-elevation bias on top of the game's auto-exposure);
-# "no exposure" = module off = vanilla brightness.
-function Set-ExposureFlag($modDst, $on){
-    $cfg = Join-Path $modDst 'Scripts\config.lua'
-    if(-not (Test-Path $cfg)){ return }
-    $val = if($on){ 'true' } else { 'false' }
-    $lines = @(Get-Content $cfg)
-    $inTog = $false
-    for($i = 0; $i -lt $lines.Count; $i++){
-        if($lines[$i] -match '^\s*Config\.ModuleToggles\s*=\s*\{'){ $inTog = $true; continue }
-        if($inTog -and $lines[$i] -match '^\s*\}'){ break }
-        if($inTog -and $lines[$i] -match '^\s*LightCycle\s*='){
-            $lines[$i] = $lines[$i] -replace 'LightCycle\s*=\s*(true|false)', "LightCycle = $val"
-            break
-        }
-    }
-    WriteLines $cfg $lines
-    Ok "Set Config.ModuleToggles.LightCycle = $val (matches the exposure choice)."
-}
-
-# Set Config.Headlights.Mode in the installed mod's config.lua: "auto" (exposure
-# driven) or a manual default ("force_off" = off until toggled with Alt+Q).
-function Set-HeadlightMode($modDst, $mode){
-    $cfg = Join-Path $modDst 'Scripts\config.lua'
-    if(-not (Test-Path $cfg)){ return }
-    $lines = @(Get-Content $cfg)
-    $inHl = $false
-    for($i = 0; $i -lt $lines.Count; $i++){
-        if($lines[$i] -match '^\s*Config\.Headlights\s*=\s*\{'){ $inHl = $true; continue }
-        if($inHl -and $lines[$i] -match '^\s*Mode\s*='){
-            $lines[$i] = $lines[$i] -replace 'Mode\s*=\s*"[^"]*"', "Mode = `"$mode`""
-            break
-        }
-    }
-    WriteLines $cfg $lines
-    Ok "Set Config.Headlights.Mode = `"$mode`" (headlight control)."
-}
-
-# Set Config.TimeOfDay.NightOnly in the installed mod's config.lua: true = the
-# time cycle skips the day (dusk -> night -> dawn, repeat).
-function Set-NightOnly($modDst, $on){
-    $cfg = Join-Path $modDst 'Scripts\config.lua'
-    if(-not (Test-Path $cfg)){ return }
-    $val = if($on){ 'true' } else { 'false' }
-    $lines = @(Get-Content $cfg)
-    $inTod = $false
-    for($i = 0; $i -lt $lines.Count; $i++){
-        if($lines[$i] -match '^\s*Config\.TimeOfDay\s*=\s*\{'){ $inTod = $true; continue }
-        if($inTod -and $lines[$i] -match '^\s*NightOnly\s*='){
-            $lines[$i] = $lines[$i] -replace 'NightOnly\s*=\s*(true|false)', "NightOnly = $val"
-            break
-        }
-    }
-    WriteLines $cfg $lines
-}
-
-# Set Config.<Block>.Enabled = true/false in the installed mod's config.lua (the first
-# Enabled line inside that block - the module's master switch).
-function Set-ConfigEnabled($modDst, $block, $on){
-    $cfg = Join-Path $modDst 'Scripts\config.lua'
-    if(-not (Test-Path $cfg)){ return }
-    $val = if($on){ 'true' } else { 'false' }
-    $lines = @(Get-Content $cfg)
-    $inBlk = $false
-    for($i = 0; $i -lt $lines.Count; $i++){
-        if($lines[$i] -match "^\s*Config\.$block\s*=\s*\{"){ $inBlk = $true; continue }
-        if($inBlk -and $lines[$i] -match '^\s*Enabled\s*='){
-            $lines[$i] = $lines[$i] -replace 'Enabled\s*=\s*(true|false)', "Enabled = $val"
-            break
-        }
-    }
-    WriteLines $cfg $lines
+    $cvars = $minLines | Where-Object { $_ -ne '' -and ($_ -notmatch '^\s*\[') }
+    # Only repeat the section header when the file does not already END inside
+    # [ConsoleVariables]; a duplicate header is harmless ini-wise (last wins)
+    # but it reads as a mistake and confused a hand-edit once (2026-08-04).
+    $lastSection = $out | Where-Object { $_ -match '^\s*\[' } | Select-Object -Last 1
+    $needHeader = (-not $lastSection) -or ($lastSection.Trim() -ne '[ConsoleVariables]')
+    $block = @('', $marker)
+    if($needHeader){ $block += '[ConsoleVariables]' }
+    $block = $block + $cvars + @($endMarker)
+    WriteLines $path ($out + $block)
 }
 
 # ----- start -----------------------------------------------------------------
 Say "================================================" White
 Say "  TXR Weather Mod V3 - Installer" White
-Say "  by Ten." White
 Say "================================================" White
-Say ""
-Say "This will set the mod up in a few steps:" White
-Say "  1. Find your Tokyo Xtreme Racer install (auto-detected via Steam)."
-Say "  2. Download + install UE4SS - the script loader the mod runs on."
-Say "     Any mods you already have are left in place."
-Say "  3. Install the weather mod and enable it (mods.txt)."
-Say "  4. Set up Engine.ini - pick a graphics profile (photomode / optimizations / minimal)."
-Say "     Any existing Engine.ini is backed up first."
-Say "  5. Choose headlight behaviour (auto or manual)."
-Say "  6. Choose gameplay options (dynamic wet grip)."
-Say "  7. Choose the time-of-day cycle (full day, or night only)."
-Say ""
-Say "Nothing on disk is changed until you confirm the location on the next screen." White
-Say ""
 
 # 1) Locate the game ----------------------------------------------------------
 Step 'Locating Tokyo Xtreme Racer'
@@ -256,21 +148,6 @@ while(-not $win64){
 $ue4ss   = Join-Path $win64 'ue4ss'
 $modsDir = Join-Path $ue4ss 'Mods'
 
-# Show the concrete plan and get the go-ahead before changing anything ---------
-Step 'Ready to install - here is what will happen'
-Say "  Location   : $win64"
-Say "  UE4SS      : downloaded and installed here (your existing Mods are kept)"
-Say "  Mod        : installed to  ue4ss\Mods\$ModName"
-Say "  mods.txt   : the mod is added to the UE4SS load list (your other entries are kept)"
-Say "  Engine.ini : %LOCALAPPDATA%\TokyoXtremeRacer\Saved\Config\Windows"
-Say "               you pick a graphics profile; any existing file is backed up first"
-Say ""
-if(-not (AskYesNo 'Proceed with installation?')){
-    Say ''
-    Say 'Cancelled - nothing was changed.' Yellow
-    return
-}
-
 # temp workspace for downloads
 $tmp = Join-Path $env:TEMP ('txrwm_' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
@@ -278,13 +155,13 @@ try {
 
     # 2) UE4SS ----------------------------------------------------------------
     Step 'UE4SS'
-    Say '    The script loader the mod runs on. Installs into the game folder;'
-    Say '    any UE4SS mods you already have are preserved.'
     $haveUE4SS = (Test-Path (Join-Path $win64 'dwmapi.dll')) -and (Test-Path $ue4ss)
     $installUE4SS = $true
     if($haveUE4SS){
         Warn 'UE4SS is already installed here.'
-        $installUE4SS = AskYesNo 'Reinstall/overwrite UE4SS? (your existing Mods are kept)' $false
+        Say  '    3.9.0 ships a newer pinned UE4SS build that fixes a long-standing'
+        Say  '    intermittent crash. Updating is recommended.'
+        $installUE4SS = AskYesNo 'Update UE4SS now? (your existing Mods are kept)' $true
     }
     if($installUE4SS){
         $ext = Join-Path $tmp 'ue4ss'
@@ -304,6 +181,9 @@ try {
         if($haveUE4SS){ $rc += @('/XD','Mods') }   # never clobber an existing Mods folder
         & robocopy @rc | Out-Null
         if($LASTEXITCODE -ge 8){ throw "robocopy failed copying UE4SS (code $LASTEXITCODE)" }
+        # Stale AOB caches belong to the previous DLL; UE4SS would invalidate
+        # them itself, but a clean slate avoids one class of upgrade surprise.
+        Remove-Item (Join-Path $ue4ss 'cache') -Recurse -Force -ErrorAction SilentlyContinue
         Ok 'UE4SS installed.'
     }
     New-Item -ItemType Directory -Force -Path $modsDir | Out-Null
@@ -341,60 +221,42 @@ try {
     }
 
     $modDst = Join-Path $modsDir $ModName
-    # Files carried across an update: persisted runtime state and collected
-    # exposure-tuning datapoints. config.lua intentionally resets (release
-    # defaults change between versions).
-    $keepFiles = @('last_state.txt','headlight_state.txt','Logs\tuning_feedback.log')
-    $keepDir = $null
     if(Test-Path $modDst){
-        if(AskYesNo 'Mod already installed. Overwrite (update) it?'){
-            foreach($rel in $keepFiles){
-                $src = Join-Path $modDst $rel
-                if(Test-Path $src){
-                    if(-not $keepDir){
-                        $keepDir = Join-Path $tmp 'keep'
-                        New-Item -ItemType Directory -Force -Path $keepDir | Out-Null
-                    }
-                    $dst = Join-Path $keepDir $rel
-                    New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
-                    Copy-Item $src $dst -Force
-                }
-            }
-            Remove-Item $modDst -Recurse -Force
-        }
+        if(AskYesNo 'Mod already installed. Overwrite (update) it?'){ Remove-Item $modDst -Recurse -Force }
         else { Warn 'Keeping existing mod files.' }
     }
     if(-not (Test-Path $modDst)){
-        $rc = @($modRoot, $modDst, '/E','/NFL','/NDL','/NJH','/NJS','/NP','/XD','Logs','.backup','engines','/XF','*.bak')
+        $rc = @($modRoot, $modDst, '/E','/NFL','/NDL','/NJH','/NJS','/NP','/XD','Logs','.backup','/XF','*.bak')
         & robocopy @rc | Out-Null
         if($LASTEXITCODE -ge 8){ throw "robocopy failed copying the mod (code $LASTEXITCODE)" }
         Ok "Installed mod to $modDst"
-        if($keepDir){
-            foreach($rel in $keepFiles){
-                $src = Join-Path $keepDir $rel
-                if(Test-Path $src){
-                    $dst = Join-Path $modDst $rel
-                    New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
-                    Copy-Item $src $dst -Force
-                }
-            }
-            Ok 'Restored saved state (time of day / headlights) and tuning_feedback.log from the previous install.'
-        }
     }
 
-    # mods.txt (merge: keep existing entries, add ours if missing)
-    Step 'Enabling the mod (mods.txt)'
-    Say "    UE4SS reads which mods to load from mods.txt. Merging the mod into it -"
-    Say "    your existing entries are left untouched."
+    # mods.txt (idempotent)
     $modsTxt = Join-Path $modsDir 'mods.txt'
     $lines = @()
     if(Test-Path $modsTxt){ $lines = @(Get-Content $modsTxt) }
     if($lines -match "^\s*$ModName\s*:"){
-        Ok 'Already listed in mods.txt - left as is.'
+        Ok 'mods.txt already lists the mod.'
     } else {
         $lines += "$ModName : 1"
         WriteLines $modsTxt $lines
-        Ok "Added '$ModName : 1' to mods.txt (other entries untouched)."
+        Ok "Added '$ModName : 1' to mods.txt"
+    }
+
+    # 3b) Look options ---------------------------------------------------------
+    Step 'Look options'
+    $cfgLua = Join-Path $modDst 'Scripts\config.lua'
+    if(Test-Path $cfgLua){
+        if(AskYesNo 'Dark garage look? (low-key show-floor lighting with headlights on; tuned on an HDR display)' $true){
+            Ok 'Dark garage look enabled (default).'
+        } else {
+            $t = [IO.File]::ReadAllText($cfgLua)
+            $t = $t -replace '(GarageDark\s*=\s*\{[^\}]*?Enabled\s*=\s*)true', '${1}false'
+            $t = $t -replace '(GarageAlwaysOn\s*=\s*)true', '${1}false'
+            [IO.File]::WriteAllText($cfgLua, $t, (New-Object Text.UTF8Encoding($false)))
+            Ok 'Dark garage disabled (stock garage look).'
+        }
     }
 
     # 4) Old standalone VEAO conflict ----------------------------------------
@@ -412,93 +274,37 @@ try {
         }
     }
 
-    # 5) engine.ini (graphics profile selector) -----------------------------
-    Step 'Engine.ini - graphics profile'
-    Say '    Engine.ini supplies the cvars the mod relies on (exposure + fog) and'
-    Say '    sets the graphics profile. Pick one (any existing Engine.ini is backed up):'
-    Say ''
-    Say '      1) Photomode + exposure             highest fidelity, resource heavy   [recommended]' Green
-    Say '      2) Photomode, no exposure           highest fidelity, vanilla brightness'
-    Say '      3) Optimizations only + exposure    best for midrange / non-DLSS rigs   [recommended]' Green
-    Say '      4) Optimizations only, no exposure  midrange / non-DLSS, vanilla brightness'
-    Say '      5) Minimal                          only what the mod needs, lightest'
-    Say '      6) Skip                             leave my Engine.ini untouched'
-    Say ''
-    $pick = (Read-Host '    Choice [1-6, Enter = 1]').Trim()
-    if($pick -eq ''){ $pick = '1' }
+    # 5) engine.ini (Replace / Merge / Skip) ---------------------------------
+    Step 'Engine.ini (required CVARs)'
+    $cfgDir = Join-Path $env:LOCALAPPDATA 'TokyoXtremeRacer\Saved\Config\Windows'
+    New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+    $iniDst  = Join-Path $cfgDir 'Engine.ini'
+    $skipped = $false
 
-    $engDir = Join-Path $modRoot 'engines'
-    $base = $null; $exposureOn = $true; $label = ''; $doIni = $true
-    switch($pick){
-        '1' { $base = Join-Path $engDir 'photomode_engine.ini';         $exposureOn = $true;  $label = 'Photomode + exposure' }
-        '2' { $base = Join-Path $engDir 'photomode_engine.ini';         $exposureOn = $false; $label = 'Photomode, no exposure' }
-        '3' { $base = Join-Path $engDir 'optimization_only_engine.ini'; $exposureOn = $true;  $label = 'Optimizations only + exposure' }
-        '4' { $base = Join-Path $engDir 'optimization_only_engine.ini'; $exposureOn = $false; $label = 'Optimizations only, no exposure' }
-        '5' { $base = $null;                                            $exposureOn = $true;  $label = 'Minimal' }
-        default { $doIni = $false; Warn 'Skipped - Engine.ini left untouched (mod-required cvars may be absent).' }
+    if(Test-Path $iniDst){
+        $f = Get-Item $iniDst
+        if($f.IsReadOnly){ $f.IsReadOnly = $false }
+        $bak = "$iniDst.bak." + (Get-Date -Format 'yyyyMMdd_HHmmss')
+        Copy-Item $iniDst $bak
+        Ok "Backed up existing Engine.ini -> $(Split-Path $bak -Leaf)"
+        Warn 'An Engine.ini already exists.'
+        Say  '    [R] Replace with the minimal required file'
+        Say  '    [M] Merge - keep yours, add the required cvars at the end (recommended)'
+        Say  '    [S] Skip - leave your Engine.ini untouched'
+        $choice = (Read-Host '    Choice [R/M/S]').Trim()
+        switch -Regex ($choice){
+            '^[Rr]' { WriteLines $iniDst $MinIni; Ok 'Replaced with minimal Engine.ini.' }
+            '^[Mm]' { Merge-Cvars $iniDst $MinIni; Ok 'Merged required cvars at end of Engine.ini.' }
+            default { Warn 'Skipped. Exposure/fog may look wrong until the required cvars are present.'; $skipped = $true }
+        }
+    } else {
+        WriteLines $iniDst $MinIni
+        Ok 'Wrote new Engine.ini.'
     }
-
-    if($doIni){
-        $baseLines = @()
-        if($base){
-            if(Test-Path $base){ $baseLines = @(Get-Content $base) }
-            else { Warn "Base profile file not found ($([IO.Path]::GetFileName($base))) - using Minimal instead."; $label = 'Minimal (fallback)' }
-        }
-        $iniLines = Compose-Ini $baseLines $exposureOn
-
-        $cfgDir = Join-Path $env:LOCALAPPDATA 'TokyoXtremeRacer\Saved\Config\Windows'
-        New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
-        $iniDst = Join-Path $cfgDir 'Engine.ini'
-        if(Test-Path $iniDst){
-            $f = Get-Item $iniDst
-            if($f.IsReadOnly){ $f.IsReadOnly = $false }
-            $bak = "$iniDst.bak." + (Get-Date -Format 'yyyyMMdd_HHmmss')
-            Copy-Item $iniDst $bak
-            Ok "Backed up existing Engine.ini to $(Split-Path $bak -Leaf)"
-        }
-        WriteLines $iniDst $iniLines
+    if(-not $skipped){
         (Get-Item $iniDst).IsReadOnly = $true
-        Ok "Installed Engine.ini profile: $label (read-only)."
-        Set-ExposureFlag $modDst $exposureOn
+        Ok 'Set Engine.ini read-only (stops the game overwriting it).'
     }
-
-    # 6) headlights (auto vs manual) ----------------------------------------
-    Step 'Headlights - auto or manual'
-    Say '    Headlights can switch on and off automatically with the scene brightness,'
-    Say '    or you can control them yourself.'
-    Say ''
-    Say '      1) Auto    follow the scene brightness, on at dusk / off at dawn   [recommended]' Green
-    Say '      2) Manual  off by default; Alt+Q, or the in-car light button'
-    Say '                 (short press = on, hold = off; works on a controller)'
-    Say ''
-    $hl = (Read-Host '    Choice [1-2, Enter = 1]').Trim()
-    $hlMode = if($hl -eq '2'){ 'force_off' } else { 'auto' }
-    Set-HeadlightMode $modDst $hlMode
-
-    # 7) Dynamic wet grip (gameplay) ----------------------------------------
-    Step 'Dynamic wet grip'
-    Say '    Tire grip can drop in the rain and recover as it dries. It affects every car,'
-    Say '    including the AI rivals, and works in PA battles. Turn it off for purely'
-    Say '    visual weather with no handling changes.'
-    Say ''
-    $grip = AskYesNo 'Enable dynamic wet grip?' $true
-    Set-ConfigEnabled $modDst 'WetGrip' $grip
-    $gripState = if($grip){ 'enabled' } else { 'disabled' }
-    Ok "Dynamic wet grip $gripState."
-
-    # 8) Time-of-day cycle (full day vs night only) ---------------------------
-    Step 'Time of day - full cycle or night only'
-    Say '    Normally time runs through the full 24 hours. Night-only mode skips the'
-    Say '    day: dusk -> night -> dawn, then straight back to dusk, on repeat.'
-    Say ''
-    Say '      1) Full day cycle   day and night both play out   [recommended]' Green
-    Say '      2) Night only       dusk -> night -> dawn, repeat'
-    Say ''
-    $todPick = (Read-Host '    Choice [1-2, Enter = 1]').Trim()
-    $nightOnly = ($todPick -eq '2')
-    Set-NightOnly $modDst $nightOnly
-    $todState = if($nightOnly){ 'night only (dusk -> night -> dawn)' } else { 'full day cycle' }
-    Ok "Time of day: $todState."
 
 } finally {
     if(Test-Path $tmp){ Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
@@ -510,5 +316,6 @@ Ok 'Installation complete.'
 Say ''
 Say 'Launch the game and let time pass, or use the keybinds:' White
 Say '  Alt+S / Alt+Shift+S  cycle weather    Alt+T  cycle time speed'
-Say '  Alt+Q  headlight mode                 Alt+B / Alt+Shift+B  headlight brightness'
+Say '  Alt+Q  headlight toggle               Alt+B / Alt+Shift+B  brightness'
+Say '  Alt+G  dark look (garage/photo)       Alt+E  exposure trim'
 Say ''

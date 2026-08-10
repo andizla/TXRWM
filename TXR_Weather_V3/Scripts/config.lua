@@ -246,7 +246,14 @@ Config.Moon = {
 Config.LightRays = {
     Enabled = true,
     Intensity = nil,         -- nil = UDS default
-    IndividualClouds = 1.0,  -- 0-1: rays through natural cloud gaps (0 = painted gaps only)
+    -- 0-1: rays through natural cloud gaps (0 = painted gaps only, which
+    -- in TXR means none: we never paint coverage). This is OUR setting,
+    -- not a UDS default, and it is the DENSITY lever: at 1.0 UDS casts a
+    -- ray card through every gap it can find, which is what puts one on
+    -- top of the car. Backed off 1.0 -> 0.6 (2026-07-29, "still annoying"
+    -- after the distance pass); lower further if the field is still busy,
+    -- raise toward 1.0 if the rays get too rare to notice.
+    IndividualClouds = 0.6,
     UsingSun = true,         -- sun as the ray source
     Debug = false,           -- periodic readback while enabled (one-shot at apply always logs)
     -- Plausibility gate (2026-07-28): sun shafts are forced OFF while any
@@ -256,15 +263,21 @@ Config.LightRays = {
         "Overcast", "Overcast_Heavy", "Foggy",
         "Rain_Light", "Rain", "Rain_Thunderstorm",
     },
-    -- Distance/geometry shaping (2026-07-28, "rays fire off buildings"):
-    -- nil = keep the UDS default. STOCK VALUES LAND IN THE "Light rays
-    -- readback" LOG LINE at apply: read them once, then tune here.
-    -- DepthFadeDistance is the anti-building knob (rays fade against
-    -- nearby scene depth: RAISE it to soften/suppress rays that overlap
-    -- close structures); MaxDistanceKm bounds how far out rays exist.
+    -- Distance/geometry shaping. Rays are giant additive cards, so one
+    -- spawned near the camera reads as a glow slab in your face rather
+    -- than a distant shaft ("they fire way too close", field 2026-07-29).
+    -- STOCK VALUES (captured from the readback line): maxDistKm 12,
+    -- depthFade 100000, spacing 50000, rayLen 1.0, maxRayLen 0.0.
+    -- DepthFadeDistance is THE near-geometry knob: cards fade where the
+    -- scene depth behind them is close, so RAISING it pushes rays off
+    -- nearby structures and out toward the distance where they belong.
+    -- PointSpacing thins the field (fewer cards = less chance one lands
+    -- on top of you, and cheaper: IndividualClouds=1.0 spawns many).
+    -- MaxDistanceKm is the OUTER bound: lowering it pulls rays CLOSER,
+    -- which is the wrong direction here. Leave at stock.
     MaxDistanceKm     = nil,
-    DepthFadeDistance = nil,
-    PointSpacing      = nil,
+    DepthFadeDistance = 400000,  -- 1 km stock -> 4 km fade band (2.5 km was still too close)
+    PointSpacing      = 110000,  -- 500 m stock -> 1.1 km between ray points (sparser field)
     RayLength         = nil,
     MaxRayLength      = nil,
 }
@@ -332,19 +345,15 @@ Config.Keybinds = {
     -- any wrong-rain spot (raining under cover, dry in the open); the
     -- logged mesh names feed Config.RainCollision.TargetPatterns.
     NoteRainSpot = { Key = "N", Modifiers = {"Alt"} },
+    -- Dormant diagnostics, uncomment to re-arm. Alt+J toggles the (now
+    -- fallback-only) covered-road precipitation hide; Alt+O logs the live
+    -- UDW particle-collision properties plus an upward channel trace sweep
+    -- from the car, the tool that mapped the occlusion problem.
     -- PrecipSuppressTest = { Key = "J", Modifiers = {"Alt"} },
-    -- RETIRED occlusion-experiment keys (2026-07-28, the discovery phase
-    -- is over: rain occludes natively via Config.RainCollision). Handlers
-    -- remain in tunnels.lua; uncomment a line to re-arm its diagnostic.
-    -- Alt+O = UDW props + channel sweep, Alt+Shift+O = test rain toggle,
-    -- Alt+U = manual roof slab, Alt+I / Alt+Shift+I = census / world
-    -- flip, Alt+Y = UDW rain-channel cycler.
     -- OcclusionProbe = { Key = "O", Modifiers = {"Alt"} },
-    -- OcclusionTestRain   = { Key = "O", Modifiers = {"Alt", "Shift"} },
-    -- OcclusionTestVolume = { Key = "U", Modifiers = {"Alt"} },
-    -- CeilingCensus = { Key = "I", Modifiers = {"Alt"} },
-    -- CeilingFlip   = { Key = "I", Modifiers = {"Alt", "Shift"} },
-    -- RainChannelCycle = { Key = "Y", Modifiers = {"Alt"} },
+    -- (The Alt+I sun-leak toggle is DELETED as of 2026-08-04, handler and
+    -- module function both: its revert keyed on an unstable component key
+    -- and falsely exonerated the fix in an A/B. A/B by course reload.)
 
     -- Exposure tuning feedback: press when the picture looks wrong; logs time,
     -- weather, and the exposure values in effect (grep the log for "ExposureTune").
@@ -493,10 +502,88 @@ Config.Atmosphere = {
     -- NightSkyGlowColor   = {R = 0.45, G = 0.50, B = 0.65, A = 1.0},
 
     -- God rays = the sun's screen-space light-shaft bloom (EnableGodRays above).
-    -- UDS stores max brightness as a (clear, overcast) pair; the multiplier scales
-    -- both ends. Tint is slightly warm for a cinematic shaft color.
-    SunShaftBrightnessMult = 1.3,
+    --
+    -- WHY THREE ROUNDS OF TUNING DID NOTHING (settled 2026-07-30): rounds 1
+    -- and 2 tuned Config.LightRays, which drives UDS's NIAGARA volumetric
+    -- cloud rays. Those never construct in TXR: the sole constructor is gated
+    -- on "Cloud Coverage Target in Use" which the game never satisfies, the
+    -- construction script does not re-run in a cook, and maxRayLen read 0.0
+    -- in 106 of 106 samples. That block is dormant. THESE keys drive the
+    -- system actually on screen.
+    --
+    -- THE PAIRS INTERPOLATE ON SUN ELEVATION (X = high sun, Y = low sun),
+    -- proven from bytecode: Apply Light Shaft Settings takes
+    -- GetForwardVector(Sun World Rotation) as its only selector. Cloud cover is
+    -- NOT an input, which is why heavy overcast still gets full shafts. An
+    -- earlier note here claiming a (clear, overcast) pair was simply wrong.
+    -- Stock:
+    --   Max Brightness   0.35 -> 0.25
+    --   Bloom Threshold  1.30 -> 0.35
+    --   Bloom Scale      0.30 -> 0.225
+    -- WHICH KNOB DOES WHAT. UE light shaft bloom is a screen-space RADIAL BLUR
+    -- from the sun's screen position, with no distance parameter of any kind.
+    -- Max Brightness caps intensity. Bloom Threshold gates which pixels seed a
+    -- streak, and is useless as a limiter here because an overcast HDR sky sits
+    -- far above any sane threshold (raising it 0.35 -> 0.7 changed nothing on
+    -- screen). BLOOM SCALE is how far the streaks extend, i.e. the actual
+    -- "rays fire too close to the car" knob, and rounds 1 to 3 never wrote it.
+    --
+    -- Written ABSOLUTE, never scaled off the live value. Atmosphere.Setup()
+    -- runs per course load, so a read-modify-write only stays correct while
+    -- the UDS actor happens to be fresh; light_cycle.lua:596 documents that
+    -- same hazard. Absolute writes make Setup idempotent.
+    -- WHY IT "FIRES OFF BUILDINGS" (working theory). The threshold only bites
+    -- ABOVE the sky's luminance, and {1.3, 0.7} sat UNDER an overcast HDR sky at
+    -- every elevation, so effectively every bright pixel qualified: sky showing
+    -- between and behind building silhouettes seeded streaks indistinguishable
+    -- from real sun rays. That is also why 0.35 -> 0.7 did nothing on screen.
+    -- The threshold is not useless as a limiter, it was simply never raised past
+    -- the thing it had to gate.
+    -- THE UNITS ARE INFERRED, NOT MEASURED. There is no framebuffer readback in
+    -- this mod. Stock is {1.3, 0.35}; stock LOWERS it at low sun because
+    -- extinction dims the disc at sunrise and sunset, so always keep Y below X.
+    SunShaftBrightnessMult = 1.0,          -- 1.0 = stock 0.35/0.25 exactly
+    -- THE ONE KNOB TO TUNE AFTER THIS, and the only one. If god rays never
+    -- appear in CLEAR weather with the sun in frame, step DOWN: 6/2.5 then
+    -- 4/1.6 then 2/0.8. If shafts still seed off buildings and bright sky in
+    -- clear weather, step UP: 12/5 then 25/10. Do NOT reach for Max Brightness
+    -- or Bloom Scale first, neither can make the effect appear or stop it
+    -- seeding.
+    -- Diagnostic, not a setting: {X = 200, Y = 200} once. Shafts vanishing at
+    -- 200 proves the gate works in these units and the answer is a bisection.
+    -- Shafts SURVIVING at 200 proves the comparison is against raw scene
+    -- luminance, no reachable value can gate the sky, and the threshold route is
+    -- dead: what is left is the weather gate below plus Bloom Scale.
+    SunShaftBloomThreshold = {X = 6.0, Y = 2.5},
+    -- Extent. Half stock (0.30/0.225), unchanged: this HAS run in game and is
+    -- deliberately held while the threshold is the single moving variable.
+    -- Go to {X = 0.08, Y = 0.05} for shorter streaks, back toward stock for
+    -- longer ones, but only after the threshold is settled.
+    SunShaftBloomScale = {X = 0.15, Y = 0.10},
     SunShaftTint = {R = 1.00, G = 0.92, B = 0.80, A = 1.0},
+
+    -- WEATHER GATE. There are no god rays under a solid deck: no direct sun.
+    -- UDS never works that out, because Apply Light Shaft Settings takes the sun
+    -- forward vector and nothing else, so heavy overcast gets full-strength
+    -- streaks fanning across the road. This gates them on the mod's OWN cloud
+    -- coverage (clouds_fog, 0-10, already smoothed over PresetTransitionSeconds):
+    -- full shafts at or below ClearCloud, none at or above OvercastCloud,
+    -- smoothstep between. Both Max Brightness and Bloom Scale are scaled by the
+    -- same factor, so rays dim AND retract as cover thickens.
+    --   Clear_Skies 0.5, Partly_Cloudy 2.0, Foggy 3.0            -> full
+    --   Cloudy 4.0, Snow_Light 4.0, Sand_Dust_Storm 4.0          -> 0.65
+    --   Rain_Light 5.0                                           -> 0.10
+    --   Overcast 6.0, Rain 6.0, Overcast_Heavy 7.5,
+    --   Rain_Thunderstorm 8.0                                    -> off
+    -- Foggy keeps its rays on purpose: shafts through haze are the real thing.
+    -- Rays only on genuinely clear skies? Drop the pair to 1.5 / 3.5.
+    -- Rays back everywhere? GodRayWeatherGate = false.
+    -- The gate is identity below ClearCloud, so it does NOT stack with the
+    -- threshold in clear weather: a clear-weather boot reads the threshold
+    -- alone, an overcast boot reads the gate alone.
+    GodRayWeatherGate = true,
+    GodRayGateClearCloud = 3.0,
+    GodRayGateOvercastCloud = 5.5,
 
     -- Cloud shadow softness (sunny/overcast), scaled up from stock for soft
     -- dappled light rolling over the track instead of hard-edged blotches.
@@ -583,8 +670,8 @@ Config.CinematicSky = {
     -- cloud layer, so ALL new GPU load is rolled back to isolate the cause. The
     -- cinematic look above (extinction/multiscatter/wisps/grade) is material-param
     -- cheap and stays. Raise these again only after a clean session or two.
-    ViewSampleQualityMult   = 1.0,
-    ShadowSampleQualityMult = 1.0,
+    ViewSampleQualityMult   = 1.5,
+    ShadowSampleQualityMult = 1.5,
 
     -- Cloud movement mood
     CloudSpeedMult          = 0.60, -- slower, statelier drift
@@ -644,7 +731,7 @@ Config.PhotoMode = {
 
     -- While a photo session is open: freeze time of day (UDS Animate Time
     -- of Day off; sun and shadows hold still through composing and long
-    -- shutters). Restores on close; a user Alt+T pause is respected
+    -- shutters). Restores on close; a manual Alt+T pause is respected
     -- either way.
     FreezeTime = true,
 
@@ -783,6 +870,13 @@ Config.Headlights = {
     OnElev  = -1.0,
     OffElev = 0.5,
 
+    -- GARAGE SHOW-FLOOR LIGHTS (2026-08-11): keep the displayed car's
+    -- headlights ON for the whole garage visit (pairs with
+    -- Config.LightCycle.GarageDark). State-checked re-assert every ~2.5s
+    -- covers vehicle swaps; Alt+Q still toggles manually (auto-on re-arms
+    -- within one window). Set false for the stock lights-off garage.
+    GarageAlwaysOn = true,
+
     -- Forced-ON contexts for auto mode: real tunnel bores (road-data cover;
     -- lone overpasses deliberately do NOT flash the lights) and wet weather
     -- presets. When the context ends, the elevation logic takes back over.
@@ -841,6 +935,18 @@ Config.Tuning = {
 Config.LightCycle = {
     Enabled = true,
     UpdateIntervalSeconds = 1.0,  -- update cadence; writes are change-gated
+
+    -- DARK GARAGE look (2026-08-11): every garage visit starts from the
+    -- tuned low-key show floor instead of the neutral exposure: the Alt+G
+    -- dark lens with an Alt+E trim baseline on top (lens 30 * 1.25^-33
+    -- ~= 0.019, the 2026-08-11 00:31 field tuning). HDR-calibrated; SDR
+    -- feedback pending. Alt+G / Alt+E still adjust live during the
+    -- visit. The installer exposes Enabled as a yes/no; set false for
+    -- the stock garage brightness.
+    GarageDark = {
+        Enabled = true,
+        NudgeSteps = -33,
+    },
 
     -- EXPOSURE POLICY: the stock pipeline runs untouched apart from the
     -- skylight-leak kill (Config.Tunnels.KillVolumeSkylightLeak) and the
@@ -915,6 +1021,61 @@ Config.LightCycle = {
         -- (LeakAlbedo cvar): test live with Alt+Shift+Z.
         LumenSceneDetail = 2.0,                     -- game runs 1
         LumenFinalGatherLightingUpdateSpeed = 2.0,
+        -- BLACK GEOMETRY IN CAR-PAINT REFLECTIONS: screen-trace dependency in
+        -- software Lumen. TWO REGIMES (2026-07-31, three-shot A/B):
+        --   VANILLA: black only when the reflected object is OFF SCREEN. Stock
+        --     engine behaviour, not fixable from here.
+        --   WITH Engine.ini: FIXED 2026-07-31. Fine/thin geometry and the gaps
+        --     between small details reflected black while large panels were
+        --     fine, independent of viewport visibility. Cause: Engine.ini ran
+        --     r.Lumen.Reflections.HierarchicalScreenTraces.MaxIterations=4
+        --     against an engine default of 50. An HZB is a downsampled depth
+        --     pyramid, so thin features vanish at coarse mips and a 4-iteration
+        --     traversal never reached one fine enough to resolve them. Now 50
+        --     at Engine.ini:108. Watch for the reflection banding that
+        --     motivated the 4 to return. See HANDOFF.md.
+        -- This cook runs SOFTWARE Lumen (r.RayTracing=False,
+        -- r.Lumen.HardwareRayTracing=False, r.Nanite.ProjectEnabled=False are
+        -- all cook-time flags, so every r.Lumen.HardwareRayTracing.* line in
+        -- Engine.ini is INERT). In software mode a reflection ray that HITS
+        -- geometry has one radiance source, the Lumen Scene; miss it and the ray
+        -- returns zero, i.e. black exactly where geometry is, while the SKY
+        -- stays correct because a ray MISS is served by the skylight cubemap.
+        -- Epic documents the symptom class verbatim ("Areas that don't have
+        -- Surface Cache coverage will appear black in reflections"; "Small
+        -- meshes appear black in mirror reflections because Lumen culls small
+        -- objects from Lumen Scene"). Its three cures (hit lighting, multi-
+        -- bounce, Nanite) all need cook-time flags this build does not have.
+        -- TRIED AND REVERTED: LumenSceneViewDistance = 80000.0 (800 m, against
+        -- the stock 20000 uu = 200 m). Note the units are UNREAL UNITS, not
+        -- metres, so "800" would have meant EIGHT metres. It did not help.
+        -- THE TEST THAT SETTLED IT: with Engine.ini REMOVED, the sign reflects
+        -- CORRECTLY in the hood while it is visible in the viewport, and turns
+        -- into a black blob the moment it leaves the viewport. Same sign, same
+        -- drive. The discriminator is on-screen versus off-screen, which is
+        -- screen tracing by definition. It also reproduces with no Engine.ini at
+        -- all, so it is neither ours nor the ini's. Zoomed in, the black is
+        -- patchy rather than total and MOVES with the camera, which a static
+        -- hole in the world representation could not do.
+        -- Also disproven: r.Lumen.Reflections.ScreenTraces=0 made it WORSE (it
+        -- killed the only working path), and the blobs PREDATE
+        -- r.ReflectionEnvironment=0.
+        -- Two independent web search passes found NO other report of this exact
+        -- artifact, so there is no known workaround to go looking for either.
+        -- BLACK BLOBS IN CAR PAINT (2026-07-30): setting this false was WRONG
+        -- and is kept here only as a signpost. The diagnosis it rested on (a
+        -- grazing-angle screen trace false-hitting thin geometry and returning
+        -- dark scene colour) is not what the screenshots show. The SKY
+        -- reflects correctly; what comes back black is where GEOMETRY should
+        -- be, with torn edges and colour fringing off the sign. That is
+        -- Lumen's SURFACE CACHE returning nothing for those meshes, a
+        -- different stage entirely. Turning screen traces off made it worse,
+        -- because on-screen geometry lost its one good path (scene colour) and
+        -- every ray fell through to the empty cache. Look at
+        -- r.LumenScene.SurfaceCache.* instead, in particular Feedback
+        -- .MinPageHits (Engine.ini runs 32, so surfaces seen ONLY through a
+        -- reflection never earn a capture) and AtlasSize.
+        LumenReflectionsScreenTraces = true,
         -- Shadow contrast: the game LIFTS unlit areas two ways, film toe
         -- 0.3 (UE default 0.55) and local-exposure shadow scale 0.7 (a
         -- regional lift that tracks auto-exposure). Neutralizing both
@@ -961,6 +1122,9 @@ Config.LightCycle = {
             VignetteIntensity = 0.0,
             LumenSceneDetail = 2.0,
             LumenFinalGatherLightingUpdateSpeed = 2.0,
+            -- Mirrored from the HDR table (see the note there: false was the
+            -- wrong call, the artifact is in the surface cache).
+            LumenReflectionsScreenTraces = true,
             ColorSaturation = { X = 1.05, Y = 1.05, Z = 1.05, W = 1.0 },
             FilmShoulder = 0.45,
         },
@@ -979,51 +1143,27 @@ Config.LightCycle = {
     Tune = { Step = 0.05, RoughnessBaseline = 1.0 },
 }
 
--- ============== TUNNELS (covered road: rain hide + GI fix) ==============
+-- ============== TUNNELS (covered-road detection + GI fix) ==============
 -- Covered = the car's road-data tunnel attribute (roof bit; exact
 -- dev-authored boundaries, catches every real bore) OR a roof trace (lone
--- overpasses, which the road data does not mark). Covered = precipitation
--- components HIDDEN (they keep simulating; weather state untouched;
--- restore = unhide, instant). Also clears the course volumes' authored
--- skylight-leak override (the boundary lighting flip).
+-- overpasses, which the road data does not mark). The covered flag drives
+-- the fog damp, forced headlights in bores and photomode covered
+-- metering. This block also clears the course volumes' authored
+-- skylight-leak override (the boundary lighting flip). Rain occlusion
+-- lives in Config.RainCollision since 3.8.0.
 Config.Tunnels = {
     Enabled = true,
 
-    -- NO-RAIN BUILD (2026-07-17, performance): the rain kill and the
-    -- overpass roof TRACE are OFF (no precipitation exists to kill; the
-    -- trace had no other consumer). Covered-road detection itself stays
-    -- LIVE via the road-data attribute (cheap property read): it feeds
-    -- the fog damp below, headlights AutoOnInTunnel and the photomode
-    -- CoveredLens. The poll also stays at the slow 1s cadence
-    -- permanently (no wet preset can hold it fast).
+    -- Rain handling moved OUT of this module in 3.8.0: rain now collides
+    -- with real geometry (Config.RainCollision), so the old particle-hiding
+    -- kill and its overpass roof trace stay OFF. The machinery is kept as
+    -- a fallback; setting TunnelRainKill true re-arms it (and restores the
+    -- fast 0.25s poll cadence it needs for portal reactions).
+    -- Covered-road detection itself is always LIVE via the road-data
+    -- attribute (a cheap property read): it feeds the fog damp below,
+    -- headlights AutoOnInTunnel and the photomode CoveredLens.
     TunnelRainKill = false,     -- hide precipitation on covered road
     TunnelRainLookahead = 1.2,  -- seconds of travel the roof trace probes ahead
-
-    -- RAIN BLOCKER (2026-07-28, the occlusion solution; mechanism
-    -- field-proven, dig verdict in reference\udwdig\OCCLUSION_FINDINGS.md):
-    -- while the road data says covered, ONE invisible collision slab
-    -- follows the car above the roofline; UDW's native per-particle rain
-    -- traces hit it and rain stops under cover, natively. Replaces the
-    -- retired TunnelRainKill particle machinery (leave that false).
-    -- The slab exists ONLY while covered; it blocks ONLY Visibility
-    -- queries. Known v1 limits: rain persists a few seconds into portal
-    -- entries (UDW particle path reuse) and lone overpasses over open
-    -- road are not covered (road data has no bit for them; a later
-    -- iteration can re-arm the downward roof trace as the signal).
-    RainBlocker = {
-        Enabled = false,    -- SUPERSEDED by Config.RainCollision (v8): the
-                            -- world itself is rain-solid now; machinery kept
-        ZOffset = 1500.0,   -- slab height above the car (cm)
-        HalfXY  = 12000.0,  -- half extent (cm): 240 m square
-        HalfZ   = 200.0,    -- half thickness (cm)
-        HoldS   = 2.0,      -- keep the slab this long after cover ends
-    },
-
-    -- Auto-census RETIRED (2026-07-28 late: it was the bore-entry HITCH:
-    -- a full world component sweep with a location call per component on
-    -- every bore entry; the collision model is settled, the data served
-    -- its purpose). Manual Alt+I census still available as a diagnostic.
-    AutoCensus = false,
 
     -- Fog on covered road: global fog is blind to ceilings, so foggy
     -- weather reads as a white wall inside bores. Scale Fog Density is
@@ -1062,6 +1202,13 @@ Config.Tunnels = {
 -- (the world-wide v7/v8 flip broke AI by sheer mass enablement).
 -- Re-runs on a cadence while wet so streamed-in cells get flipped too.
 Config.RainCollision = {
+    -- Restored after pilot round 2 (2026-08-10): pak loaded crash-free
+    -- (name-map fix field-proven) but pak-alone occlusion was not
+    -- observed (dry only under drivable/native-collision geometry). The
+    -- pilot pak STAYS INSTALLED: with this module back on, the FIRST
+    -- pass line's preCtf3 is the discriminator: >0 means the pak's mesh
+    -- CollisionTraceFlag override mounted (baseline without pak was 0),
+    -- =0 means the container is not overriding at all.
     Enabled = true,
     -- ECollisionChannel index for rain particle traces. 3 = stock
     -- ECC_Visibility (field-verified: occlusion correct). 22..31 = the
@@ -1070,13 +1217,125 @@ Config.RainCollision = {
     -- round 1 showed mid-air rain loss there: parked, see HANDOFF.
     Channel = 3,
     -- Lua patterns matched against disabled mesh components' static-mesh
-    -- asset paths; matching meshes become rain-solid stealth bodies.
-    -- Extend from field evidence (Alt+N / Alt+O mesh names) when a
-    -- covered spot still rains inside.
-    TargetPatterns = { "tnl", "Mesh_tn", "_br%.", "_br$" },
+    -- asset paths; matching meshes become rain-solid STEALTH BODIES.
+    -- HARD CONSTRAINT (2026-08-04): mass collision enablement is the
+    -- proven AI breaker (the v7/v8 field failures on both channels), so
+    -- this list stays the narrow v9 set that the 3.8.0 "AI healthy"
+    -- verdict was given on. From 2026-07-30 to 2026-08-04 it accidentally
+    -- carried the whole shadow roster below, and the AI misbehaved in the
+    -- field again. Extend ONLY from confirmed rain-through evidence
+    -- (Alt+N / Alt+O mesh names), one family at a time.
+    -- Naming convention on this course (from the pak dig): a section ships
+    -- as SMsr_c1_<sec><tnl|_br|_wc|_wl|_wr> = lining, bridge/deck, and
+    -- wall centre/left/right, and tunnel interior sets live under a
+    -- Mesh_tn folder (which is how the _pNN_ interior pieces match).
+    TargetPatterns = {
+        "tnl", "Mesh_tn", "_br%.", "_br$",
+    },
+    -- Patterns for the tunnel sun-leak SHADOW flip only (two-sided shadow
+    -- casting, rendering flags, no collision), so breadth is safe here.
+    -- WALLS ADDED 2026-07-30: the first pass covered linings/decks and the
+    -- field result was "some geometry instantly works, some does not";
+    -- the matched-asset log showed only _pNN_ interior pieces and one _br,
+    -- while the tree shadows in the screenshots come through a WALL.
+    -- Anchored with %. or $ like _br so they cannot over-match ("kb" also
+    -- appears in MATERIAL names, so a loose substring would over-match).
+    -- SECTION ROSTER DECODE (2026-07-30, from the collision-independent
+    -- enumeration of section c1_067; ray probes cannot see these because
+    -- art meshes ship with collision DISABLED):
+    --   _wc/_wl/_wr        wall centre/left/right
+    --   _br                bridge/deck
+    --   _s                 sidewalk/shoulder = the raised KERB strip
+    --   _w_extcS_<place>   EXTERIOR wall, continues outside the tunnel
+    --   _a                 apron/verge
+    ShadowFixPatterns = {
+        "tnl", "Mesh_tn", "_br%.", "_br$",
+        "_wc%.", "_wc$", "_wl%.", "_wl$", "_wr%.", "_wr$",
+        "_kb%.", "_kb$",
+        "_s%.", "_s$",
+        "w_ext",
+        -- APRONS, SECTION-PREFIXED (2026-08-09): bare "_a%."/"_a$" also
+        -- matched SMobj_pylon_a = every traffic cone. A PA load pass
+        -- (2026-08-08 23:51:59 log) filled all 60 matched-asset slots
+        -- with pylons and flipped 56 of them, so the cap could no longer
+        -- catch new families (the tunnel-ceiling lead). The SMsr_ prefix
+        -- limits the anchors to section meshes; [%w_]* cannot cross '/'
+        -- or '.', so a folder name cannot bridge into a prop suffix.
+        -- Coverage unchanged: the census apron family (a 59/59) is
+        -- entirely SMsr_.
+        "SMsr_[%w_]*_a%.", "SMsr_[%w_]*_a$",
+        -- EVERYTHING-FLIPPED TEST (2026-07-30), RUN AND REVERTED: _r (roadway,
+        -- 200), _p (237) and _rj (road joints, 127) were added so that every
+        -- structural family in the world was two-sided at once. The leak was
+        -- UNCHANGED. Removed again, because they roughly doubled the pass and
+        -- put self-shadowing acne risk on the asphalt for zero benefit.
+        -- Do not re-add them: this test is done and the answer was no.
+    },
+    -- THE SHADOW LIST IS COMPLETE (settled 2026-07-30 by the Alt+O family census).
+    -- The census enumerates every asset suffix family in the loaded world by
+    -- NAME, so unlike a trace it can see art meshes that ship with collision
+    -- disabled. Post-flip it reads 100% on every structural family:
+    --   s 200/200, wr 122/122, wl 120/120, kb 66/66, a 59/59, wc 43/43,
+    --   tnl 20/20, br 17/17, w_ext 12/12
+    -- so there was no missed family. The last three (_r 200, _p 237, _rj 127)
+    -- were then flipped too, as a one-shot test, and changed nothing, so the
+    -- search space is provably exhausted.
+    --
+    -- The residual lit kerb that drove five rounds of pattern-hunting is NOT
+    -- a casting-flag problem and is not reachable from Lua. It is missing
+    -- geometry: the outer "second wall" is the w_ext family, and there are
+    -- only TWELVE w_ext assets in the whole map. Section rosters show
+    -- c1_066 and c1_067 have one while c1_065, c1_068 and c1_069 have none,
+    -- and every row reads vis=true hidden=false, so nothing is merely culled
+    -- and bCastHiddenShadow has nothing to act on. Where the art placed no
+    -- exterior wall the low sun simply has an unobstructed path to the kerb.
+    -- Known residual, closed. A temporary section-wide "SMsr_c1_067" pattern
+    -- was used as the decision procedure and has been removed.
     ReapplySeconds = 20.0,  -- streamed-cell re-pass cadence while wet
     SettleSeconds = 3.0,    -- course-arm settle before the first pass
     Debug = false,          -- log quiet periodic no-op passes too
+
+    -- TUNNEL SUN-LEAK FIX. PERMANENT SHIPPING FEATURE as of 2026-07-30,
+    -- promoted from the experiment it started as.
+    --
+    -- THE BUG IT FIXES: the game's tunnel and bridge decks cast shadows
+    -- ONE-SIDED (measured: CastShadow=true but bCastShadowAsTwoSided=false),
+    -- so from the sun's side the shadow pass culls their backfaces and
+    -- daylight lands on the road inside a covered section, tree shadows and
+    -- all. It is a VANILLA artifact, reproduced with no mod and no
+    -- Engine.ini, and it is the same one-sided geometry that makes rain
+    -- need an upward trace. The pass flips every matched mesh to two-sided
+    -- shadow casting and forces the render-state rebuild that makes it take
+    -- effect, since the flag has no setter of its own.
+    --
+    -- FIELD-VERIFIED with a same-bore A/B: the warm wall streak and the
+    -- ceiling dapple are gone. What it does NOT fix is the lit kerb where a
+    -- section has no outer wall at all, because that is missing geometry
+    -- rather than a casting flag (see the note above the pattern list). That
+    -- residual is closed and is not a reason to keep this off.
+    --
+    -- COSTS, accepted: two-sided casting is not free, each flipped mesh
+    -- rebuilds its render proxy once, and this makes the world pass run in
+    -- DRY weather too (normally wet-only), because a sun leak is a sunny-day
+    -- problem. The pass is chunked so the rebuild does not hitch. Watch
+    -- shadowFixed=N and gt_ms_maxchunk in the pass log line.
+    --
+    -- No longer a toggle. The Alt+I test keybind is retired: its revert path
+    -- keys on tostring(component), which is not stable across passes, so
+    -- toggling OFF reverted only a few dozen of ~660 meshes and would
+    -- falsely exonerate the fix in an A/B. Use a course reload if you ever
+    -- need to compare.
+    --
+    -- AI-RESIDUAL A/B (2026-08-07, field: AI still bugs out sometimes near
+    -- tunnels): setting this FALSE for a session is the clean isolation
+    -- test for the shadow-pass render-state churn hypothesis (SetCastShadow
+    -- false->true proxy rebuilds hitching the GT near bores as cells
+    -- stream). Safe to run: the pass gate is (wet or FixShadowLeak), so
+    -- rain occlusion and the stealth-collision block keep working in wet
+    -- weather; only the two-sided shadow flip stops. Expect the tunnel sun
+    -- leak back for that session. Restart the game after flipping (stale
+    -- flips do not survive a course reload, so state self-heals).
+    FixShadowLeak = true,
 }
 
 -- ============== MODULE TOGGLES ==============
@@ -1101,7 +1360,7 @@ Config.ModuleToggles = {
     CinematicSky= true,   -- daytime cloud/atmosphere grade (see Config.CinematicSky)
     LightCycle  = true,   -- sun-elevation exposure (see Config.LightCycle)
     Tunnels     = true,   -- covered-road rain kill (see Config.Tunnels)
-    RainCollision = true, -- native rain occlusion v8 (see Config.RainCollision)
+    RainCollision = true, -- native rain occlusion (see Config.RainCollision)
     RealSun     = true,   -- real-sun probe + experiment (see Config.RealSun)
     Vignette    = true,   -- hide the HUD vignette (see Config.Vignette)
     PhotoMode   = true,   -- photo mode free-camera unlocks
@@ -1111,11 +1370,12 @@ Config.ModuleToggles = {
 }
 
 -- ============== VERSION ==============
+-- Bump String only; FullName derives from it. (2026-08-09 cleanup:
+-- Major/Minor/Patch and Name had no readers anywhere, release tooling
+-- included, and the duplicated version string was a bump hazard.)
 Config.Version = {
-    Major = 3, Minor = 8, Patch = 0,
-    String = "3.8.0",
-    Name = "TXR Weather Mod",
-    FullName = "TXR Weather Mod v3.8.0",
+    String = "3.9.0",
 }
+Config.Version.FullName = "TXR Weather Mod v" .. Config.Version.String
 
 return Config

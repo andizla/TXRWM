@@ -12,7 +12,6 @@ local Config = require("config")
 -- Lazy-load these to avoid circular dependencies
 local Weather = nil
 local TimeOfDay = nil
-local Wetness = nil
 local Shadows = nil
 local Headlights = nil
 local Scheduler = nil
@@ -75,14 +74,6 @@ local function getTimeOfDay()
         if success then TimeOfDay = mod end
     end
     return TimeOfDay
-end
-
-local function getWetness()
-    if not Wetness then
-        local success, mod = pcall(require, "systems.wetness")
-        if success then Wetness = mod end
-    end
-    return Wetness
 end
 
 local function getShadows()
@@ -316,30 +307,6 @@ local function onToggleTimeSpeed()
     -- Use the CycleSpeed function which handles Normal -> Fast -> Pause -> Normal
     local newMode = tod.CycleSpeed()
     Log.Info(MODULE, "Time speed toggled", {mode = newMode})
-end
-
-local function onForceWetness()
-    local wetness = getWetness()
-    if not wetness then
-        Log.Warn(MODULE, "Wetness module not available")
-        return
-    end
-    
-    -- Force max wetness and puddles for visibility testing
-    wetness.ForceWet()
-    Log.Info(MODULE, "DEBUG: Forced max wetness/puddles")
-end
-
-local function onForceDry()
-    local wetness = getWetness()
-    if not wetness then
-        Log.Warn(MODULE, "Wetness module not available")
-        return
-    end
-    
-    -- Force dry surfaces for testing
-    wetness.ForceDry()
-    Log.Info(MODULE, "DEBUG: Forced dry surfaces")
 end
 
 local function onShadowDistanceUp()
@@ -600,15 +567,6 @@ function Keybinds.Init(config)
         registerKeybind("ToggleTimeSpeed", config.ToggleTimeSpeed, onToggleTimeSpeed)
     end
     
-    -- Register debug wetness (for testing puddles)
-    if config.DebugForceWetness then
-        registerKeybind("DebugForceWetness", config.DebugForceWetness, onForceWetness)
-    end
-    
-    -- Register debug dry (for testing)
-    if config.DebugForceDry then
-        registerKeybind("DebugForceDry", config.DebugForceDry, onForceDry)
-    end
     
     -- Register shadow distance calibration controls
     -- Alt+L raises the flat shadow distance, Alt+Shift+L lowers it (logs FOV+distance)
@@ -650,6 +608,10 @@ function Keybinds.Init(config)
         Log.Debug(MODULE, "BrightnessDown not in config")
     end
 
+    -- (The Alt+I sun-leak toggle handler is deleted 2026-08-04 along with
+    -- RainCollision.ToggleShadowFix: the revert path keyed on an unstable
+    -- component key and falsely exonerated the fix in an A/B.)
+
     -- Occlusion dig probe (Alt+O; see tunnels.OcclusionProbe)
     if config.OcclusionProbe then
         registerKeybind("OcclusionProbe", config.OcclusionProbe, function()
@@ -662,66 +624,6 @@ function Keybinds.Init(config)
         end)
     end
 
-    -- Occlusion experiment round 2: test rain toggle + roof-slab blocker
-    if config.OcclusionTestRain then
-        registerKeybind("OcclusionTestRain", config.OcclusionTestRain, function()
-            local okW, Weather = pcall(require, "systems.weather")
-            if not okW or not Weather or not Weather.Apply then
-                Log.Warn(MODULE, "Weather module not available")
-                return
-            end
-            local raining = false
-            pcall(function()
-                local okP, Presets = pcall(require, "systems.presets")
-                local cur = Weather.GetCurrent and Weather.GetCurrent()
-                local d = okP and Presets and Presets.Get and cur and Presets.Get(cur)
-                raining = (d and d.hasRain) == true
-            end)
-            if raining then
-                Log.Info(MODULE, "TEST RAIN OFF (back to Clear Skies, 10s)")
-                Weather.Apply("Clear_Skies", 10)
-            else
-                Log.Info(MODULE, "TEST RAIN ON (forcing Rain preset, 10s)")
-                Weather.Apply("Rain", 10)
-            end
-            -- Keep the scheduler's hands off the experiment (30 min while
-            -- test rain is on; normal-ish resume 2 min after turning it off)
-            pcall(function()
-                local okS, Scheduler = pcall(require, "systems.scheduler")
-                if okS and Scheduler and Scheduler.HoldFor then
-                    Scheduler.HoldFor(raining and 120 or 1800)
-                end
-            end)
-        end)
-    end
-    if config.OcclusionTestVolume then
-        registerKeybind("OcclusionTestVolume", config.OcclusionTestVolume, function()
-            local ok, Tunnels = pcall(require, "systems.tunnels")
-            if not ok or not Tunnels or not Tunnels.OcclusionVolumeToggle then
-                Log.Warn(MODULE, "Tunnels module not available")
-                return
-            end
-            Tunnels.OcclusionVolumeToggle()
-        end)
-    end
-    if config.CeilingCensus then
-        registerKeybind("CeilingCensus", config.CeilingCensus, function()
-            local ok, Tunnels = pcall(require, "systems.tunnels")
-            if ok and Tunnels and Tunnels.CeilingCensus then Tunnels.CeilingCensus() end
-        end)
-    end
-    if config.CeilingFlip then
-        registerKeybind("CeilingFlip", config.CeilingFlip, function()
-            local ok, Tunnels = pcall(require, "systems.tunnels")
-            if ok and Tunnels and Tunnels.CeilingFlip then Tunnels.CeilingFlip() end
-        end)
-    end
-    if config.RainChannelCycle then
-        registerKeybind("RainChannelCycle", config.RainChannelCycle, function()
-            local ok, Tunnels = pcall(require, "systems.tunnels")
-            if ok and Tunnels and Tunnels.CycleRainChannel then Tunnels.CycleRainChannel() end
-        end)
-    end
 
     -- Photomode exposure trim + dark look (Alt+E / Alt+Shift+E / Alt+G)
     if config.PhotoExposureUp then
@@ -812,19 +714,5 @@ function Keybinds.GetRegistered()
     return registeredKeys
 end
 
---- Manually trigger weather cycle (for testing)
-function Keybinds.TriggerCycleNext()
-    onCycleWeatherNext()
-end
-
---- Manually trigger weather cycle back (for testing)
-function Keybinds.TriggerCyclePrev()
-    onCycleWeatherPrev()
-end
-
---- Manually trigger weather reset (for testing)
-function Keybinds.TriggerReset()
-    onResetWeather()
-end
 
 return Keybinds

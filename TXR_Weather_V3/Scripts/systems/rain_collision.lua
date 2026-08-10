@@ -50,13 +50,22 @@ local CHANNEL = 3           -- ECollisionChannel index for rain traces
 local REAPPLY_S = 20.0      -- streamed-cell re-pass cadence while wet
 local SETTLE_S = 3.0        -- course-arm settle before the first pass
 local ENFORCE_S = 2.0       -- UDW channel enforcement cadence (cheap read)
+local FIX_SHADOW_LEAK = false  -- sun-leak fix; permanent shipping feature, config default true (see processCompGT)
 local DEBUG = false
 -- Lua patterns matched against each disabled mesh component's STATIC MESH
 -- asset full name: tunnel linings/pieces ("tnl"), the Mesh_tn interior-set
 -- folders, and bridge/overpass deck pieces ("_br" suffix; the trailing
 -- "%." / "$" anchor it to the asset name end, so "_brk"-style names never
 -- match). Extend from field data via Config.RainCollision.TargetPatterns.
+-- HARD CONSTRAINT: this list feeds the COLLISION block, and mass collision
+-- enablement is the proven AI breaker (v7/v8 field failures, both
+-- channels). Keep it to the v9 trio unless a confirmed rain-through spot
+-- names a new asset. Shadow-only families go in SHADOW_PATTERNS below.
 local TARGET_PATTERNS = { "tnl", "Mesh_tn", "_br%.", "_br$" }
+-- Patterns for the sun-leak SHADOW flip only (broad structural roster:
+-- walls/kerbs/sidewalks/aprons). Rendering flags only, never collision,
+-- so breadth is safe here. Config.RainCollision.ShadowFixPatterns.
+local SHADOW_PATTERNS = TARGET_PATTERNS
 
 -- ============== STATE ==============
 local isInitialized = false
@@ -247,7 +256,7 @@ end
 
 --- TARGETED rain-solid pass (v9, 2026-07-28 field round 2: the v7/v8
 --- world-wide flip broke AI on BOTH channels = the mass ENABLEMENT was
---- the AI vector all along, never the Visibility writes; user call:
+--- the AI vector all along, never the Visibility writes; the call was:
 --- "target the correct meshes"). Only mesh components whose STATIC MESH
 --- ASSET path matches the target patterns (tunnel linings + interior
 --- sets + bridge/overpass decks: the exact assets every confirmed
@@ -264,10 +273,15 @@ end
 --- Idempotent: already-enabled components are skipped after one read;
 --- disabled non-matching components pay one asset-name read per pass
 --- (ms= in the log tells the real cost).
+-- FIELD DATA 2026-07-29: across ~30 passes the per-class match counter
+-- read `Stat=N Inst=0 Hier=0` EVERY time. Tunnel linings and bridge decks
+-- are unique large meshes; the instanced classes carry scattered props and
+-- never match a target pattern. Sweeping them cost 2 of the 3 FindAllOf
+-- calls per pass for nothing, so they are retired. (If a future target
+-- pattern ever needs instanced geometry, add the class back here and the
+-- matchedBy counter will show it earning its keep.)
 local CLASSES = {
     "StaticMeshComponent",
-    "InstancedStaticMeshComponent",
-    "HierarchicalInstancedStaticMeshComponent",
 }
 local SHAPE_CLASSES = {
     "BrushComponent",
@@ -277,28 +291,90 @@ local SHAPE_CLASSES = {
 }
 local STEALTH_OBJ_TYPE = 25   -- game-undefined ECC: object queries never see it
 
-local function meshMatchesTarget(fn)
-    for _, pat in ipairs(TARGET_PATTERNS) do
+local function meshMatchesAny(fn, patterns)
+    for _, pat in ipairs(patterns) do
         if fn:find(pat) then return true end
     end
     return false
 end
 
--- CHUNKED pass state (2026-07-28 late: the single-closure pass was a
--- visible frame HITCH at the 20s mark; the scan now walks ~CHUNK
--- components per 8 Hz tick, sub-millisecond of GT work per frame, full
--- coverage in ~2-3s: well inside the 10s rain ramp). The comps array is
--- held across ticks WITHIN one world only: every touch re-validates, the
--- teardown gate and OnCourseUnload drop the state outright.
-local CHUNK = 250
-local passState = nil   -- { ci, comps, i, enabledN, casN, scannedN, gtMs, chunks, trigger }
+-- CHUNKED pass state. Two rounds of hitch work:
+--   1. (first cut) the single-closure pass was a visible frame stall, so
+--      the scan walks CHUNK components per 8 Hz tick.
+--   2. (2026-07-28 telemetry: gt_ms_maxchunk read 27-34 ms) the residue
+--      was FindAllOf itself: one unsplittable ~30 ms block that ran ON
+--      THE GAME THREAD, three times per pass. That breaks our own
+--      standing rule (sweeps are free on the async thread and ruinous on
+--      the GT), so the fetch now happens ASYNC in Tick and only the
+--      component work is marshalled. With the sweep gone the GT slices
+--      cost ~1-5 ms, so CHUNK went up 4x: the pass finishes in ~3-4 ticks
+--      instead of ~14, which also shrinks the window where component
+--      refs are held across ticks (a cell streaming out mid-pass is the
+--      one remaining dangling-ref risk).
+-- The comps array lives WITHIN one world only: every touch re-validates,
+-- and the teardown gate plus OnCourseLoad/Unload drop the state outright.
+local CHUNK = 250   -- was 400: with the verdict cache dead, 400-comp
+                    -- chunks ran 7-27ms ON THE GT (2026-08-10 13:55
+                    -- field log) = dropped frames at every course entry
+                    -- and ~23s micro-hitches while driving. 250 caps the
+                    -- worst case; the GetAddress cache fix below cuts the
+                    -- per-comp cost underneath it as well.
+local passState = nil   -- see startWorldPass for the shape
 
 local function startWorldPass(trigger)
     passState = {
         ci = 1, comps = nil, i = 1,
         enabledN = 0, casN = 0, scannedN = 0,
         gtMs = 0.0, maxMs = 0.0, chunks = 0, trigger = trigger,
+        -- per-class match counts: one boot of data decides whether the
+        -- instanced classes are ever worth sweeping (tunnel linings and
+        -- decks are unique meshes; instancing is for scattered props)
+        perClass = {},
     }
+end
+
+-- DISTANCE GATE state. K2_GetActorLocation is a UFunction, so the car
+-- position is read on the GAME THREAD (one call per enforce tick, riding
+-- the closure that is already dispatched) and cached as plain numbers
+-- that the async side reads: the standing "cache on GT, async consumes
+-- the verdict" pattern. Fails OPEN in every unknown case, so a missing
+-- reading can never silently stop the pass from running.
+local MOVE_THRESHOLD = 2500.0   -- uu (25 m); cells cannot stream without motion
+local carX, carY, carZ = nil, nil, nil          -- GT-written, async-read
+local passOX, passOY, passOZ = nil, nil, nil    -- car position at pass start
+
+local function updateCarPosGT()
+    -- Run-time teardown re-check, same as every other GT closure body in
+    -- this module: the closure can land while the GT is destroying the
+    -- world, and pcall cannot catch that AV (IsValid can false-pass too).
+    local actors = getActors()
+    if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
+        return
+    end
+    pcall(function()
+        local UEH = getUEHelpers()
+        local pc = UEH and UEH.GetPlayerController and UEH.GetPlayerController()
+        local pawn = pc and pc.Pawn
+        if pawn and pawn.IsValid and pawn:IsValid() then
+            local loc = pawn:K2_GetActorLocation()
+            if loc then
+                carX, carY, carZ = tonumber(loc.X), tonumber(loc.Y), tonumber(loc.Z)
+            end
+        end
+    end)
+end
+
+--- Has the car moved far enough since the last pass for new cells to
+--- have streamed in? Unknown position, or no recorded origin = TRUE
+--- (fail open: never skip work because a reading is missing).
+local function movedSincePass()
+    if carX == nil or passOX == nil then return true end
+    local dx, dy, dz = carX - passOX, carY - passOY, carZ - passOZ
+    return (dx * dx + dy * dy + dz * dz) >= (MOVE_THRESHOLD * MOVE_THRESHOLD)
+end
+
+local function markPassOrigin()
+    passOX, passOY, passOZ = carX, carY, carZ
 end
 
 -- Per-ASSET match verdicts, keyed by the mesh userdata's tostring (the
@@ -306,27 +382,161 @@ end
 -- GetFullName is the expensive reflection read; with the cache it runs
 -- once per unique mesh asset per course instead of once per disabled
 -- component per pass. Cleared on course load/unload.
+-- KEY STABILITY IN DOUBT (2026-08-09): a PA pass logged 56 fresh
+-- verdicts for ONE asset name (SMobj_pylon_a), and a later pass in the
+-- same world recomputed pylon verdicts without flipping anything (the
+-- components were already two-sided), consistent with the Alt+I lesson:
+-- tostring keys that do not survive re-access. cacheMiss= in the pass
+-- line measures it. If it tracks scanned across passes the cache never
+-- hits and every component pays GetFullName every pass. That cost is
+-- already inside today's measured gt_ms numbers, so leave the cache
+-- alone until the counter has field data.
 local meshVerdict = {}
+-- Raised 25 -> 60 (2026-07-30): at 25 the list was truncating before we
+-- could tell whether a newly added pattern (_wc/_wl/_wr, _kb) had matched
+-- anything at all, which is the question the log exists to answer.
+local MATCHED_NAME_CAP = 60
+local matchedNamesLogged = 0
+-- Log dedupe by SHORT NAME (2026-08-09): the address-keyed cache above
+-- does not dedupe same-named meshes (the 56 pylon lines), so the cap now
+-- counts unique NAMES: one prop family can no longer blind the readout
+-- the cap exists for. Bounded at MATCHED_NAME_CAP entries; cleared with
+-- the cache.
+local matchedNamesSeen = {}
+-- (shadowFlipped and the Alt+I forcePass state deleted 2026-08-04 with
+-- the toggle: the revert path keyed on tostring(component), which is not
+-- stable across passes, so an A/B via toggle falsely exonerated the fix.)
 
+--- Order matters for cost (2026-07-29 telemetry: gt_ms_maxchunk stayed
+--- ~20 ms after the sweep moved off the GT, so the PER-COMPONENT work
+--- was the real expense at ~15-20 us each). GetCollisionEnabled is a
+--- UFunction call (ProcessEvent marshalling); the asset verdict is a
+--- property read plus a cached table lookup. So the cheap check runs
+--- FIRST and the UFunction only runs for the handful of components whose
+--- mesh actually matches. The en==0 gate stays exactly where it was, as
+--- a SAFETY property (never touch a body the game already enabled), it
+--- is just consulted later.
 local function processCompGT(st, c)
     if not validRef(c) then return end
-    local en = nil
-    pcall(function() en = c:GetCollisionEnabled() end)
-    if en ~= 0 then return end
     st.scannedN = st.scannedN + 1
     local sm = nil
     pcall(function() sm = c.StaticMesh end)
     if not sm then return end
+    -- OBJECT-address key (2026-08-10): tostring(sm) keys never repeat
+    -- because every c.StaticMesh access mints a fresh userdata, so the
+    -- cache never hit (cacheMiss==scanned on every pass, 08-09 and 08-10
+    -- field logs) and every component re-paid GetFullName every pass:
+    -- the bulk of the 7-27ms GT chunks. GetAddress is the UObject
+    -- address (stable per live asset, proven idiom in tuning.lua);
+    -- cleared per world with the rest of the cache, so it cannot alias
+    -- across worlds.
     local key = nil
-    pcall(function() key = tostring(sm) end)
+    pcall(function() key = sm:GetAddress() end)
+    if key == nil then pcall(function() key = tostring(sm) end) end
     local verdict = key and meshVerdict[key]
     if verdict == nil then
+        st.missN = (st.missN or 0) + 1   -- fresh verdict computed (cacheMiss=)
         local meshName = nil
         pcall(function() meshName = sm:GetFullName() end)
-        verdict = (type(meshName) == "string") and meshMatchesTarget(meshName) or false
+        if type(meshName) == "string" then
+            verdict = {
+                coll = meshMatchesAny(meshName, TARGET_PATTERNS),
+                shadow = meshMatchesAny(meshName, SHADOW_PATTERNS),
+            }
+        else
+            verdict = { coll = false, shadow = false }
+        end
         if key then meshVerdict[key] = verdict end
+        -- Name the ASSETS we accept, deduped by SHORT NAME and capped.
+        -- This is the readout that answers "are we flipping the right
+        -- meshes?": the patterns are substring matches, so an unintended
+        -- asset with "tnl" in its path would otherwise be invisible in
+        -- the counts. Name-keyed on purpose (2026-08-09): the address-
+        -- keyed cache above missed 56 times on one pylon asset in a
+        -- single PA pass and the cap spent itself on duplicates.
+        if (verdict.coll or verdict.shadow)
+           and matchedNamesLogged < MATCHED_NAME_CAP then
+            local short = (type(meshName) == "string")
+                and (meshName:match("([^%.%s/]+)$") or meshName) or "?"
+            if not matchedNamesSeen[short] then
+                matchedNamesSeen[short] = true
+                matchedNamesLogged = matchedNamesLogged + 1
+                Log.Info(MODULE, "Target asset matched", {
+                    n = matchedNamesLogged,
+                    as = verdict.coll and (verdict.shadow and "coll+shadow" or "coll")
+                        or "shadow",
+                    mesh = short,
+                })
+            end
+        end
     end
-    if not verdict then return end
+    if not (verdict.coll or verdict.shadow) then return end
+
+    -- SUN-LEAK FIX (permanent, Config.RainCollision.FixShadowLeak).
+    -- Field-proven diagnosis 2026-07-29: these decks ship CastShadow=true
+    -- but bCastShadowAsTwoSided=FALSE, so from the sun's side the shadow
+    -- depth pass culls their backfaces, writes no depth, and sunlight
+    -- lands INSIDE the tunnel. Same one-sided geometry that makes rain
+    -- traces need an upward leg: one authoring decision, two leaks.
+    -- bCastShadowAsTwoSided has NO setter on this cook and UE snapshots
+    -- it into the scene proxy at render-state creation, so a bare write
+    -- is a silent no-op. SetCastShadow DOES exist and dirties render
+    -- state, but early-outs on an unchanged value: hence the false->true
+    -- toggle to force the proxy to rebuild and pick the flag up.
+    -- Deliberately OUTSIDE the en==0 gate below: a leaking deck usually
+    -- already has collision, so gating the shadow write on "collision
+    -- disabled" would skip exactly the meshes that leak. Idempotent: the
+    -- twoSided read short-circuits once a component is done.
+    -- Keys on the SHADOW verdict (broad roster); the collision block below
+    -- keys on the narrow coll verdict. The lists were one until 2026-08-04:
+    -- the kerb-hunt pattern expansion silently widened the STEALTH BODY
+    -- set to every wall/kerb/sidewalk, re-creating the v7/v8 mass-
+    -- enablement AI breakage the v9 targeting exists to prevent.
+    -- (The Alt+I live-revert machinery is deleted: its revert keyed on
+    -- tostring(component), which is not stable across passes, so an A/B
+    -- via toggle falsely exonerates the fix. A/B by course reload.)
+    if verdict.shadow and FIX_SHADOW_LEAK then
+        local twoSided = nil
+        pcall(function() twoSided = c.bCastShadowAsTwoSided end)
+        if twoSided == false then
+            pcall(function() c.bCastShadowAsTwoSided = true end)
+            -- Force the proxy rebuild that makes the flag take effect
+            pcall(function() c:SetCastShadow(false) end)
+            pcall(function() c:SetCastShadow(true) end)
+            st.shadowN = (st.shadowN or 0) + 1
+        end
+    end
+
+    -- Matching COLLISION mesh (narrow v9 set only): only now pay for the
+    -- UFunction. en ~= 0 means the game already gave this body collision,
+    -- so leave it strictly alone.
+    if not verdict.coll then return end
+    local en = nil
+    pcall(function() en = c:GetCollisionEnabled() end)
+    if en ~= 0 then
+        -- AI-residual forensics (2026-08-07, parked risk (c)): this is a
+        -- STOCK-ENABLED instance of a target asset. The BodySetup
+        -- CollisionTraceFlag=3 write below lands on the SHARED asset, so
+        -- these instances silently go ComplexAsSimple too: AI queries
+        -- against them return trimesh hits instead of simple-hull hits.
+        -- A nonzero count in the pass log = risk (c) is live geometry.
+        -- MOD-ENABLED FILTER (2026-08-09): everything the block below
+        -- enables is stamped ObjectType 25; stock geometry carries a
+        -- real game type. Without the filter the counter re-counted our
+        -- own targets on every later pass (both 08-08 logs: enable 43,
+        -- next pass stockEnabledTargets=43; enable 218, next pass 218),
+        -- so the risk (c) watch measured nothing. Cost: one UFunction
+        -- read per already-enabled target (218-target worst case ~4 ms,
+        -- spread across chunks). A failed read (ot=nil) still counts as
+        -- stock: over-counting fails toward the pre-filter behavior,
+        -- never toward hiding a live risk.
+        local ot = nil
+        pcall(function() ot = c:GetCollisionObjectType() end)
+        if ot ~= STEALTH_OBJ_TYPE then
+            st.collStockN = (st.collStockN or 0) + 1
+        end
+        return
+    end
     pcall(function()
         local bs = c.StaticMesh and c.StaticMesh.BodySetup
         if bs then
@@ -342,10 +552,35 @@ local function processCompGT(st, c)
     pcall(function() c:SetCollisionResponseToChannel(CHANNEL, 2) end)
     pcall(function() c:SetCollisionEnabled(1) end)
     st.enabledN = st.enabledN + 1
+    local cls = CLASSES[st.ci]
+    if cls then st.perClass[cls] = (st.perClass[cls] or 0) + 1 end
 end
 
 local finishWorldPassGT   -- defined below (local-ordering rule)
 
+--- ASYNC side of the pass: fetch the next class array when the walker
+--- needs one. FindAllOf is an object-array walk (~30 ms on this world),
+--- which is exactly the work that belongs off the game thread. Teardown
+--- must be gated here just like any other async sweep (the wet_grip
+--- lesson: an ungated sweep runs against a dying world).
+--- @return boolean true if a GT chunk is worth dispatching
+local function passFetchAsync()
+    local st = passState
+    if not st then return false end
+    if st.comps ~= nil then return true end
+    local cls = CLASSES[st.ci]
+    if cls == nil then return true end   -- exhausted: let the GT side finish
+    local comps = nil
+    pcall(function() comps = FindAllOf(cls) end)
+    st.comps = (type(comps) == "table") and comps or {}
+    st.i = 1
+    st.sweeps = (st.sweeps or 0) + 1
+    return true
+end
+
+--- GAME-THREAD side: process up to CHUNK components from the array the
+--- async side fetched. Never sweeps; when it runs out of the current
+--- array it stops and lets the next async tick fetch the next class.
 local function passChunkGT()
     local st = passState
     if not st then return end
@@ -358,25 +593,23 @@ local function passChunkGT()
     local budget = CHUNK
     while budget > 0 do
         if st.comps == nil then
-            local cls = CLASSES[st.ci]
-            if cls == nil then
+            -- Out of components and nothing fetched yet: if every class is
+            -- done the pass ends here, otherwise wait for the async fetch.
+            if CLASSES[st.ci] == nil then
                 finishWorldPassGT(st)
                 return
             end
-            local comps = nil
-            pcall(function() comps = FindAllOf(cls) end)
-            st.comps = (type(comps) == "table") and comps or {}
-            st.i = 1
+            break
         end
         local c = st.comps[st.i]
         if c == nil then
-            st.comps = nil
+            st.comps = nil          -- class exhausted; async fetches the next
             st.ci = st.ci + 1
-        else
-            pcall(function() processCompGT(st, c) end)
-            st.i = st.i + 1
-            budget = budget - 1
+            break
         end
+        pcall(function() processCompGT(st, c) end)
+        st.i = st.i + 1
+        budget = budget - 1
     end
     st.chunks = st.chunks + 1
     local dMs = (os.clock() - t0) * 1000.0
@@ -423,11 +656,33 @@ finishWorldPassGT = function(st)
     passState = nil
     -- Log every triggered pass and any periodic pass that found
     -- streamed-in work; quiet no-op periodic re-passes unless Debug.
-    if st.trigger ~= "periodic" or st.enabledN > 0 or shapesN > 0 or DEBUG then
+    if st.trigger ~= "periodic" or st.enabledN > 0 or shapesN > 0
+        or (st.shadowN or 0) > 0 or DEBUG then
+        local byClass = {}
+        for _, cls in ipairs(CLASSES) do
+            byClass[#byClass + 1] = cls:sub(1, 4) .. "=" .. (st.perClass[cls] or 0)
+        end
         Log.Info(MODULE, "World rain collision pass", {
             trigger = st.trigger, targetsEnabled = st.enabledN,
-            preCtf3 = st.casN, scannedDisabled = st.scannedN,
+            preCtf3 = st.casN, scanned = st.scannedN,
             shapesIgnored = shapesN, chunks = st.chunks,
+            sweeps = st.sweeps or 0,
+            shadowFixed = st.shadowN or 0,
+            shadowReverted = st.shadowRevertedN or 0,
+            -- AI-residual forensics (2026-08-07): stockEnabledTargets > 0
+            -- means the shared BodySetup ctf=3 write reaches stock-enabled
+            -- instances of target assets (parked risk (c)); pos lets a
+            -- field "AI bugged HERE around THEN" report be matched against
+            -- pass activity (shadow rebuilds / enables) near that spot.
+            stockEnabledTargets = st.collStockN or 0,
+            -- cacheMiss (2026-08-09): fresh meshVerdict computes this
+            -- pass. If it tracks scanned pass after pass, the address
+            -- key is not stable and the cache never hits (see the note
+            -- at meshVerdict).
+            cacheMiss = st.missN or 0,
+            pos = (carX and string.format("%.0f,%.0f,%.0f", carX, carY, carZ))
+                or "?",
+            matchedBy = table.concat(byClass, " "),
             gt_ms_total = string.format("%.1f", st.gtMs),
             gt_ms_maxchunk = string.format("%.1f", st.maxMs),
         })
@@ -446,8 +701,14 @@ function RainCollision.Init()
         if tonumber(cfg.ReapplySeconds) then REAPPLY_S = tonumber(cfg.ReapplySeconds) end
         if tonumber(cfg.SettleSeconds) then SETTLE_S = tonumber(cfg.SettleSeconds) end
         if cfg.Debug ~= nil then DEBUG = cfg.Debug end
+        if cfg.FixShadowLeak ~= nil then FIX_SHADOW_LEAK = cfg.FixShadowLeak end
         if type(cfg.TargetPatterns) == "table" and #cfg.TargetPatterns > 0 then
             TARGET_PATTERNS = cfg.TargetPatterns
+        end
+        if type(cfg.ShadowFixPatterns) == "table" and #cfg.ShadowFixPatterns > 0 then
+            SHADOW_PATTERNS = cfg.ShadowFixPatterns
+        else
+            SHADOW_PATTERNS = TARGET_PATTERNS
         end
     end
 
@@ -461,6 +722,7 @@ function RainCollision.Init()
     Log.Info(MODULE, "Initializing rain collision", {
         channel = CHANNEL, reapply_s = REAPPLY_S,
         patterns = table.concat(TARGET_PATTERNS, ","),
+        shadow_patterns = table.concat(SHADOW_PATTERNS, ","),
     })
     return true
 end
@@ -474,6 +736,10 @@ function RainCollision.OnCourseLoad()
     passTrigger = "load"
     passState = nil         -- never carry a walker (and its refs) across worlds
     meshVerdict = {}        -- asset addresses do not survive a world swap
+    matchedNamesLogged = 0
+    matchedNamesSeen = {}
+    carX, carY, carZ = nil, nil, nil        -- coordinates are world-local
+    passOX, passOY, passOZ = nil, nil, nil  -- (stale ones would mis-gate)
     chanLoggedCourse = false
 end
 
@@ -483,6 +749,10 @@ function RainCollision.OnCourseUnload()
     passPending = false
     passState = nil
     meshVerdict = {}
+    matchedNamesLogged = 0
+    matchedNamesSeen = {}
+    carX, carY, carZ = nil, nil, nil
+    passOX, passOY, passOZ = nil, nil, nil
 end
 
 --- Rain started or changed (weather.lua Apply path, same wiring as the
@@ -523,36 +793,58 @@ function RainCollision.Tick()
     -- streamed-in cells after that. A pending request raised while dry
     -- just waits for the flip to rain. Never start while a pass is
     -- already walking (a restart every enforce tick would starve it).
+    -- The pass normally only runs while wet (zero dry-session cost). The
+    -- shadow-leak fix is the exception and MUST break that rule: the sun
+    -- leak happens in DRY, SUNNY weather, so gating it behind the rain
+    -- check meant it could never run when it mattered (field 2026-07-29
+    -- 18:00, Clear_Skies session: zero passes, "it didnt take").
     local wet, wantStart = false, false
     if doEnforce then
         wet = isWet()
-        if wet and passState == nil then
+        if (wet or FIX_SHADOW_LEAK) and passState == nil then
             if passPending then
                 wantStart = true
             elseif lastPass == nil or (now - lastPass) >= REAPPLY_S then
-                wantStart = true
-                passTrigger = "periodic"
+                -- DISTANCE GATE: world-partition cells only stream in when
+                -- the car moves, so a periodic re-pass after sitting still
+                -- is guaranteed to find nothing. Skip it (and re-arm the
+                -- cadence) unless we have travelled far enough for new
+                -- cells to have appeared. Triggered passes (load, rain
+                -- start) ignore this: they must always run.
+                if movedSincePass() then
+                    wantStart = true
+                    passTrigger = "periodic"
+                else
+                    lastPass = now
+                end
             end
         end
     end
+
+    -- ASYNC: fetch the component array here, never on the game thread
+    -- (the ~30 ms FindAllOf was the residual hitch; this is the thread it
+    -- belongs on). Safe because the teardown gate above already returned.
+    if wantStart and passState == nil then
+        startWorldPass(passTrigger)
+        markPassOrigin()
+        passPending = false
+    end
+    if passState ~= nil then passFetchAsync() end
 
     if ExecuteInGameThread then
         pcall(function()
             ExecuteInGameThread(function()
                 if doEnforce then
                     enforceChannelGT()
+                    updateCarPosGT()   -- feeds the async distance gate
                     -- The fan mutates responses on game bodies: private
                     -- channels only (on a game channel like Visibility
                     -- it would rewrite real game behavior)
                     if wet and CHANNEL >= 22 then containmentFanGT() end
                 end
-                if wantStart and passState == nil then
-                    startWorldPass(passTrigger)
-                end
                 if passState ~= nil then passChunkGT() end
             end)
         end)
-        if wantStart then passPending = false end
     end
     return true
 end

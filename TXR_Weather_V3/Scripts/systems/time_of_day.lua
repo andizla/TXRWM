@@ -195,9 +195,9 @@ end
 -- Photomode time freeze: photomode.lua calls this on session open/close.
 -- Uses the Animate Time of Day bool (same lever as Pause/Resume), which is
 -- orthogonal to Simulation Speed, so the transitions module's slow-window
--- speed writes cannot unfreeze the picture mid-session. Respects a user
--- Alt+T pause: closing photomode never resumes a time the user paused
--- themselves. A teardown-close writes into a dying UDS and fails silently;
+-- speed writes cannot unfreeze the picture mid-session. Respects a manual
+-- Alt+T pause: closing photomode never resumes a manually paused clock.
+-- A teardown-close writes into a dying UDS and fails silently;
 -- the next course load runs the normal Resume path anyway.
 local photoFrozen = false
 local photoWasPaused = false

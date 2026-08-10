@@ -277,6 +277,18 @@ function CloudsFog.GetFog()
     return Utils.ToNumber(value, nil)
 end
 
+--- Smoothed cloud coverage this module is actually driving (0-10), or nil
+--- before Tick has established it this course. Unlike GetCloudCoverage above
+--- this is a plain Lua state read with NO UObject touch, so it is safe on the
+--- async tick thread; and it already carries the preset ramp (ExpSmooth over
+--- Config.CloudsFog.PresetTransitionSeconds), so a consumer riding it inherits
+--- the weather transition for free. atmosphere.lua's god-ray weather gate is
+--- the first consumer.
+--- @return number|nil
+function CloudsFog.GetSmoothedCloud()
+    return internalState.cloudCurrent
+end
+
 -- ============== PUBLIC API ==============
 
 --- Initialize clouds/fog module
@@ -559,6 +571,14 @@ end
 --- Called when course unloads
 function CloudsFog.OnCourseUnload()
     internalState.manualOverrideSet = false
+    -- Drop the smoothed values with the course. They are re-seeded from the
+    -- live UDW read (or the preset target) on the next course's first Tick.
+    -- Without this, a consumer that reads GetSmoothedCloud during the NEXT
+    -- course's entry burst (atmosphere.lua's god-ray gate does, from Setup)
+    -- gets the previous course's weather and rides it for up to
+    -- PresetTransitionSeconds. Reset() already clears both; this path did not.
+    internalState.cloudCurrent = nil
+    internalState.fogCurrent = nil
 end
 
 -- Initialize on load

@@ -35,7 +35,13 @@ local state = {
         frozen = false,
         entryTime = nil,
     },
-    
+
+    -- Photo mode session (photomode.lua owns detection; main.lua gates the
+    -- weather scheduler on this so a pick can't mutate the sky mid-shoot)
+    photo = {
+        sessionOpen = false,
+    },
+
     -- Weather state (what WE applied, UDW is authoritative)
     weather = {
         currentPreset = nil,      -- Name of currently applied preset
@@ -349,6 +355,18 @@ end
 --- @return boolean
 function State.IsPAFrozen()
     return state.pa.frozen
+end
+
+--- Set photo-mode session flag (photomode.lua, on its open/close edges)
+--- @param open boolean
+function State.SetPhotoSessionOpen(open)
+    state.photo.sessionOpen = open
+end
+
+--- Check if a photo-mode session is open
+--- @return boolean
+function State.IsPhotoSessionOpen()
+    return state.photo.sessionOpen
 end
 
 --- Check if we have captured state from course

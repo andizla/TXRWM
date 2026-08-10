@@ -76,15 +76,81 @@ local function readProp(uds, prop)
 end
 
 --- Write an absolute value; records "old->new" in the changes table.
+--- @return boolean true when the stored value actually moved (numbers get
+--- a small tolerance: the cook stores float32, so an exact compare against
+--- a Lua double would read every lat/long write as a change forever)
 local function setAbs(uds, prop, value, changes)
-    if value == nil then return end
+    if value == nil then return false end
     local old = readProp(uds, prop)
     local ok = pcall(function() uds[prop] = value end)
     if ok then
         changes[prop] = string.format("%s->%s", tostring(old), tostring(value))
+        if type(old) == "number" and type(value) == "number" then
+            return math.abs(old - value) > 1e-4
+        end
+        return old ~= value
     else
         Log.Warn(MODULE, "Write failed", {prop = prop})
+        return false
     end
+end
+
+--- Phase 1 property writes ONLY (no probes, no sweeps): lat/long/time zone/
+--- date/north yaw plus the Simulate flags, then one Hard Reset Cache.
+--- WHY THE RESET: UDS reads Year/Month/Day/Time Zone/Daylight Savings Time LIVE
+--- inside "Approximate Real Sun Moon and Stars" (bytecode export 27), which runs
+--- only from "Cache Sun and Moon Orientation", i.e. cache group 0. "Monitor for
+--- Changes" (export 197) watches Time of Day and the composite weather vectors
+--- but has NO date detector, so a bare date write is invisible to UDS's dirty
+--- machinery: it lands whenever group 0 next happens to refresh and then blends
+--- via lerp(Old, New, timer). "Hard Reset Cache" (export 182) is
+--- Cache Properties(-1, true), a no-blend full refill, so the new sun lands on
+--- the next frame instead.
+--- The Static Properties - Sun / - Moon bakes are deliberately NOT here: export
+--- 287 writes only light-shaft bloom, bloom tint, three Sky Sphere MID scalars
+--- and transmission, so it cannot move the sun at all, and the Moon bake
+--- resolves soft texture refs (the documented BeginPlay access-violation
+--- family). Both stay behind the settle gate where the other modules put that
+--- class of call.
+--- CALLER MUST ALREADY BE ON THE GAME THREAD (Hard Reset Cache is a UFunction).
+--- @param uds userdata valid UDS actor
+--- @param pass string "entry" or "settled"; tags the log line
+local function applySunSimulation(uds, pass)
+    if not enabled then return end
+
+    local changes = { pass = pass }
+    local dirty = false
+    dirty = setAbs(uds, PROP_LATITUDE, cfg.Latitude, changes) or dirty
+    dirty = setAbs(uds, PROP_LONGITUDE, cfg.Longitude, changes) or dirty
+    dirty = setAbs(uds, PROP_TIME_ZONE, cfg.TimeZone, changes) or dirty
+    dirty = setAbs(uds, PROP_YEAR, cfg.Year, changes) or dirty
+    dirty = setAbs(uds, PROP_MONTH, cfg.Month, changes) or dirty
+    dirty = setAbs(uds, PROP_DAY, cfg.Day, changes) or dirty
+    dirty = setAbs(uds, PROP_NORTH_YAW, cfg.NorthYaw, changes) or dirty
+    dirty = setAbs(uds, PROP_APPLY_DST, false, changes) or dirty
+    dirty = setAbs(uds, PROP_SIM_SUN, true, changes) or dirty
+    if cfg.RealMoon ~= false then
+        dirty = setAbs(uds, PROP_SIM_MOON, true, changes) or dirty
+    end
+
+    -- Hard Reset Cache is a no-blend full refill. The ENTRY pass needs it
+    -- unconditionally (a bare date write is invisible to UDS's dirty
+    -- machinery, see the header). The SETTLED pass lands ~4s into the
+    -- course, i.e. mid-flight of the default 5s weather transition, where
+    -- an unconditional refill visibly snaps the blend: fire it there only
+    -- if a value actually moved (2026-08-04, code review).
+    if pass == "entry" or dirty then
+        local reset = nil
+        pcall(function() reset = uds["Hard Reset Cache"] end)
+        if reset then
+            local ok = pcall(function() reset(uds) end)
+            changes.hard_reset = tostring(ok)
+        end
+    else
+        changes.hard_reset = "skipped-clean"
+    end
+
+    Log.Info(MODULE, "Real sun applied", changes)
 end
 
 local function runOnGameThread()
@@ -302,7 +368,7 @@ local function runOnGameThread()
         end
     end)
 
-    -- Date pin (user policy 2026-07-07: pinnable, default off = seasons drift).
+    -- Date pin (policy 2026-07-07: pinnable, default off = seasons drift).
     -- The game itself persists the drifting date across sessions, so unpinned
     -- play is already continuous; the pin forces one fixed sun path per course.
     if cfg.PinMonth and cfg.PinDay then
@@ -320,22 +386,19 @@ local function runOnGameThread()
 
     if not enabled then return end
 
-    -- Phase 1: switch to the real-world simulation
-    local changes = {}
-    setAbs(uds, PROP_LATITUDE, cfg.Latitude, changes)
-    setAbs(uds, PROP_LONGITUDE, cfg.Longitude, changes)
-    setAbs(uds, PROP_TIME_ZONE, cfg.TimeZone, changes)
-    setAbs(uds, PROP_YEAR, cfg.Year, changes)
-    setAbs(uds, PROP_MONTH, cfg.Month, changes)
-    setAbs(uds, PROP_DAY, cfg.Day, changes)
-    setAbs(uds, PROP_NORTH_YAW, cfg.NorthYaw, changes)
-    setAbs(uds, PROP_APPLY_DST, false, changes)
-    setAbs(uds, PROP_SIM_SUN, true, changes)
-    if cfg.RealMoon ~= false then
-        setAbs(uds, PROP_SIM_MOON, true, changes)
-    end
+    -- Phase 1: normally already applied by RealSun.OnCourseLoad in the course
+    -- entry burst. The writes are absolute, so re-running here is idempotent and
+    -- keeps this path working on its own if the entry call was ever missed. A
+    -- pass=settled line that AGAIN reads a changed Month means game code
+    -- rewrites the calendar after entry, and the single entry shot would have to
+    -- become a short re-assert.
+    applySunSimulation(uds, "settled")
 
-    -- Bake: have UDS re-read its sun/moon static setup
+    -- Bake: have UDS re-read its sun/moon static setup. Stays on the settle gate
+    -- deliberately: Static Properties - Sun (export 287) only touches
+    -- light-shaft bloom, bloom tint, three Sky Sphere MID scalars and
+    -- transmission, so it has nothing to do with sun POSITION, and the Moon bake
+    -- resolves soft texture refs. No reason to drag either into the entry burst.
     for _, fnName in ipairs(STATIC_FNS) do
         local fn = nil
         pcall(function() fn = uds[fnName] end)
@@ -349,7 +412,9 @@ local function runOnGameThread()
         end
     end
 
-    Log.Info(MODULE, "Real sun applied", changes)
+    -- Info, not Debug: DEBUG is off in the live logger, so at Debug this would
+    -- be unverifiable in a log-based A/B.
+    Log.Info(MODULE, "Sun/moon static bake done (settle path)")
 end
 
 local function run()
@@ -370,6 +435,32 @@ function RealSun.Init()
     initialized = true
     Log.Info(MODULE, "Initializing real sun module", {enabled = enabled})
     return true
+end
+
+--- Course entry: apply ONLY the sun-simulation properties, immediately.
+--- TXR ships Simulate Real Sun ON, so the sun's position depends on the DATE as
+--- much as on Time Of Day, and UDS has no change detector for the date. Landing
+--- the pinned date 4-5 s after the TOD write (behind this module's own settle
+--- gate) meant the first rendered sky used the GAME's drifting calendar and then
+--- snapped: at a dusk TOD the wrong date puts the sun below the horizon, which
+--- is the "night for a couple of seconds, then it flips" report. A morning TOD
+--- hides it completely, because the sun is above the horizon on either date.
+function RealSun.OnCourseLoad()
+    if not initialized then return end
+    if not enabled then return end
+    local function applyGT()
+        -- Re-resolve UDS INSIDE the closure: never carry an actor ref across a
+        -- thread hop (IsValid can read true on freed memory). getUDS returns nil
+        -- once discovery is suspended, so this is teardown-safe by construction.
+        local uds = getUDS()
+        if not uds then return end
+        applySunSimulation(uds, "entry")
+    end
+    if ExecuteInGameThread then
+        pcall(function() ExecuteInGameThread(applyGT) end)
+    else
+        pcall(applyGT)
+    end
 end
 
 --- Per-tick: probe (+apply when enabled) once per course, after the settle gate.

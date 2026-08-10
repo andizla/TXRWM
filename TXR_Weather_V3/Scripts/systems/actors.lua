@@ -281,6 +281,20 @@ local function discoverActors()
                 Log.Info(MODULE, "Course discovery settled (sky gone, probes off until next sky/map event)")
             end
         end
+        -- EARLY TEARDOWN SUSPENSION (2026-08-10): in a world that HAD
+        -- live actors, a found-but-invalid UDS means the world is dying
+        -- RIGHT NOW, up to ~2s BEFORE LoadMapPreHook fires (the 08-08
+        -- PA-exit timing finding). Crash dumps sit second-exact on this
+        -- log line while a GT closure faulted on a freed object (the
+        -- +0x0C family). Suspend immediately: drops every cached ref and
+        -- closes the pre-hook window for every IsDiscoverySuspended-gated
+        -- closure. False positives (post-race result screens) cost
+        -- nothing: the sky is gone there anyway and the 15s failsafe
+        -- re-arms discovery; SuspendDiscovery resets hadActorsThisWorld,
+        -- so this fires once per teardown.
+        if hadActorsThisWorld then
+            Actors.SuspendDiscovery()
+        end
         return false
     end
     udsInvalidStreak = 0
@@ -299,6 +313,17 @@ local function discoverActors()
     -- Validate UDW
     if not Utils.IsValidObject(udw) then
         Log.Warn(MODULE, "UDW found but not valid")
+        -- EARLY TEARDOWN SUSPENSION (2026-08-10): outside the garage
+        -- signature below, a dying UDW in a world that HAD live actors is
+        -- the same pre-LoadMapPreHook death window as the UDS branch
+        -- above (some exit paths kill the UDW first). Suspend and DROP
+        -- the caches instead of falling through to SetUDS, which used to
+        -- re-cache a UDS that is dying with its world and kept a doomed
+        -- ref alive for the whole window.
+        if hadActorsThisWorld and not garageEventThisWorld then
+            Actors.SuspendDiscovery()
+            return false
+        end
         State.SetUDS(uds)
         -- Garage signature: UDS resolves, UDW never validates. In a known
         -- outgame world, repeated hits settle discovery for this world (see
@@ -478,6 +503,20 @@ function Actors.OnOutgameManagerBeginPlay()
     garageEventThisWorld = true
     garageCheckCache.isInGarage = true
     garageCheckCache.lastCheck = os.clock()
+end
+
+--- Mid-course weather-cluster churn signal (weather.lua's ClientRestart
+--- hook, 2026-08-10 20:14 crash): the game rebuilds the weather actor
+--- MID-COURSE (a fresh UDW instance appeared 4x in the 13:55 session and
+--- 13s before the 20:14:28 crash), so every cached actor ref may be a
+--- corpse the moment this fires. Drop the caches WITHOUT suspending:
+--- discovery stays live in this world and re-finds within ~1s, and the
+--- 5s revalidation cycle can no longer be the first (faulting) touch of
+--- a freed object. NOT a teardown: settle/garage state stays untouched.
+function Actors.OnWeatherClusterChurn()
+    State.ClearActors()
+    udwInvalidStreak = 0
+    udsInvalidStreak = 0
 end
 
 --- Whether the map-teardown window is active (world being destroyed)

@@ -27,7 +27,7 @@ local PROP_INDIVIDUAL = "Individual Clouds Light Rays"        -- Double 0-1 (>0 
 local PROP_INTENSITY  = "Light Ray Intensity"                -- Double
 local FN_STATIC       = "Static Properties - Volumetric Cloud Light Rays"
 local PROP_INTERNAL   = "Using Volumetric Light Rays"        -- Bool (UDS internal state, readback only)
--- Distance/geometry knobs (2026-07-28, user: rays fire off nearby
+-- Distance/geometry knobs (2026-07-28: rays fire off nearby
 -- buildings): depth fade softens rays against close scene depth, max
 -- distance bounds the field, spacing/length shape the cards.
 local PROP_MAXDIST    = "Light Rays Max Distance (Km)"       -- Double
@@ -48,7 +48,7 @@ local applied = false
 local settleTicks = 0
 local appliedThisCourse = false
 local diagTicks = 0
--- Plausibility gate (2026-07-28, user ask): sun shafts through cloud gaps
+-- Plausibility gate (2026-07-28): sun shafts through cloud gaps
 -- are nonsense under a solid deck, in fog, or in rain: these presets force
 -- the rays OFF; a change back to broken cover brings them back. Override
 -- the set via Config.LightRays.DisabledPresets (array of preset names).

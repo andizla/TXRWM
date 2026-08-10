@@ -74,8 +74,16 @@ function Persistence.Save(reason)
         return false
     end
     
-    -- Write simple key=value format
-    local f = io.open(getSaveFilePath(), "w")
+    -- Write ATOMICALLY (2026-07-30). io.open(path, "w") TRUNCATES the file
+    -- immediately, so killing the process between the open and the close leaves
+    -- an empty or half-written last_state.txt. The autosave fires every 30 s
+    -- while on course, so an Alt+F4 has a real chance of landing inside that
+    -- window. LoadRaw then returns nil, nothing restores, and UDS sits at its
+    -- DEFAULT Time Of Day: that is the midnight flash main.lua's disarm comment
+    -- describes ("unrestored UDS reads Time Of Day = 0"). Write to a temp file,
+    -- keep the previous good file as .bak, then swap the two.
+    local savePath = getSaveFilePath()
+    local f = io.open(savePath .. ".tmp", "w")
     if f then
         local preset = State.GetCurrentPreset() or "Clear_Skies"
         
@@ -102,6 +110,31 @@ function Persistence.Save(reason)
             puddle
         ))
         f:close()
+        -- Swap the temp file into place, keeping the previous good file as
+        -- .bak. If the swap fails, put the old file back: never end up with no
+        -- state file at all, which is the very failure this is fixing.
+        -- Rotate the backup ONLY when a main file exists: in the degraded
+        -- state (main lost to a crash, session restored FROM the .bak) an
+        -- unconditional remove would destroy the last good copy before the
+        -- new file is in place.
+        local bak = savePath .. ".bak"
+        local movedOld = nil
+        local mainFile = io.open(savePath, "r")
+        if mainFile then
+            mainFile:close()
+            os.remove(bak)
+            movedOld = os.rename(savePath, bak)
+        end
+        if not os.rename(savePath .. ".tmp", savePath) then
+            if movedOld then os.rename(bak, savePath) end
+            os.remove(savePath .. ".tmp")
+            -- Also stamp the clock on failure (mirrors the invalid-TOD skip
+            -- above): without it the 8 Hz tick re-runs the FULL save loop
+            -- against a persistent lock instead of once per interval.
+            lastSaveTime = os.time()
+            Log.Warn(MODULE, "State save swap failed; previous file kept")
+            return false
+        end
         lastSaveTime = os.time()
         Log.Debug(MODULE, string.format("State saved (%s): TOD=%.2f cloud=%.2f fog=%.2f preset=%s wetness=%.2f", 
             reason or "auto", tod, cloud, fog, preset, wetness))
@@ -114,14 +147,15 @@ end
 
 --- Load state from file and return raw data (no side effects)
 --- @return table|nil data with tod, cloud, fog, preset, speed, paused
-function Persistence.LoadRaw()
-    local f = io.open(getSaveFilePath(), "r")
+--- Read and parse one state file. Returns nil for missing, empty, truncated or
+--- unparseable content, so the caller can fall back to the backup.
+local function readStateFile(path)
+    local f = io.open(path, "r")
     if not f then return nil end
-    
     local line = f:read("*l")
     f:close()
     if not line then return nil end
-    
+
     -- Parse key=value pairs
     local data = {}
     for k, v in line:gmatch("([%w_]+)=([^,]+)") do
@@ -132,8 +166,27 @@ function Persistence.LoadRaw()
             data[k] = v
         end
     end
-    
+    -- tod is the field every caller keys on; without it the line is useless
+    -- (a torn write usually leaves a valid PREFIX, so this is the real test)
+    if type(data.tod) ~= "number" then return nil end
     return data
+end
+
+function Persistence.LoadRaw()
+    local path = getSaveFilePath()
+    local data = readStateFile(path)
+    if data then return data end
+
+    -- Main file missing, empty or truncated: a process kill mid-write (Alt+F4
+    -- during testing, or a real crash) lands here. The .bak is the previous
+    -- complete save, so at worst this costs one autosave interval of drift
+    -- instead of dropping the restore entirely and flashing midnight.
+    local fallback = readStateFile(path .. ".bak")
+    if fallback then
+        Log.Warn(MODULE, "State file unreadable; restored from backup")
+        return fallback
+    end
+    return nil
 end
 
 function Persistence.Load()
@@ -263,7 +316,20 @@ end
 function Persistence.Tick()
     if not Config.Persistence.Enabled then return end
     if Config.Persistence.AutoSaveInterval <= 0 then return end
-    if not State.IsOnCourse() then return end
+    -- Course OR PA (2026-08-08): the PA-exit save leg in LoadMapPreHook is
+    -- dead in practice - the PA's actors go invalid seconds BEFORE the
+    -- unload hook fires, so IsInPAScene() is already false by then and the
+    -- exit time never reaches the file. In continue mode the PA clock runs;
+    -- autosaving here keeps the file within one interval of live PA time,
+    -- which is what the course return actually restores. Safe against the
+    -- canned-1950 trap: the first PA autosave is a full interval after the
+    -- carry landed (main.lua applies PA state earlier in the same tick).
+    local inPA = false
+    pcall(function()
+        local Actors = require("systems.actors")
+        inPA = (Actors and Actors.IsInPAScene and Actors.IsInPAScene()) or false
+    end)
+    if not (State.IsOnCourse() or inPA) then return end
     
     local now = os.time()
     if (now - lastSaveTime) >= Config.Persistence.AutoSaveInterval then

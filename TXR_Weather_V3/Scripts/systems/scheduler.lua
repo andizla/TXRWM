@@ -254,7 +254,7 @@ function Scheduler.Tick()
 
     -- External change detection: if the preset is no longer what we last set,
     -- someone changed it manually (Alt+S/Alt+R) or it was restored. Adopt it and
-    -- push the next auto change out so we don't immediately override the user.
+    -- push the next auto change out so a manual pick is not immediately lost.
     local current = weather.GetCurrent()
     if current ~= lastSetPreset then
         lastSetPreset = current

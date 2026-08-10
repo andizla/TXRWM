@@ -231,6 +231,9 @@ local function safeCallMethod(obj, methodName, ...)
     return ok
 end
 
+-- Garage always-on re-assert throttle clock (2026-08-11, see Tick).
+local garageEnsureLast = 0.0
+
 --- Read a light component's owning vehicle `is_light_on` flag. Used to gate the
 --- world-wide cast light + brightness pass so a car's headlights only render when
 --- that car actually has its lights on.
@@ -585,7 +588,21 @@ function Headlights.Tick()
     if Config.Headlights and Config.Headlights.Enabled == false then return end
 
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then return end
+    if not actors then return end
+
+    -- Garage always-on (2026-08-11): the one headlight job in the outgame
+    -- branch, ahead of the course early-out. Throttled; the ensure body is
+    -- a no-op while the lights are already on (state-checked toggle).
+    if Config.Headlights and Config.Headlights.GarageAlwaysOn
+       and actors.IsInGarage and actors.IsInGarage() then
+        local nowG = os.clock()
+        if nowG - garageEnsureLast >= 2.5 then
+            garageEnsureLast = nowG
+            Headlights.EnsureGarageLightsOn()
+        end
+    end
+
+    if not actors.IsOnCourse() then return end
 
     -- Don't run during PA
     if State.IsPAFrozen and State.IsPAFrozen() then return end
@@ -785,6 +802,54 @@ function Headlights.ToggleGarageLights()
         pcall(function() veh:SetLightOn(true) end)        -- toggle is_light_on + animate pops
         pcall(function() veh:SetLightSpriteScale(0) end)  -- match the on-course sprite handling
         Log.Info(MODULE, "Garage lights toggled (display vehicle)")
+    end)
+    return true
+end
+
+--- Config.Headlights.GarageAlwaysOn (2026-08-11): keep the displayed car's
+--- lights ON for the whole garage visit (the show-floor look; pairs with the
+--- dark-garage exposure seed). Same GT body as the toggle above but
+--- STATE-CHECKED: reads is_light_on first and only fires the animated
+--- SetLightOn toggle when the lights are actually off, so the periodic
+--- re-assert is a pure no-op while they are on and the RHL rig can never be
+--- flip-flopped. The re-check also covers garage vehicle swaps (a freshly
+--- displayed car spawns lights-off and gets caught within one throttle
+--- window). Alt+Q still toggles manually; auto-on simply re-arms within a
+--- couple of seconds.
+--- @return boolean attempted
+function Headlights.EnsureGarageLightsOn()
+    if not ExecuteInGameThread then return false end
+    ExecuteInGameThread(function()
+        local gm = nil
+        pcall(function() gm = FindFirstOf("BP_OutGameGarageManager_C") end)
+        if not (gm and gm.IsValid and gm:IsValid()) then return end
+
+        local out = {}
+        local got = pcall(function() gm:GetDisplayVehicle(out) end)
+        local veh = got and out.out_vehicle or nil
+        if not (veh and veh.IsValid and veh:IsValid()) then return end
+
+        local cur = nil
+        pcall(function()
+            local v = veh.is_light_on
+            if type(v) == "boolean" then cur = v end
+        end)
+        if cur == true then return end   -- already on: no-op re-assert
+
+        -- Anti-desync: never act while the retractable-headlight rig moves.
+        local moving = false
+        pcall(function()
+            if veh.GetIsMovingRHL then
+                local m = {}
+                veh:GetIsMovingRHL(m)
+                moving = m.out_is_moving and true or false
+            end
+        end)
+        if moving then return end
+
+        pcall(function() veh:SetLightOn(true) end)
+        pcall(function() veh:SetLightSpriteScale(0) end)
+        Log.Info(MODULE, "Garage lights auto-on (display vehicle)")
     end)
     return true
 end

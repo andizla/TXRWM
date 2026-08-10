@@ -25,7 +25,23 @@ local lastApplyClock = 0.0  -- os.clock() of the last Weather.Apply (stars burst
 -- Pending rain activation for retry after map load
 local pendingRainActivation = false
 local pendingRainRetryCount = 0
-local MAX_RAIN_RETRIES = 50  -- ~6 seconds at 125ms tick interval
+-- ~30 s at the 125 ms tick, was 50 (~6 s). UDW soft-references its Niagara
+-- content, so the Rain Particles component carries RainParticlesAsset=nil until
+-- an ASYNC load lands: measured 2026-07-30 as nil at the first apply and
+-- populated with /Game/UltraDynamicSky/Particles/Rain 47 s later. Our scan
+-- identifies the component BY that asset name, so for the whole load window
+-- there is nothing for it to find and a 6 s budget always ended in "retries
+-- exhausted".
+-- READ activatedCount CORRECTLY: it counts what OUR scan activated, NOT whether
+-- rain is on screen. UDW drives its own particles perfectly well without us, and
+-- rain is confirmed to appear instantly when a wet preset is restored at course
+-- load while this still logs 0. So this retry is a safety net for the case where
+-- our activation is actually needed, not the mechanism that makes rain work.
+-- Hence 240 rather than a full minute: it covers the measured ~15 s load with
+-- margin while bounding the churn, since each retry is a FindAllOf (cheap on the
+-- async tick, ruinous on the game thread, per the standing rule).
+-- The same async load is why audio's MAX_LOAD_FAILS must stay at 30.
+local MAX_RAIN_RETRIES = 240
 
 -- ============== INTERNAL FUNCTIONS ==============
 
@@ -159,6 +175,115 @@ local function callChangeWeather(presetAsset, transitionTime)
     return true
 end
 
+-- ============== CCC WARMUP HOOK (VERBATIM PORT, DO NOT "IMPROVE") ==============
+-- Ported AS-IS from CoolConsoleCommands Scripts/main.lua:141-173, which is the
+-- version known to work in the field over hundreds of boots. Same hook, same
+-- call order, same FindFirstOf lookup, same absence of marshalling: a
+-- RegisterHook callback on a UFunction already runs on the game thread, so
+-- adding ExecuteInGameThread here would change the timing, and timing is the
+-- whole point.
+-- DO NOT refactor this into the mod's Actors/teardown idioms. An adapted
+-- version that ran the same six calls from the course-load path did NOT fix
+-- rain; the hook point is evidently part of why CCC's works.
+-- Only omission: CCC's "GlobalAr = nil", which is its own console-output state
+-- and nothing to do with the warmup.
+local warmupHookRegistered = false
+-- ONCE PER UDW INSTANCE (2026-08-07 crash, PA-exit course entry):
+-- ClientRestart fires REPEATEDLY (3x within 5s of course entry, plus
+-- mid-drive respawns), and every fire re-ran the full warmup + the
+-- Enable*Particles=true writes. The 02:35:56 fire re-enabled particles
+-- AFTER the dry course apply, and the 02:35:59 fire then ran Warm Up
+-- Niagara Systems / Make * Component under those live components = the
+-- recorded ClientRestart AV class (hard fault, no crash report, UE4SS.log
+-- truncated mid "UDW warmed up" line). The warmup's entire purpose is
+-- building a fresh UDW's components before the first apply; repeat fires
+-- on the SAME instance add nothing and carry the whole risk, so each
+-- instance is warmed once. Keyed by object address (tostring; the
+-- meshVerdict idiom - 400+ discoveries in the logs, zero address reuse)
+-- and cleared on map teardown, so the key can never outlive its world.
+-- IF RAIN EVER FAILS AT COURSE ENTRY AFTER THIS: first suspect is a
+-- needed repeat fire being eaten here; the fix direction stays the
+-- handoff's particle-liveness-gated warmup, not unlatching.
+local warmedUdwKey = nil
+-- Post-warm lookup throttle clock (2026-08-10): see the hook body.
+local lastWarmupLookup = 0.0
+
+local function withUDW(func)
+    local udw = FindFirstOf("BP_CourseWeather_C") or FindFirstOf("Ultra_Dynamic_Weather_C")
+    if not (udw and udw:IsValid()) then return end
+    pcall(func, udw)
+end
+
+local function registerWarmupHook()
+    if warmupHookRegistered then return end
+    if not RegisterHook then
+        Log.Warn(MODULE, "RegisterHook unavailable: CCC warmup hook not installed")
+        return
+    end
+    warmupHookRegistered = true
+    -- pcall guards the REGISTRATION only (a RegisterHook throw at require
+    -- time would nil the whole module through safeRequire); the hook body
+    -- below stays the verbatim port.
+    local ok, err = pcall(RegisterHook, "/Script/Engine.PlayerController:ClientRestart", function(self, NewPawn)
+        if not self or not self:get() then return end
+
+        -- FIRST, before the throttle can skip: this fire may mean the
+        -- weather cluster was just rebuilt (mid-course UDW churn, the
+        -- 2026-08-10 20:14 crash). Flush every cache that could hold the
+        -- old cluster's corpses; see Weather._FlushClusterCaches.
+        if Weather._FlushClusterCaches then Weather._FlushClusterCaches() end
+
+        -- Post-warm lookup throttle (2026-08-10): withUDW's FindFirstOf
+        -- pair is a full object-array walk ON THE GAME THREAD under this
+        -- hook, and the once-per-instance latch sits INSIDE withUDW, so
+        -- every mid-drive refire still paid the walk for nothing. Once
+        -- this world's UDW is warmed, allow the lookup at most every 30s:
+        -- a mid-course UDW rebuild (never observed in the logs) still
+        -- gets warmed within one window, and OnMapTeardown clears the
+        -- latch so a fresh world is never throttled. The hook point and
+        -- warmup body below stay the verbatim CCC port.
+        if warmedUdwKey ~= nil then
+            local nowClock = os.clock()
+            if (nowClock - lastWarmupLookup) < 30.0 then return end
+            lastWarmupLookup = nowClock
+        end
+
+        withUDW(function(udw)
+            -- Once per instance (see warmedUdwKey above): repeat fires on
+            -- an already-warmed UDW are the crash vector, not a warmup.
+            local key = tostring(udw)
+            if key == warmedUdwKey then return end
+
+            local function safeCall(name)
+                if udw[name] then
+                    pcall(function() udw[name](udw) end)
+                end
+            end
+
+            safeCall("Construct All Weather State Objects")
+            safeCall("Weather Startup Functions")
+            safeCall("Warm Up Niagara Systems")
+            safeCall("Make Rain Component")
+            safeCall("Make Snow Component")
+            safeCall("Make Dust Component")
+
+            udw["Enable Rain Particles"] = true
+            udw["Enable Snow Particles"] = true
+            udw["Enable Dust Particles"] = true
+            udw["Warm Up Weather Particles On Begin Play"] = true
+
+            warmedUdwKey = key
+            Log.Info(MODULE, "UDW warmed up (CCC ClientRestart hook)", {udw = key})
+        end)
+    end)
+    if not ok then
+        warmupHookRegistered = false
+        Log.Warn(MODULE, "CCC warmup hook registration failed", {err = tostring(err)})
+        return
+    end
+    Log.Info(MODULE, "CCC warmup hook registered (PlayerController:ClientRestart)")
+end
+
 -- (Two unused Niagara helpers, setNiagaraParameter / setNiagaraActive,
 -- removed 2026-07-09: relics of a pre-3.0 rain-control approach, never
 -- called. The live paths use direct component calls; see _SuppressKill and
@@ -173,6 +298,9 @@ function Weather.Init()
     assetCache = {}
     lastApplyTime = 0
     applyCount = 0
+    -- Install CCC's ClientRestart warmup hook (see the verbatim port above).
+    -- Registered once per session, not per course: RegisterHook is global.
+    registerWarmupHook()
     State.SetModuleStatus("weather", true)
     return true
 end
@@ -338,6 +466,32 @@ function Weather.Apply(presetName, transitionTime)
                 
                 local udw = Actors.GetUDW()
                 if udw then
+                    -- Construct All Weather State Objects FIRST (the CCC
+                    -- method, 2026-07-30): UDW builds its weather state
+                    -- objects lazily and the spawn-rate formula reads Local
+                    -- Weather State.Rain. The decompiled body (reference\
+                    -- udwdig\fns\udw\43) is six "Construct Weather State
+                    -- Object IF INVALID" calls: idempotent, and not the CCC
+                    -- crash vector (that AV came from ClientRestart restarting
+                    -- the whole client under live particles). The order is
+                    -- load-bearing: Construct, then Startup/WarmUp, then the
+                    -- Make * Component calls, matching both warmup paths
+                    -- (reordered here 2026-08-04, code review).
+                    local constructStates = nil
+                    pcall(function()
+                        constructStates = udw["Construct All Weather State Objects"]
+                    end)
+                    if constructStates then
+                        local ok, err = pcall(function() constructStates(udw) end)
+                        Log.Info(MODULE, "Weather state objects constructed", {ok = ok})
+                        if not ok then
+                            Log.Warn(MODULE, "Construct All Weather State Objects failed",
+                                {error = tostring(err)})
+                        end
+                    else
+                        Log.Warn(MODULE, "Construct All Weather State Objects not found on UDW")
+                    end
+
                     -- Call Weather Startup Functions first (from v2 UDW.Warmup)
                     local weatherStartup = nil
                     pcall(function()
@@ -384,6 +538,9 @@ function Weather.Apply(presetName, transitionTime)
                 local thunderIntensity = presetData.thunderIntensity or 4.0
                 local spawnCount = presetData.spawnCount or 20000.0
                 
+                -- (State-object construction moved ABOVE, before the
+                -- Startup/Make calls: writing Local Weather State.Rain below
+                -- is pointless while the object holding it is still null.)
                 Actors.SetUDWProperty("Rain", rainIntensity)
                 Actors.SetUDWProperty("Thunder/Lightning", thunderIntensity)
                 Actors.SetUDWProperty("Enable Rain Particles", true)
@@ -478,13 +635,19 @@ function Weather.Apply(presetName, transitionTime)
                         end
                     end
                 end)
-                Log.Debug(MODULE, "Direct Niagara activation", {activatedCount = activatedCount})
-                
+                -- INFO, not Debug (2026-07-30): at Debug these never reach the
+                -- log file, so an INFO-level log cannot tell a real activation
+                -- from one that silently activated nothing and had its retry
+                -- counter reset by the next apply. That is precisely the
+                -- ambiguity blocking the "rain only starts after cycling up to
+                -- Thunderstorm" diagnosis, so both lines are promoted.
+                Log.Info(MODULE, "Direct Niagara activation", {activatedCount = activatedCount})
+
                 -- If activation failed, set pending flag for retry in tick loop
                 if activatedCount == 0 then
                     pendingRainActivation = true
                     pendingRainRetryCount = 0
-                    Log.Debug(MODULE, "Rain activation pending: will retry in tick loop")
+                    Log.Info(MODULE, "Rain activation pending: will retry in tick loop")
                 else
                     pendingRainActivation = false
                 end
@@ -501,6 +664,12 @@ function Weather.Apply(presetName, transitionTime)
                 Actors.SetUDWProperty("Thunder/Lightning", 0.0)
                 Actors.SetUDWProperty("Enable Rain Particles", false)
                 Actors.SetUDWProperty("Rain Particle Spawn Count", 0.0)
+                -- A wet apply that found 0 components leaves a pending
+                -- retry; without this clear the tick loop would re-Activate
+                -- the component under THIS dry preset once the async asset
+                -- lands, undoing the deactivation below.
+                pendingRainActivation = false
+                pendingRainRetryCount = 0
                 
                 -- DIRECT NIAGARA CONTROL: Find and deactivate rain particle components
                 -- This bypasses UDW's property system which isn't stopping particles
@@ -816,18 +985,74 @@ function Weather.Apply(presetName, transitionTime)
                     end
                 end
                 
-                -- Read back values to verify they were set
-                local rainVal, enableRain, spawnCount
-                pcall(function()
-                    rainVal = udw["Rain"]
-                    enableRain = udw["Enable Rain Particles"]
-                    spawnCount = udw["Rain Particle Spawn Count"]
-                end)
-                Log.Debug(MODULE, "Readback particle values", {
-                    Rain = tostring(rainVal),
-                    EnableRainParticles = tostring(enableRain),
-                    SpawnCount = tostring(spawnCount)
-                })
+                -- Read back the ACTUAL inputs to UDW's rain path (2026-07-30).
+                -- Rain Spawn Rate = SelectFloat((Local Weather State.Rain / 10)
+                -- ^1.7 * Rain Particle Spawn Count, 0, Enable Rain Particles),
+                -- so the three actor properties this used to print say almost
+                -- nothing: the formula consumes the STATE OBJECT's Rain, and
+                -- nothing renders unless Rain Particles carries the Rain Niagara
+                -- asset (which is also the only way our own scan recognises it).
+                -- GAME THREAD: Rain Spawn Rate is a UFunction call and Local
+                -- Weather State / Manual Weather State / Rain Particles are
+                -- UObject touches; all of those AV uncatchably from the async
+                -- loop. UDW is re-resolved inside the closure, teardown-gated
+                -- first statement. DIAGNOSTIC ONLY: writes nothing, activates
+                -- nothing, destroys nothing.
+                local rbPreset = presetName
+                local rainReadback = function()
+                    if Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended() then return end
+                    local u = Actors.GetUDW()
+                    if not u then return end
+                    local rainVal, enableRain, spawnCnt, updNeeded
+                    local lwsRain, manualValid, compValid, compAsset, spawnRate
+                    pcall(function() rainVal = u["Rain"] end)
+                    pcall(function() enableRain = u["Enable Rain Particles"] end)
+                    pcall(function() spawnCnt = u["Rain Particle Spawn Count"] end)
+                    pcall(function() updNeeded = u["Rain Update Needed"] end)
+                    pcall(function()
+                        local lws = u["Local Weather State"]
+                        if lws and lws:IsValid() then lwsRain = lws["Rain"] end
+                    end)
+                    pcall(function()
+                        local mws = u["Manual Weather State"]
+                        manualValid = (mws ~= nil and mws:IsValid()) and true or false
+                    end)
+                    pcall(function()
+                        local comp = u["Rain Particles"]
+                        if comp and comp:IsValid() then
+                            compValid = true
+                            local a = comp.Asset
+                            if a and a:IsValid() then compAsset = a:GetFullName() end
+                        else
+                            compValid = false
+                        end
+                    end)
+                    pcall(function()
+                        local fn = u["Rain Spawn Rate"]
+                        if fn then
+                            local r = fn(u)
+                            if type(r) == "table" then r = r.ReturnValue end
+                            spawnRate = r
+                        end
+                    end)
+                    Log.Info(MODULE, "Rain readback", {
+                        preset = rbPreset,
+                        Rain = tostring(rainVal),
+                        EnableRainParticles = tostring(enableRain),
+                        SpawnCount = tostring(spawnCnt),
+                        RainSpawnRate = tostring(spawnRate),
+                        RainUpdateNeeded = tostring(updNeeded),
+                        LocalWeatherStateRain = tostring(lwsRain),
+                        ManualStateValid = tostring(manualValid),
+                        RainParticlesValid = tostring(compValid),
+                        RainParticlesAsset = compAsset or "nil",
+                    })
+                end
+                if ExecuteInGameThread then
+                    pcall(function() ExecuteInGameThread(rainReadback) end)
+                else
+                    Log.Warn(MODULE, "No ExecuteInGameThread: skipping rain readback")
+                end
             end
         end
         
@@ -837,8 +1062,23 @@ function Weather.Apply(presetName, transitionTime)
             isDry = Presets.IsDry(presetName)
         })
         
-        -- IMMEDIATELY save state after weather change (so PA entry has correct preset)
+        -- IMMEDIATELY save state after weather change (so PA entry has correct
+        -- preset). COURSE ONLY (2026-08-08, THE PA-TIME CORRUPTION, field-
+        -- traced): applyPAState applies the preset BEFORE writing the carried
+        -- TOD (that order is load-bearing, 2026-07-15), so in the PA this
+        -- save read the UDS while it still held the canned 1950 and stamped
+        -- it into last_state.txt. The carry then fixed the UDS but never the
+        -- file; no autosave runs off-course and the PA-exit save leg is dead
+        -- by teardown (actors invalid = IsInPAScene false), so the next
+        -- course entry restored 1950. Every "PA time doesn't match" report
+        -- back to 07-16 fits this: the mid-visit re-can was a red herring,
+        -- the FILE is how 1950 escaped the PA. Off-course there is nothing
+        -- worth writing: the course-unload capture already saved the truth.
         pcall(function()
+            local ActorsMod = require("systems.actors")
+            if not (ActorsMod and ActorsMod.IsOnCourse and ActorsMod.IsOnCourse()) then
+                return
+            end
             local Persistence = require("systems.persistence")
             if Persistence and Persistence.Save then
                 Persistence.Save("weather_change")
@@ -1037,6 +1277,74 @@ function Weather.Tick()
     end
 end
 
+--- THE CCC WARMUP, replicated (2026-07-30). CoolConsoleCommands hooks
+--- PlayerController:ClientRestart and runs the block below against UDW; that is
+--- the ONLY reason rain ever worked reliably, and disabling CCC on 2026-07-29 is
+--- what exposed the bug. Ported verbatim from its main.lua:152-172, in the same
+--- order, because the order is load-bearing: the three Construct/Startup/WarmUp
+--- calls prepare UDW's state and Niagara systems, and only then can the three
+--- Make * Component calls actually build the components and ASSIGN their Niagara
+--- assets.
+--- "Make Rain Component" is the one that matters. The whole day's symptom was
+--- RainParticlesValid=true with RainParticlesAsset=NIL: the component existed
+--- but carried no Niagara asset, so our scan (which identifies it BY that asset
+--- name) found nothing and rain never rendered until something else incidentally
+--- built it, ~38-47 s in. My earlier partial port called only "Construct All
+--- Weather State Objects", which is why it changed nothing: the state objects
+--- were never the missing piece.
+--- CRASH NOTE: the one recorded access violation came from CCC's ClientRestart
+--- restarting the whole CLIENT under live rain particles, once in hundreds of
+--- boots. This runs at COURSE LOAD, before any weather has been applied and so
+--- before any particle exists, which avoids that window by construction rather
+--- than by luck.
+--- Thread: game thread (these are all UFunctions and UObject writes), teardown
+--- gated, UDW re-resolved inside the closure.
+function Weather.WarmUpUDW()
+    local function warmGT()
+        if Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended() then return end
+        local udw = Actors.GetUDW()
+        if not udw then
+            Log.Warn(MODULE, "UDW warmup skipped: UDW not resolvable yet")
+            return
+        end
+        local trace = {}
+        local function safeCall(name)
+            local fn = nil
+            pcall(function() fn = udw[name] end)
+            if not fn then
+                trace[#trace + 1] = name .. "=missing"
+                return
+            end
+            local ok = pcall(function() fn(udw) end)
+            trace[#trace + 1] = name .. "=" .. tostring(ok)
+        end
+
+        safeCall("Construct All Weather State Objects")
+        safeCall("Weather Startup Functions")
+        safeCall("Warm Up Niagara Systems")
+        safeCall("Make Rain Component")
+        safeCall("Make Snow Component")
+        safeCall("Make Dust Component")
+
+        -- CCC sets these AFTER the calls, so the calls do not depend on them.
+        -- The Enable flags are transient here: the first Weather.Apply of the
+        -- course re-derives them from the preset, and dry enforcement will clear
+        -- them for a dry preset. "Warm Up Weather Particles On Begin Play" is
+        -- the persistent one and is the point of setting any of them.
+        pcall(function() udw["Enable Rain Particles"] = true end)
+        pcall(function() udw["Enable Snow Particles"] = true end)
+        pcall(function() udw["Enable Dust Particles"] = true end)
+        pcall(function() udw["Warm Up Weather Particles On Begin Play"] = true end)
+
+        Log.Info(MODULE, "UDW warmup (CCC method)", {calls = table.concat(trace, " ")})
+    end
+    if ExecuteInGameThread then
+        pcall(function() ExecuteInGameThread(warmGT) end)
+    else
+        pcall(warmGT)
+    end
+end
+
 --- Apply weather on course load if enabled
 function Weather.OnCourseLoad()
     if Config.Weather.ApplyDefaultOnLoad then
@@ -1054,8 +1362,11 @@ end
 -- Pure component-level Activate/Deactivate, the same calls the stable dry-kill
 -- path uses. Components are cached on first suppress and revalidated per use;
 -- any weather (re)apply clears the suppression (Weather.Apply resets it).
--- CALLER MUST BE ON THE GAME THREAD (keybind handlers and light_cycle's
--- containment poll both are).
+-- CALLERS (corrected 2026-08-04): keybind handlers run on the GT;
+-- Weather.Tick's 1 Hz suppression enforcement calls this from the ASYNC
+-- tick behind the same teardown gate as the rain-activation retry, the
+-- project's accepted gated-async shape. Dormant in the shipped config
+-- (only the retired tunnel rain kill and Alt+J ever set suppression).
 
 --- Find the live precip Niagara components (Rain/Snow by name or asset).
 --- Components with a nil/unreadable/invalid Asset are SKIPPED even when
@@ -1191,12 +1502,42 @@ end
 --- restore here; an unhide pass instead would poke freed old-world refs on
 --- the next Weather.Apply (IsValid can falsely pass on freed memory; the
 --- 2026-07-14 PA-crash class).
+--- Weather-cluster churn flush (2026-08-10, the 20:14:28 crash): called
+--- from the ClientRestart hook on EVERY fire, before the warmup throttle
+--- can skip. The game rebuilds the weather cluster mid-course; the old
+--- UDW's rain components die with it while suppressedComps and the State
+--- actor cache still hold them, and an IsValid on those corpses is the
+--- +0x0C AV (this build's IsValid dereferences before checking liveness;
+--- fixed upstream in RE-UE4SS PR #1031, which our pinned build predates
+--- by nine days). Pure Lua drops; everything re-derives fresh: the
+--- suppression enforcement rescans within 1s and re-kills new particle
+--- components, and actor discovery re-finds within ~1s. Defined down
+--- here so suppressedComps is lexically in scope (the hook body reaches
+--- it through the Weather table at call time, the ppWatchTick idiom).
+function Weather._FlushClusterCaches()
+    suppressedComps = nil
+    pcall(function() Actors.OnWeatherClusterChurn() end)
+end
+
 function Weather.OnMapTeardown()
     if precipSuppressed or suppressedComps then
         Log.Info(MODULE, "Suppression state dropped (map teardown)")
     end
     precipSuppressed = false
     suppressedComps = nil
+    -- The retry belongs to the world that set it; a wet flag surviving
+    -- into the next world's dry restore would re-activate rain there.
+    pendingRainActivation = false
+    pendingRainRetryCount = 0
+    -- The warmup latch belongs to its world too: cleared here so the next
+    -- world's first ClientRestart fire always warms its fresh UDW (and the
+    -- address key can never alias across worlds).
+    warmedUdwKey = nil
+    -- Asset cache entries are per-world lookups. The old ClearCache-on-
+    -- EndPlay path never actually fired (fallback hooks removed
+    -- 2026-08-10), so the wipe lives here with the rest of the world
+    -- state.
+    assetCache = {}
 end
 
 -- Initialize on load

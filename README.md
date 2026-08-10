@@ -39,7 +39,7 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 - **Photo mode camera unlocked** - no collision (fly anywhere), no distance cap, a much wider zoom range, faster free-cam, and the photo vignette off for clean shots
 - **Hide HUD vignette** - optional cleaner look for screenshots / photo driving
 - Auto-exposure / photomode aperture (ported from VEAO)
-- Fully compatible with manual time adjustments done by CoolConsoleCommands by Shibexd, i will implement my own soon
+- Manual time control is built in (`Alt+T` cycles pause / normal / fast); since 3.9.0 the mod also includes its own course-entry weather warmup (approach credited to Shibe), so no companion console-commands mod is needed alongside
 
 ## How this differs from Ultra Dynamic TXR 1.34
 TXR Weather Mod V3 is a **ground-up rewrite** of the Ultra Dynamic TXR 1.34 weather system - it
@@ -150,7 +150,7 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
   `Alt+Shift+D` (too bright) at that moment and attach `TXR_Weather_V3/Logs/tuning_feedback.log`
   to your report - the dawn/dusk curves are tuned from exactly these datapoints.
 ## Credits
-Inspired by **Silent**'s original Dynamic Day/Night Cycle. **EDGERUNN3R** took it further and made Ultra Dynamic TXR. This project was started together with **EDGERUNN3R**, who shared his early source and helped get it set up and understand UDS and UE4SS. TXR Weather Mod V3 is a full rewrite by **Ten** (andizla) and uses none of the original Ultra Dynamic TXR 1.34 code. The dynamic wet grip's global tire-table approach is credited to **Chrystales**. The alignment slider-widening approach is credited to **NadzW** and **FenderBender** (WheelOffsetUnlocker).
+Inspired by **Silent**'s original Dynamic Day/Night Cycle. **EDGERUNN3R** took it further and made Ultra Dynamic TXR. This project was started together with **EDGERUNN3R**, who shared his early source and helped get it set up and understand UDS and UE4SS. TXR Weather Mod V3 is a full rewrite by **Ten** (andizla) and uses none of the original Ultra Dynamic TXR 1.34 code. The dynamic wet grip's global tire-table approach is credited to **Chrystales**. The alignment slider-widening approach is credited to **NadzW** and **FenderBender** (WheelOffsetUnlocker). The course-entry weather warmup approach is credited to **Shibe** (Shibexd).
 
 ## License
 [GPLv3](LICENSE). The mod drives Ultra Dynamic Sky/Weather; UDS content is not included.

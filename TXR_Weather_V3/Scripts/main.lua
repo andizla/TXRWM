@@ -219,9 +219,6 @@ local function loadSystemModules()
         Log.Debug("Main", "Headlights module not loaded")
     end
     
-    -- (Phase 10 Audio module removed in the no-rain build 2026-07-17;
-    -- reference copy in C:\möd\.backup\removed_modules)
-
     -- Phase 12: Stars (HD night sky)
     Stars = safeRequire("systems.stars", "Stars")
     if Stars then
@@ -258,7 +255,8 @@ local function loadSystemModules()
         Log.Debug("Main", "Audio module not loaded")
     end
 
-    -- Rain collision v8: private rain channel + rain-solid world pass
+    -- Rain collision: targeted rain-solid stealth bodies on tunnel and
+    -- bridge meshes (see Config.RainCollision)
     RainCollision = safeRequire("systems.rain_collision", "RainCollision")
     if RainCollision then
         Log.Info("Main", "System module loaded: RainCollision")
@@ -394,7 +392,6 @@ end
 local lastHeartbeat = os.time()
 local tickCount = 0
 local initialWeatherApplied = false  -- Track if we've applied initial weather this session
-local restoredFromPA = false         -- Flag to skip initial weather when restoring from PA
 local _pendingRestore = false        -- Flag set when actors become invalid, triggers restore on next valid
 
 -- PA freeze watchdog: continuously enforce freeze while in PA
@@ -425,6 +422,8 @@ local paCarry = nil        -- carried cloud/fog for the delayed re-assert
 local paReassertAt = nil   -- os.clock() deadline for it (nil = none due)
 local paClockLast = nil    -- {tod, clock}: last agreed PA clock reading
 local paClockNext = 0.0    -- next clock-watch poll (throttle)
+local PA_CANNED_TOD = 1950 -- the PA scene's canned night clock (see above)
+local PA_CANNED_TOL = 5    -- "landed on the canned TOD" tolerance, units
 
 local function applyPAState()
     local mode = "continue"
@@ -541,7 +540,7 @@ end
 --- clock should be (last agreed reading + elapsed at the LIVE simulation
 --- speed; 53.333 speed = 2400 units per 30 min = speed/40 units per
 --- second) and snaps back + re-asserts the speed when the actual clock
---- has teleported (>100 units off the prediction). User speed changes
+--- has teleported (>100 units off the prediction). Manual speed changes
 --- (Alt+T) stay under the threshold because the prediction reads the
 --- live speed every poll.
 local function paClockWatchTick()
@@ -566,7 +565,18 @@ local function paClockWatchTick()
     local diff = math.abs(tod - predicted)
     if diff > 1200 then diff = 2400 - diff end  -- shortest way around midnight
 
-    if diff > 100 then
+    -- Re-can signature (field 2026-08-07: dusk carry ~1800-1900 vs the
+    -- canned 1950 sits INSIDE the 100-unit window, so the re-can was
+    -- accepted as truth and the watch "synced" to the canned night): a
+    -- jump away from the prediction that LANDS on the canned TOD is a
+    -- re-can regardless of size. The 15-unit floor keeps prediction
+    -- drift and the legitimate nightly pass through 1950 (the clock
+    -- ARRIVES there, prediction in tow, diff ~1-2) from misfiring.
+    local canned = math.abs(tod - PA_CANNED_TOD)
+    if canned > 1200 then canned = 2400 - canned end
+    local recanned = (canned <= PA_CANNED_TOL) and (diff > 15)
+
+    if diff > 100 or recanned then
         -- The scene re-canned the clock; restore the carried timeline and
         -- re-assert the running speed (the canned push can zero it too)
         local speed = State and State.GetTimeSpeed and State.GetTimeSpeed() or nil
@@ -583,9 +593,31 @@ local function paClockWatchTick()
         Log.Info("Main", "PA clock re-synced (scene re-canned it)", {
             was = string.format("%.0f", tod),
             restored = string.format("%.0f", predicted),
+            trigger = recanned and "canned-signature" or "threshold",
         })
         paClockLast = { tod = predicted, clock = now }
     else
+        -- SPEED-ONLY REVERT (2026-08-04, field: "PA runs at a different
+        -- timescale"): the canned push can reset Simulation Speed to the
+        -- spawn default (~1.0 = real-time crawl) WITHOUT teleporting the
+        -- clock. The prediction reads the LIVE speed, so it tracks the
+        -- crawl and the position check above never trips: the PA then
+        -- runs ~53x slower than the course forever. Enforce the carried
+        -- speed independently of clock position.
+        local want = State and State.GetTimeSpeed and State.GetTimeSpeed() or nil
+        if Config.PA and Config.PA.ForceNormalSpeed then
+            local normal = (Config.TimeOfDay and Config.TimeOfDay.DefaultSpeed) or 53.333
+            if want and want > normal then want = normal end
+        end
+        if want and want > 0
+           and (spd == nil or math.abs(spd - want) > want * 0.1) then
+            pcall(function() uds["Animate Time of Day"] = true end)
+            pcall(function() uds["Time Speed"] = 1.0 end)
+            pcall(function() uds["Simulation Speed"] = want end)
+            Log.Info("Main", "PA speed re-asserted (canned push reverted it)", {
+                was = tostring(spd), want = string.format("%.1f", want),
+            })
+        end
         paClockLast = { tod = tod, clock = now }
     end
 end
@@ -636,25 +668,44 @@ local function onTick()
             Weather.Tick()
         end
 
-        -- Phase 11: Random weather scheduler (skip in PA)
-        if Scheduler and Scheduler.Tick and not State.IsPAFrozen() then
+        -- Phase 11: Random weather scheduler (skip in PA; skip during a
+        -- photo session, 2026-08-07 field: a scheduler pick's transition
+        -- kept mutating the sky mid-shoot while TOD stood frozen)
+        if Scheduler and Scheduler.Tick and not State.IsPAFrozen()
+           and not (State.IsPhotoSessionOpen and State.IsPhotoSessionOpen()) then
             Scheduler.Tick()
         end
         
-        -- Apply initial settings once actors are discovered (but not in PA or just restored from PA)
+        -- Apply initial settings once actors are discovered (but not in PA)
+        -- (The old restoredFromPA skip-branch is deleted 2026-08-04: the
+        -- flag was never set anywhere, so every course entry, PA returns
+        -- included, has always taken this path. Persistence.Restore reads
+        -- the PA-exit save, which is what keeps the clock continuous.)
         if not initialWeatherApplied and Actors and Actors.IsOnCourse() and not State.IsPAFrozen() then
-            -- If we just restored from PA, skip the normal initialization
-            if restoredFromPA then
-                Log.Info("Main", "Restored from PA: skipping initial weather setup")
-                -- Still need to initialize DLWE system
-                if Wetness and Wetness.OnActorsReady then
-                    Wetness.OnActorsReady()
-                end
-                initialWeatherApplied = true
-                restoredFromPA = false
-            else
+            do
                 Log.Info("Main", "Actors ready: triggering initial setup")
-                
+
+                -- Sun simulation FIRST, before anything writes Time Of Day.
+                -- TXR's sky runs Simulate Real Sun, so the sun's position is a
+                -- function of the DATE as well as the clock, and real_sun's own
+                -- settle gate landed the pinned date 4-5 s later. That made the
+                -- first rendered sky use the game's drifting calendar and snap
+                -- across the horizon at a dusk TOD. Marshalled inside, so the
+                -- date write and Hard Reset Cache land on the game thread after
+                -- the async TOD restore below has already run.
+                if RealSun and RealSun.OnCourseLoad then
+                    RealSun.OnCourseLoad()
+                end
+
+                -- UDW warmup is the CCC ClientRestart hook's job (weather.lua):
+                -- it fires at course entry BEFORE this actors-ready block runs.
+                -- The Weather.WarmUpUDW call that used to sit here only QUEUED
+                -- a GT closure, so it actually landed AFTER the synchronous
+                -- restore/apply below: re-asserting Enable*Particles after a
+                -- dry apply and warming mid-transition on a wet one (the
+                -- recorded AV class). Removed 2026-08-04; the hook alone is
+                -- the verified fix (2026-07-31, CCC disabled).
+
                 -- Initialize DLWE system FIRST before any weather operations
                 if Wetness and Wetness.OnActorsReady then
                     Wetness.OnActorsReady()
@@ -941,7 +992,7 @@ local function onTick()
             Tunnels.Tick()
         end
 
-        -- Rain collision v8 (channel enforcement + streamed-cell re-pass;
+        -- Rain collision (channel enforcement + streamed-cell re-pass;
         -- self-paced inside, near-free while dry)
         if RainCollision and RainCollision.Tick then
             RainCollision.Tick()
@@ -977,83 +1028,18 @@ local function setupHooks()
         return false
     end
     
-    -- Note: LoadMapPreHook and BeginPlayPreHook are registered at global scope (end of file)
-    -- to match V1.34's pattern. We only register ReceiveBeginPlay/EndPlay here as fallback.
-    
-    -- BeginPlay hook for map load detection (fallback)
-    local hookSuccess, hookErr = pcall(function()
-        RegisterHook("/Script/Engine.Actor:ReceiveBeginPlay", function(self)
-            -- Safely get actor name
-            local success, actorName = pcall(function()
-                return self:GetFullName()
-            end)
-            
-            if success and actorName then
-                -- Check if this is a sky actor
-                if actorName:find("Ultra_Dynamic_Sky") then
-                    Log.Info("Main", "BeginPlay: UDS actor detected", {
-                        actor = Utils and Utils.Truncate(actorName, 60) or actorName:sub(1, 60)
-                    })
-                    
-                    -- Trigger actor discovery
-                    if Actors and Actors.OnMapLoad then
-                        Actors.OnMapLoad()
-                    end
-                    
-                    -- Clear weather cache on new map
-                    if Weather and Weather.ClearCache then
-                        Weather.ClearCache()
-                    end
-                end
-            end
-        end)
-        Log.Info("Main", "BeginPlay hook registered")
-    end)
-    
-    if not hookSuccess then
-        Log.Warn("Main", "Failed to register BeginPlay hook: " .. tostring(hookErr))
-    end
-    
-    -- EndPlay hook for map unload detection
-    local endPlaySuccess, endPlayErr = pcall(function()
-        RegisterHook("/Script/Engine.Actor:ReceiveEndPlay", function(self)
-            -- During map teardown EndPlay fires for EVERY dying actor; the unload
-            -- handling already ran (LoadMapPreHook), so skip the per-actor name
-            -- lookups on half-destroyed objects for the rest of the window.
-            if Actors and Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended() then
-                return
-            end
+    -- Note: LoadMapPreHook and BeginPlayPreHook are registered at global scope
+    -- (end of file) to match V1.34's pattern.
 
-            -- Safely get actor name
-            local success, actorName = pcall(function()
-                return self:GetFullName()
-            end)
-            
-            if success and actorName then
-                if actorName:find("Ultra_Dynamic_Sky") then
-                    Log.Info("Main", "EndPlay: UDS actor destroyed (map unload)")
-                    
-                    -- Notify actors module
-                    if Actors and Actors.OnMapUnload then
-                        Actors.OnMapUnload()
-                    end
-                    
-                    -- Clear weather cache
-                    if Weather and Weather.ClearCache then
-                        Weather.ClearCache()
-                    end
-                    
-                    -- Reset initial weather flag (done in tick loop, but also here for safety)
-                    initialWeatherApplied = false
-                end
-            end
-        end)
-        Log.Info("Main", "EndPlay hook registered")
-    end)
-    
-    if not endPlaySuccess then
-        Log.Warn("Main", "Failed to register EndPlay hook: " .. tostring(endPlayErr))
-    end
+    -- The ReceiveBeginPlay/ReceiveEndPlay FALLBACK hooks are GONE
+    -- (2026-08-10). Each was a Lua dispatch + GetFullName for EVERY actor
+    -- spawn/death in every world, and neither ever detected anything:
+    -- zero fallback detections in every August session log while
+    -- BeginPlayPreHook did all the detection. Their unique side effects
+    -- (Actors.OnMapLoad, the EndPlay ClearCache/OnCourseUnload calls)
+    -- therefore never ran either; Weather.ClearCache now rides
+    -- Weather.OnMapTeardown. Pure crash-surface removal: the 08-09 dumps
+    -- fault inside exactly this kind of per-actor GT hook dispatch.
     
     return true
 end
@@ -1183,6 +1169,14 @@ local _LastWorldTag = "unknown"
 -- captures it as an upvalue)
 local _WorldLogPending = true       -- one-shot "World identify" log per map load (PA-name hunt)
 
+-- Sky class caching like V1.34. The DECLARATIONS live above LoadMapPreHook
+-- (2026-08-10): the teardown block below nils them, and with the locals
+-- declared after the hook those assignments would silently write globals
+-- instead (the local-ordering trap). The TryGet* definitions stay below,
+-- next to the BeginPlayPreHook that uses them.
+local SkyClass = nil
+local CourseSkyClass = nil
+
 -- LoadMapPreHook: fires BEFORE map unload while actors still valid
 if RegisterLoadMapPreHook then
     RegisterLoadMapPreHook(function()
@@ -1264,15 +1258,18 @@ if RegisterLoadMapPreHook then
         if Weather and Weather.OnMapTeardown then
             Weather.OnMapTeardown()
         end
+        -- Sky-class cache: the BP class objects die with their owner
+        -- world's GC, and the cross-world IsValid() revalidation in
+        -- TryGet* is the +0x0C freed-object validity read every 08-09
+        -- dump faults on (2026-08-10 disasm). Pure Lua nils, GT-safe;
+        -- TryGet* re-finds on demand in the new world.
+        SkyClass = nil
+        CourseSkyClass = nil
 
         _LastWorldTag = currentTag
         _WorldLogPending = true
     end)
 end
-
--- Sky class caching like V1.34
-local SkyClass = nil
-local CourseSkyClass = nil
 
 local function TryGetSkyClass()
     if SkyClass then
@@ -1430,7 +1427,7 @@ if RegisterBeginPlayPreHook then
         if tag == "course" and _pendingRestore then
             if Log then Log.Info("Main", "Course entry: deferring restore to tick loop") end
             _pendingRestore = false
-            -- restoredFromPA stays false so tick loop will call Persistence.Restore()
+            -- (the tick loop's initial-setup branch calls Persistence.Restore())
         end
         
         _LastWorldTag = tag

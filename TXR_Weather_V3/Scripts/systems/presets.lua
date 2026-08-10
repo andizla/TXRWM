@@ -58,8 +58,8 @@ local PRESET_DATA = {
         cloudCoverage = 6.0,
         fog = 0.6,
         -- Cool the deck down: the session grade (saturation 1.15, warm
-        -- absorption boost) reads too warm under full cloud (user
-        -- 2026-07-15 "overcast needs to be more overcasty")
+        -- absorption boost) reads too warm under full cloud
+        -- (2026-07-15: "overcast needs to be more overcasty")
         skyGrade = {
             ["Saturation"] = 1.0,
             ["Desaturate Rayleigh Scattering When Cloudy"] = 0.55,
@@ -67,7 +67,7 @@ local PRESET_DATA = {
             ["Sunset/Sunrise Color Intensity (Absorption Scale)"] = 0.0020,
         },
     },
-    -- Heavy overcast (user request 2026-07-15): a proper grey deck, denser
+    -- Heavy overcast (added 2026-07-15): a proper grey deck, denser
     -- than Overcast, desaturated hard but not greyscale. Reuses the game's
     -- Overcast asset; the difference is our overlay + grade.
     Overcast_Heavy = {

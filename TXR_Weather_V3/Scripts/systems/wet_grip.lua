@@ -58,10 +58,15 @@ local dtHandle    = nil   -- cached data-table object
 
 local function valid(o) return o and o.IsValid and o:IsValid() end
 
+--- The discovery cache is the ONLY source (2026-07-28 review): the old
+--- FindFirstOf fallback was an ungated async world sweep, so it ran
+--- against the dying world through every map teardown (the documented
+--- native-AV class that pcall cannot catch) and polled forever in the
+--- garage, where UDW never validates. Actors.GetUDW validates per call
+--- and covers the course and the PA scene; nil simply means wetness
+--- holds for the few seconds before discovery caches the actor.
 local function get_udw()
     local udw = Actors.GetUDW()
-    if valid(udw) then return udw end
-    pcall(function() udw = FindFirstOf("Ultra_Dynamic_Weather_C") end)
     if valid(udw) then return udw end
     return nil
 end
@@ -165,6 +170,9 @@ end
 -- when the wet factor actually changes, so it's a cheap no-op most ticks.
 function WetGrip.Tick()
     if not initialized or not enabled then return end
+    -- Teardown gate (the standing async rule): no object touches while the
+    -- world is being torn down, cached refs included
+    if Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended() then return end
 
     local now = os.clock()
     local interval = (cfg.UpdateMs or 250) / 1000.0
@@ -206,6 +214,10 @@ function WetGrip.Tick()
 
     if type(ExecuteInGameThread) == "function" then
         ExecuteInGameThread(function()
+            -- Re-check at RUN time: a queued closure can land mid-teardown.
+            -- Skipping is free: lastMainF stays stale, so the next tick
+            -- still reads changed=true and re-applies.
+            if Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended() then return end
             if apply_wet_to_dt(mainF, sideF) then
                 lastMainF, lastSideF = mainF, sideF
                 if cfg.Debug then

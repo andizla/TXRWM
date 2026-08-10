@@ -72,7 +72,7 @@ local KILL_SKY_TRANSLUCENT = false
 -- readback. Vector/color fields arrive as {X=,Y=,Z=,W=} tables.
 local PP_OVERRIDES = nil
 
--- Bias output: drives UDS's Exposure Bias knobs (user-confirmed live) on top
+-- Bias output: drives UDS's Exposure Bias knobs (confirmed live) on top
 -- of stock auto-exposure.
 local BIAS_CURVE = {}
 
@@ -277,7 +277,7 @@ local function scheduleExec(cmds)
 end
 
 -- Garage exposure trim + dark look (the Alt+E/Alt+G family OUTSIDE photo
--- sessions; user call 2026-07-28: the garage look should be dialable
+-- sessions; 2026-07-28 decision: the garage look should be dialable
 -- while just browsing cars, no photomode needed). Same levers as the
 -- photo-session versions, applied on the garage-neutral lens; scoped to
 -- the garage visit (reset on leaving).
@@ -290,6 +290,20 @@ local function noteDriveState(state)
     if lastDriveState == "garage" and (garageNudgeSteps ~= 0 or garageDarkOn) then
         garageNudgeSteps = 0
         garageDarkOn = false
+    end
+    -- CONFIG-SEEDED GARAGE LOOK (2026-08-11): entering the garage starts
+    -- from the shipped dark-look baseline instead of neutral. Values from
+    -- the 00:31 field tuning (dark lens 30 * 1.25^-33 ~= lens 0.019).
+    -- Alt+G / Alt+E still adjust live on top for the visit; the exit
+    -- reset above plus this seed make every visit start identical.
+    if state == "garage" and Config.LightCycle then
+        local gd = Config.LightCycle.GarageDark
+        if type(gd) == "table" and gd.Enabled then
+            garageDarkOn = true
+            garageNudgeSteps = tonumber(gd.NudgeSteps) or 0
+            lastApplied.lens = nil
+            lastCheckClock = 0.0
+        end
     end
     lastDriveState = state
     local tag = "?"
@@ -457,6 +471,13 @@ end
 --- per-tick writer re-asserts that field and the kill/speeds need a carrier
 --- (measure first, do NOT silently re-assert).
 local function ppShotsReadbackGT()
+    -- Same run-time teardown re-check as applyPPShotsGT: this lands ~8s
+    -- after course arm, so a quick course exit can put it mid-teardown,
+    -- where a FindFirstOf reads dying objects (2026-08-04, code review).
+    local actors = getActors()
+    if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
+        return
+    end
     pcall(function()
         local info = {}
         local a = FindFirstOf("BP_CourseSky_C")
@@ -649,19 +670,34 @@ local function applyAbsentBrightness(uds)
         end
     end
 
-    pcall(function()
-        local fn = uds["Hard Reset Cache"]
-        if fn then
-            local ok = pcall(function() fn(uds) end)
-            Log.Info(MODULE, "Night floor bake (Hard Reset Cache)", {ok = ok})
-        end
-    end)
+    -- Hard Reset Cache is a UFUNCTION, and this whole path runs on the 8 Hz
+    -- async tick (LightCycle.Tick = LightCycle.Update, ticked from main.lua's
+    -- LoopAsync). Calling a UFunction off the game thread can access-violate
+    -- natively, and pcall does NOT catch a native AV, so the pcall below was
+    -- decoration rather than protection. Marshal it, and re-resolve UDS INSIDE
+    -- the closure instead of carrying the caller's ref across the thread hop:
+    -- IsValid can read true on freed memory, so a ref captured on the async
+    -- side is exactly the pattern that produced the 2026-07-14 PA crash.
+    local function bakeGT()
+        local a = getActors()
+        local u = a and a.GetUDS and a.GetUDS() or nil
+        if not u then return end
+        local fn = u["Hard Reset Cache"]
+        if not fn then return end
+        local ok = pcall(function() fn(u) end)
+        Log.Info(MODULE, "Night floor bake (Hard Reset Cache)", {ok = ok})
+    end
+    if ExecuteInGameThread then
+        pcall(function() ExecuteInGameThread(bakeGT) end)
+    else
+        pcall(bakeGT)
+    end
 end
 
 -- ============== PHOTOMODE MANUAL METERING (legacy lens curve) ==============
 -- photomode.lua drives this on session open/close. Manual metering
 -- (MethodOverride 3) is the ONLY mode where the photomode aperture
--- physically drives exposure (user-verified; every read/hook emulation of
+-- physically drives exposure (field-verified; every read/hook emulation of
 -- the applied f-stop failed, the value is unreachable). The manual level
 -- rides the legacy lens-attenuation machinery, keyed on SUN ELEVATION
 -- (the 3.4.0 lens curve, applied inside applyValues), like every other
@@ -745,9 +781,9 @@ function LightCycle.NudgePhotoExposure(dir)
 end
 
 --- Alt+G: toggle the dark look inside a photo session, or the garage's
---- own dark look outside one (the tester render the user liked, live in
---- the garage without photomode). Returns the new state, nil when
---- neither context is active.
+--- own dark look outside one (the tester-render look, available in the
+--- garage without photomode). Returns the new state, nil when neither
+--- context is active.
 function LightCycle.TogglePhotoDarkLook()
     if photoExpFrozen then
         photoDarkOn = not photoDarkOn
@@ -781,34 +817,13 @@ end
 local DISPLAY_PROFILE_CFG = "auto"
 local SDR_TABLES = nil
 local displayProfile = nil   -- resolved: "hdr" | "sdr"
+local profileProbeInFlight = false
 
---- force=true resolves even when the HDR state is unreadable (falls back
---- to "hdr" = the historical look) so the PP one-shots never stall on it.
-local function resolveDisplayProfile(force)
+--- Latch the resolved profile and swap the SDR tables. Pure Lua, safe
+--- from either thread; first caller wins (a probe landing after a forced
+--- fallback is a no-op).
+local function finishDisplayProfile(prof, src)
     if displayProfile then return end
-    local prof = DISPLAY_PROFILE_CFG
-    local src = "config"
-    if prof ~= "hdr" and prof ~= "sdr" then
-        src = "auto"
-        local hdrOn = nil
-        pcall(function()
-            local gus = FindFirstOf("GameUserSettings")
-            if gus and gus.IsValid and gus:IsValid() then
-                pcall(function() hdrOn = gus.bUseHDRDisplayOutput end)
-                pcall(function()
-                    local live = gus:IsHdrEnabled()
-                    if type(live) == "boolean" then hdrOn = live end
-                end)
-            end
-        end)
-        if hdrOn == nil then
-            if not force then return end   -- retry on a later tick
-            prof = "hdr"
-            src = "fallback (HDR state unreadable)"
-        else
-            prof = hdrOn and "hdr" or "sdr"
-        end
-    end
     displayProfile = prof
     if prof == "sdr" and type(SDR_TABLES) == "table" then
         if type(SDR_TABLES.PostProcess) == "table" then
@@ -822,6 +837,47 @@ local function resolveDisplayProfile(force)
         end
     end
     Log.Info(MODULE, "Display profile", {profile = prof, source = src})
+end
+
+--- force=true resolves even when the HDR state is unreadable (falls back
+--- to "hdr" = the historical look) so the PP one-shots never stall on it.
+--- The HDR readback runs in a GT closure: until 2026-08-04 this was the
+--- one remaining bare FindFirstOf + UFunction call on the 8 Hz async
+--- tick (the wet_grip 3.8.0 crash class), retrying from mod boot while
+--- worlds churn.
+local function resolveDisplayProfile(force)
+    if displayProfile then return end
+    local prof = DISPLAY_PROFILE_CFG
+    if prof == "hdr" or prof == "sdr" then
+        finishDisplayProfile(prof, "config")
+        return
+    end
+    if not profileProbeInFlight and ExecuteInGameThread then
+        profileProbeInFlight = true
+        local ok = pcall(function()
+            ExecuteInGameThread(function()
+                local hdrOn = nil
+                pcall(function()
+                    local gus = FindFirstOf("GameUserSettings")
+                    if gus and gus.IsValid and gus:IsValid() then
+                        pcall(function() hdrOn = gus.bUseHDRDisplayOutput end)
+                        pcall(function()
+                            local live = gus:IsHdrEnabled()
+                            if type(live) == "boolean" then hdrOn = live end
+                        end)
+                    end
+                end)
+                if hdrOn ~= nil then
+                    finishDisplayProfile(hdrOn and "hdr" or "sdr", "auto")
+                end
+                profileProbeInFlight = false
+            end)
+        end)
+        if not ok then profileProbeInFlight = false end
+    end
+    if force and not displayProfile then
+        finishDisplayProfile("hdr", "fallback (HDR state unreadable)")
+    end
 end
 
 -- ============== PUBLIC API ==============

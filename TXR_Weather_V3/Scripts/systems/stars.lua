@@ -81,9 +81,9 @@ local MID_STAR_COLOR = nil
 local midOverrideAt = 0.0        -- earliest next MID write (bake settle, then 2s cadence)
 local midLastWhy = nil           -- re-assert log dedup: first write + state changes only
 -- Stomp watch (2026-07-23 round 6b): each belt pass READS the live param
--- first. stomps=0 at night while the user still sees blinking = the value
--- holds and the blink is COMPOSITING (glow layered over stars, the user's
--- model) = the fill value was never the limiting factor; stomps>0 = the
+-- first. stomps=0 at night while blinking is still visible on screen = the
+-- value holds and the blink is COMPOSITING (glow layered over stars) = the
+-- fill value was never the limiting factor; stomps>0 = the
 -- night formula still drifts despite the zeroed input (additive term) and
 -- last_found identifies it.
 local midStomps30 = 0

@@ -3,6 +3,167 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.9.0]: 2026-08-11
+
+### Fixed
+- **The long-standing random crash is gone.** A hard crash that could kill
+  the game seconds to minutes into a drive, at random, worst on nights of
+  heavy course/garage hopping, has been in the game since the mod's early
+  versions. It is fixed on both ends. The mod no longer holds onto game
+  objects across the moments the game destroys them (course exits, garage
+  hops, and the game's own mid-course weather rebuilds, which turned out to
+  be a thing it does). And the updated UE4SS build (below) fixes the
+  engine-side half of the same bug, so even a future slip of the same kind
+  cannot crash, only misbehave.
+- **Course entries no longer drop frames, and the periodic micro-hitch
+  while driving is gone.** The rain-collision pass was redoing work it had
+  already done every time it ran (a broken cache) and doing it in slices
+  bigger than a frame. Cache fixed, slices halved; the pass now costs a few
+  milliseconds spread across frames.
+- **Rain starts when the course does.** The game's weather system builds its
+  rain particles empty and fills them only after a slow background content
+  load, so a course entered on a wet preset could stay dry for minutes, or
+  for the whole run. The mod now warms the weather system up at every course
+  entry, which kicks that load immediately: a wet preset rains from the
+  first seconds. Course-entry warmup approach credited to Shibe.
+- **Dusk course entries no longer flash to night and snap back.** The game
+  quietly drifts its calendar date over a session, and at dusk the wrong
+  date puts the sun below the horizon, so the first seconds rendered as
+  night until the mod's date correction landed. The date is now pinned in
+  the same moment the course sets its time of day.
+- **Low sun no longer blasts into tunnel bores.** The game's tunnel walls
+  are one-sided and cast no shadow when the sun hits their back faces; the
+  mod now makes them cast from both sides (`Config.Tunnels.FixShadowLeak`,
+  on by default). A few spots keep a thin lit band on the kerb: those are
+  places where the game has no outer wall at all, so there is nothing to
+  cast the shadow.
+- **Rare hard crash on course entry, usually after a Parking Area visit.**
+  The engine fires its pawn-restart event several times per course entry
+  and the rain warmup ran in full on every one, which could rebuild live
+  rain particles mid-flight. Each weather actor is now warmed exactly once.
+  (First shipped in dev release 3.8.2.)
+- **Parking Area time no longer corrupts the course clock.** Two bugs
+  stacked. The PA scene could silently reset the clock to a real-time crawl
+  (53 times slower than the course) without the mod noticing; the carried
+  speed is now enforced. Worse, the mod's own state save could catch the
+  PA's canned night clock during PA entry and restore it on the next
+  course, snapping you to ~19:30 dusk whatever time you left at; the save
+  is now course-aware and the running PA clock autosaves during the visit,
+  so the course resumes near the time you actually left the PA. (First
+  shipped in dev release 3.8.2.)
+- **Photo mode: the sky no longer changes mid-shoot.** Scheduled weather
+  changes pause while a photo session is open and hold for 30 seconds
+  after it closes. Time was already frozen; now the weather is too. A
+  transition already blending when you open the session still finishes
+  (engine-side, cannot be paused). (First shipped in dev release 3.8.2.)
+- **The tunnel shadow fix no longer spends its work on traffic cones** (a
+  pattern that matched tunnel aprons also matched the pylon prop). (First
+  shipped in dev release 3.8.3.)
+- **Wet grip no longer touches the world during course-exit teardown.**
+  Review finding, not a reported crash: the system could look up game
+  objects while the world was being torn down, the same pattern behind the
+  transition crashes fixed above. The path is now gated.
+- **An interrupted save can no longer wipe your stored time and weather.**
+  Saves write to a temporary file first and keep the previous good save as a
+  fallback; a save killed mid-write restores from the backup.
+- **Course entry no longer reads the previous course's cloud cover.** For a
+  moment after entering a new course, systems reading smoothed cloud during
+  the entry burst could get the last course's weather.
+- **Switching to a dry preset right after a wet one can no longer
+  re-activate rain** a few seconds later (a leftover retry from the wet
+  apply survived the switch).
+- **Weather sounds no longer stay silent for a whole course when the
+  game's audio content load stalls**: the mod detects the stall and
+  re-kicks the load.
+- **Car-paint reflections: thin structures no longer go black** (photomode
+  Engine.ini profile). The reflection screen trace ran on a budget too small
+  to resolve fine geometry, so thin supports and the gaps between small
+  details reflected as black patches; restored to the engine default. The
+  trailing smear behind rear lights was the same broken trace path and is
+  gone with it.
+- **Photo mode: rough surfaces no longer look glossy.** A reflections
+  setting in the photomode profile shipped too aggressive in 3.8.0; back to
+  the proven value.
+- **AI-car shadow pop-in reduced** (Engine.ini profiles).
+- **Photo mode: manual metering no longer flickers off mid-session.** The
+  session detector could trust a single bad scan pass and briefly close the
+  session, which snapped exposure back to auto and made the aperture do
+  nothing until it re-opened. Closing now requires the closed verdict to
+  hold for several passes; opening is still instant.
+
+### Added
+- **Dark garage.** The garage now opens with a tuned low-key show-floor
+  look, headlights on. Alt+G toggles the look and Alt+E / Alt+Shift+E trims
+  it live; Alt+Q still toggles the lights. The installer asks whether you
+  want it; later, `Config.LightCycle.GarageDark` and
+  `Config.Headlights.GarageAlwaysOn` are the switches. Tuned on an HDR
+  display; SDR feedback welcome.
+
+### Changed
+- **UE4SS updated.** The mod now ships with a pinned 2026-08 UE4SS build
+  instead of the 2025-09 community build. This closes the engine-side crash
+  class for good, and crash reports from this build onward are far more
+  diagnosable. The installer downloads it and asks before touching an
+  existing install; your Mods folder and other UE4SS mods are kept as they
+  are. The mod itself still runs on the old build, but the crash fix above
+  is only complete on the new one.
+- **God rays follow the weather.** Full strength under clear skies, fading
+  out as cloud cover closes in, gone under heavy overcast; and the shafts
+  now seed from the sun instead of off bright buildings.
+- Engine.ini profiles drop a garbage-collection throttle that widened the
+  crash window during map-open streaming, plus one inert line. Re-run the
+  installer for this update: script-only updating keeps the old profiles.
+- Internal cleanup: the diagnostic tooling left from the rain-collision work
+  (asset census, collision flip tools and their keybinds and config keys) is
+  retired; the tunnels module is roughly half its former size.
+
+## [3.8.3]: 2026-08-10 (dev release, testers only; folded into 3.9.0)
+
+### Fixed
+- The tunnel shadow fix no longer spends its work on traffic cones. The
+  pattern that matches tunnel aprons also matched the pylon prop, so one
+  pass could flip dozens of cones two-sided and fill the matched-asset
+  log before the tunnel pieces it targets showed up. The apron pattern
+  now matches section meshes only.
+
+### Changed
+- Collision-pass logging: the matched-asset list is deduplicated by
+  name, and the pass line reports cache misses and counts stock
+  collision apart from meshes the mod enables. Diagnostics only, no
+  effect on play.
+- The version is stored as one string instead of five fields.
+
+## [3.8.2]: 2026-08-08 (dev release, testers only; folded into 3.9.0)
+
+### Fixed
+- **Parking Area time no longer corrupts the course clock.** Since rain
+  returned, visiting the PA could snap the course to ~19:30 dusk on
+  return, whatever time you left at. The PA scene ships a canned night
+  clock, and the mod's own state save could catch that canned value
+  during PA entry and restore it on the next course. The save is now
+  course-aware, and the running PA clock autosaves during the visit, so
+  the course resumes near the time you actually left the PA.
+- **Rare crash on course entry, usually after a PA visit.** The engine
+  fires its pawn-restart event several times per course entry and the
+  rain warmup ran in full on every one, which could rebuild live rain
+  particles mid-flight and hard-crash the game. Each weather actor is
+  now warmed exactly once.
+- **Photo mode: the sky no longer changes mid-shoot.** Scheduled
+  weather changes pause while a photo session is open and hold for 30
+  seconds after it closes. Time was already frozen; now the weather is
+  too. A transition already blending when you open the session still
+  finishes (engine-side, cannot be paused).
+- Includes the 3.8.1-beta1 fixes: AI misbehavior from over-broad rain
+  collision targeting, and the PA clock crawling at real-time speed.
+
+### Notes for testers
+- Rain-occlusion pass log lines now record car position and a counter
+  for collision writes reaching stock-enabled geometry, for the
+  remaining near-tunnel AI investigation.
+- If AI behaves oddly near tunnels, `Config.RainCollision.FixShadowLeak
+  = false` for one session is the clean isolation test (rain occlusion
+  keeps working; the tunnel sun leak comes back for that session).
+
 ## [3.8.0]: 2026-07-28
 
 ### Added

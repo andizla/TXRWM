@@ -67,7 +67,7 @@ base.
 | `Alt+P` / `Alt+Shift+P` | Random weather preset now / force Clear Skies |
 | `Alt+T` | Cycle time speed (normal / fast / pause) |
 | `Alt+R` | Reset weather to default |
-| `Alt+Q` | Headlights on/off (manual). In the garage, toggles the displayed car (pop-ups animate). Auto mode is config-only and ignores this. |
+| `Alt+Q` | Headlights on/off (manual). In the garage, toggles the displayed car (pop-ups animate); since 3.9.0 the garage keeps them on by default (`Config.Headlights.GarageAlwaysOn`, auto-on re-arms a moment after a manual off). Auto mode is config-only and ignores this. |
 | `Alt+B` / `Alt+Shift+B` | Headlight brightness up / down (0.5x / 1x / 2x / 3x / 5x) |
 | `Alt+L` / `Alt+Shift+L` | Re-apply shadow distance |
 | `Alt+D` / `Alt+Shift+D` | Exposure feedback: flag the picture as too dark / too bright (logs time + weather + applied exposure under tag `ExposureTune`, and appends the datapoint to `Logs/tuning_feedback.log` for easy sharing) |
@@ -76,8 +76,8 @@ base.
 | `Alt+C` / `Alt+Shift+C` | Skylight tuning: raise / lower the skylight intensity |
 | `Alt+V` / `Alt+Shift+V` | Skylight tuning: log a datapoint (tag `SkylightTune`) / reset overrides back to the exposure curve |
 | `Alt+K` / `Alt+Shift+K` | Night sky glow down / up (live look tuning; logged under tag `StarTune`). Glow never affects the stars, tune it freely |
-| `Alt+E` / `Alt+Shift+E` | Exposure trim brighter / darker. Works during any photo session and in the plain garage (no photo mode needed). Session and garage keep separate values; each resets when its context ends |
-| `Alt+G` | Dark look toggle: a crushed low-key render that makes underglow and emissives pop. Same contexts as `Alt+E` |
+| `Alt+E` / `Alt+Shift+E` | Exposure trim brighter / darker. Works during any photo session and in the plain garage (no photo mode needed). Session and garage keep separate values; each context returns to its baseline when it ends |
+| `Alt+G` | Dark look toggle: a crushed low-key render that makes underglow and emissives pop. Same contexts as `Alt+E`. Since 3.9.0 the garage STARTS in a tuned dark look (`Config.LightCycle.GarageDark`); Alt+G toggles it off for the visit |
 | `Alt+N` | Rain-spot report: press wherever rain looks wrong (raining under a roof, dry in the open); logs position, cover state and the overhead mesh to `Logs/tuning_feedback.log` for sharing |
 
 In **manual** headlight mode you can also use the car's own light button (keyboard or controller):
@@ -224,6 +224,11 @@ a short press turns headlights on, a ~2-second hold turns them off.
   instead of the sun (`Config.PhotoMode.CoveredLens`), so day shots in bores aren't black. Session
   detection is instant, and everything restores the moment you close photo mode
   (`Config.PhotoMode.FreezeTime` / `ManualExposure`).
+- **Dark garage** (*new in 3.9.0*): the garage opens with a tuned low-key show-floor look,
+  headlights on. `Alt+G` toggles the look, `Alt+E` trims it, `Alt+Q` still controls the lights.
+  The installer asks whether you want it; `Config.LightCycle.GarageDark` (look, with its trim
+  baseline) and `Config.Headlights.GarageAlwaysOn` (lights) are the switches. Tuned on an HDR
+  display; SDR feedback welcome.
 - **Exposure trim and dark look** (*new in 3.8.0*): `Alt+E` / `Alt+Shift+E` step the current
   render brighter or darker, and `Alt+G` toggles a crushed low-key look (the accidental garage
   render testers liked: underglow and emissives pop against deep shadow). Both work during any
@@ -367,6 +372,12 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 
 See `CHANGELOG.md` for the full list. Most recent:
 
+- **3.9.0**: the random-crash fix (in the mod and at the source in the
+  updated, now-bundled UE4SS build); course-entry frame drops and the
+  driving micro-hitch fixed; rain starts when the course does; dark garage
+  (show-floor look with headlights on, installer option); Parking Area
+  clock fix; photo-mode weather freeze; reflection and shadow fixes in the
+  Engine.ini profiles.
 - **3.8.0**: the rain returns, with native occlusion: rain collides with real
   tunnel and bridge geometry (invisible rain-only collision bodies, pure
   script) and dies under cover instead of falling through; weather sounds,

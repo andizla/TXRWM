@@ -335,6 +335,17 @@ end
 -- Session state, declared BEFORE every reader below (local-ordering rule:
 -- onApertureSet reads _sessionOpen from the hook callback)
 local _sessionOpen = false
+-- CLOSE DEBOUNCE (2026-08-11, first session on the g1c1a1497 UE4SS build):
+-- the member scan intermittently returned a one-pass "everything gone /
+-- all false" verdict MID-SESSION (metering ON/OFF flapping seconds apart
+-- in the 01:02 log; both BPC_PhotoMode_C and BP_FreeCamera_C vanish for
+-- one pass then return, which is a scan-side artifact, most plausibly the
+-- GC mark phase making live objects read unreachable to the iterator).
+-- A close verdict is now only acted on after CLOSE_MISSES consecutive
+-- closed passes (~600ms); opens stay instant. World teardown still closes
+-- immediately.
+local _closeMisses = 0
+local CLOSE_MISSES = 3
 local _openSigWarned = false
 local _idleGtLast = 0.0   -- closed-session pass throttle (see reassert)
 local _kickHooked = false -- ClientRestart kick registered (see Start)
@@ -413,6 +424,23 @@ end
 -- A teardown counts as close: the writes land in a dying world and fail
 -- silently, and the next course load re-applies normal state on its own.
 local function setSessionFrozen(on)
+    -- Session flag for main.lua's tick gates (2026-08-07 field: WEATHER
+    -- kept ticking during a shoot - the TOD freeze below never covered the
+    -- scheduler, so a pick or its 15s transition mutated the sky mid-
+    -- session). main.lua gates Scheduler.Tick on this, like PA freeze.
+    pcall(function()
+        local s = require("core.state")
+        if s and s.SetPhotoSessionOpen then s.SetPhotoSessionOpen(on) end
+    end)
+    -- On close, hold auto picks briefly: the scheduler timer may have
+    -- expired DURING the shoot, and an instant pick on the close edge
+    -- reads as "weather snapped the moment I left photo mode".
+    if not on then
+        pcall(function()
+            local sch = require("systems.scheduler")
+            if sch and sch.HoldFor then sch.HoldFor(30) end
+        end)
+    end
     if cfg.FreezeTime ~= false then
         pcall(function()
             local t = require("systems.time_of_day")
@@ -443,6 +471,7 @@ local function reassert()
         -- resets too: a dying manager never fires its closed event, and a
         -- stale open=true would falsely open a session in the next world.
         _hookIsOpen = false
+        _closeMisses = 0
         if _sessionOpen then
             _sessionOpen = false
             setSessionFrozen(false)
@@ -485,7 +514,7 @@ local function reassert()
         end
         -- A believed-OPEN session is NOT taken on faith (field bug
         -- 2026-07-27 23:48: a close edge got lost and the stale open
-        -- verdict held forever = metering stuck ON after the user exited
+        -- verdict held forever = metering stuck ON after the session exited
         -- photomode, until world teardown). While open, the 200ms passes
         -- sweep for the unlocks anyway, so the scan below re-verifies the
         -- real member state every pass, exactly like the pre-hook code.
@@ -500,8 +529,14 @@ local function reassert()
     local cam  = find("BP_FreeCamera_C")
     if not comp and not cam then
         if _sessionOpen then
-            _sessionOpen = false
-            setSessionFrozen(false)
+            -- Debounced: a one-pass total absence mid-session is the g1c1a1497
+            -- scan flap, not a close (see _closeMisses at the top).
+            _closeMisses = _closeMisses + 1
+            if _closeMisses >= CLOSE_MISSES then
+                _closeMisses = 0
+                _sessionOpen = false
+                setSessionFrozen(false)
+            end
         end
         _loggedActive = false
         return
@@ -567,12 +602,22 @@ local function reassert()
         _hookIsOpen = isOpen
     end
 
-    local openEdge = (isOpen ~= _sessionOpen)
-    if openEdge then
-        _sessionOpen = isOpen
-        setSessionFrozen(isOpen)
-        if isOpen then
+    if isOpen then
+        _closeMisses = 0
+        if not _sessionOpen then
+            _sessionOpen = true
+            setSessionFrozen(true)
             Log.Info(MODULE, "Photo session opened", {signal = openSrc or "?"})
+        end
+    elseif gotSignal and _sessionOpen then
+        -- Debounced close: a clean all-false read must repeat CLOSE_MISSES
+        -- passes before it counts (the one-pass flap re-opened instantly in
+        -- the 01:02 field log, which read as "aperture does nothing").
+        _closeMisses = _closeMisses + 1
+        if _closeMisses >= CLOSE_MISSES then
+            _closeMisses = 0
+            _sessionOpen = false
+            setSessionFrozen(false)
         end
     end
 
@@ -650,7 +695,7 @@ function PhotoMode.Start()
     -- that session had one at t-0..1s). Zeroing the idle throttle here lets
     -- the next 200ms pass run full detection instead of waiting out the ~1s
     -- closed-state cadence, so short sessions get manual metering while the
-    -- user is still IN them. Flag write only; the detection sweep itself
+    -- the player is still IN them. Flag write only; the detection sweep itself
     -- stays on the async loop with all its gates.
     if not _kickHooked and type(RegisterHook) == "function" then
         _kickHooked = pcall(function()
