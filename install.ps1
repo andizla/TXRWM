@@ -32,7 +32,6 @@ $MinIni = @(
     '[ConsoleVariables]',
     'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=1',
     'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=True',
-    'r.EyeAdaptation.MethodOverride=3',
     'r.fog=1',
     'r.Lumen.SampleFog=1',
     'r.NGX.DLSS.AutoExposure=0'
