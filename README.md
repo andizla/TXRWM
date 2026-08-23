@@ -16,6 +16,9 @@ Lightweight and modular - roughly half the code of the original, streamlined and
   under cover instead of falling through the roof. The game ships no overhead collision at all;
   the mod gives those meshes invisible collision bodies only rain can see (the AI and every game
   system are untouched, no game files replaced)
+- **Covered-road sun-leak fixes (3.10.0)**: covered galleries no longer blast low sun through
+  geometry seams (gaps with no faces that no setting could close). Invisible shadow-only blockers
+  stand on the measured seam lines: six sites so far, and the map-wide pass continues
 - **Parking Area weather (3.4.0)** - the PA continues your course weather and time of day with
   the clock running (no more canned always-night)
 - **Night-only mode** - dusk, night, dawn, then straight back to dusk: the day is skipped entirely (off by default; installer option)
@@ -134,6 +137,8 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
 - `Config.Audio` - rain/wind/thunder volumes and the close-thunder threshold.
 - `Config.PhotoMode` - photo mode camera unlocks: collision, distance, zoom range, and speed (on by default).
 - `Config.Tuning` - alignment slider widening factor and spawn re-apply (on by default).
+- `Config.GapWalls` - the covered-road seam fixes: on/off and a debug render toggle (the site
+  list ships in `Scripts/data/gap_slabs.lua`).
 - `Config.Vignette.Enabled = true` - hide the in-game HUD vignette for a cleaner photo look.
 
 ## Known issues
@@ -149,6 +154,11 @@ All settings live in `TXR_Weather_V3/Scripts/config.lua`. Highlights:
 - **Exposure looks wrong at some time of day / in some weather?** Tap `Alt+D` (too dark) or
   `Alt+Shift+D` (too bright) at that moment and attach `TXR_Weather_V3/Logs/tuning_feedback.log`
   to your report - the dawn/dusk curves are tuned from exactly these datapoints.
+- **Rare engine-side crash, or the mod partly stops mid-session** - a known UE4SS-side failure
+  under investigation. Since 3.10.0 the mod prints a clear warning when it happens, its plumbing
+  was rebuilt around the cause, and a game restart fully recovers. If it hits you, double-click
+  `TXRWM_GrabLogs` in the mod folder BEFORE relaunching and attach the zip it puts on your
+  Desktop.
 ## Credits
 Inspired by **Silent**'s original Dynamic Day/Night Cycle. **EDGERUNN3R** took it further and made Ultra Dynamic TXR. This project was started together with **EDGERUNN3R**, who shared his early source and helped get it set up and understand UDS and UE4SS. TXR Weather Mod V3 is a full rewrite by **Ten** (andizla) and uses none of the original Ultra Dynamic TXR 1.34 code. The dynamic wet grip's global tire-table approach is credited to **Chrystales**. The alignment slider-widening approach is credited to **NadzW** and **FenderBender** (WheelOffsetUnlocker). The course-entry weather warmup approach is credited to **Shibe** (Shibexd).
 

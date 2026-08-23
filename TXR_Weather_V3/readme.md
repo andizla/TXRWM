@@ -196,6 +196,12 @@ a short press turns headlights on, a ~2-second hold turns them off.
   (`Config.LightCycle.DisplayProfile` = auto/hdr/sdr, tables in `Config.LightCycle.SDR`). `Alt+D`
   feedback lines carry the active profile.
 - **Shadows** (`shadows.lua`): adaptive FOV-to-distance table so shadows survive photo-mode zoom.
+- **Covered-road seam fixes** (`gap_walls.lua`): *new in 3.10.0.* The map's covered galleries
+  leak low sun through geometry seams: gaps with no faces, which no flag or material can close.
+  The mod stands invisible shadow-only blockers on the measured seam lines (hidden engine-cube
+  meshes that write shadow depth without rendering; collision off, so nothing can ever hit
+  them). Six sites so far, Ginza first; the site list lives in `Scripts/data/gap_slabs.lua` and
+  the map-wide pass continues release by release. `Config.GapWalls`.
 
 ### Driving
 - **Dynamic wet grip** (`wet_grip.lua`): *new in 3.1.0, on by default again since 3.8.0.* Tire
@@ -238,6 +244,15 @@ a short press turns headlights on, a ~2-second hold turns them off.
   corner vignette the game draws during normal play (`WBP_Com_Vignette_Frame` on the in-game HUD).
   It's a HUD overlay, not a render setting, so Engine.ini can't touch it, this can. Pure HUD-widget
   toggle, no game files touched.
+- **TXRWM_GrabLogs** (*new in 3.10.0*): double-click it in the mod folder and it packs every log
+  and crash report a bug report needs into one zip on your Desktop (mod logs, the UE4SS log,
+  recent crash dumps, your config, a manifest). If something goes wrong, run it BEFORE
+  relaunching the game: the most important log is overwritten on every boot.
+- **Engine-hookup watchdog** (*new in 3.10.0*): a rare UE4SS-side failure can silently stop the
+  mod's game-thread work mid-session (garage look, photo-mode metering, weather applies) while
+  the rest keeps running. The mod now detects this within a minute and prints a clear warning
+  naming what stopped and asking for a game restart, instead of leaving you to notice missing
+  features.
 
 ---
 
@@ -286,6 +301,12 @@ Feature blocks of note:
 - `Config.SpaceLayer`: `NebulaIntensity`, colors, brightness, `SetDBuffer`.
 - `Config.Vignette`: `Enabled` (default false), `Hide`.
 - `Config.Tuning`: `RangeMultiplier` (slider widening factor), `ReapplyOnLoad`, `SkipLockedRows`.
+- `Config.GapWalls`: the covered-road seam fixes (3.10.0): `Enabled`, `Visible` (debug: render
+  the blockers as gray boxes), `Slabs` (an append hook for extra sites; the shipped site list
+  lives in `Scripts/data/gap_slabs.lua`).
+- `Config.GT.SingleFlight`: the game-thread marshal queue (3.10.0). All the mod's cross-thread
+  work rides one drained engine action at a time, which targets the mechanism behind a rare
+  UE4SS-side failure. `false` restores the old per-call behavior for comparison; leave it on.
 
 ---
 
@@ -372,6 +393,11 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 
 See `CHANGELOG.md` for the full list. Most recent:
 
+- **3.10.0**: covered roads stop leaking low sun through their seams (six
+  sites fixed, map-wide pass ongoing); the mod's game-thread plumbing
+  rebuilt around the cause of a rare engine-side failure, with a watchdog
+  that announces that failure plainly if it still occurs; TXRWM_GrabLogs
+  ships in the mod folder for one-click bug-report bundles.
 - **3.9.0**: the random-crash fix (in the mod and at the source in the
   updated, now-bundled UE4SS build); course-entry frame drops and the
   driving micro-hitch fixed; rain starts when the course does; dark garage
