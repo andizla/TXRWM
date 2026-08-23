@@ -3,6 +3,48 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [3.10.0]: 2026-08-24
+
+### Fixed
+- **Covered roads no longer leak low sun through their seams: six
+  sites fixed.** The map's covered galleries let low sun blast
+  through geometry seams (gaps with no faces, which no setting or
+  material flag could close). Invisible shadow-casting blockers now
+  stand on the measured seam lines: the Ginza entry gallery plus five
+  more covered sections this release. The map-wide pass continues in
+  coming releases.
+
+### Added
+- **The mod now watches its own engine hookup and says so when it
+  breaks.** A rare UE4SS-side failure can silently stop parts of the
+  mod mid-session (garage look, photo-mode metering, weather applies)
+  while the rest keeps running. The mod now detects this within a
+  minute and prints a clear warning naming what stopped and asking
+  for a game restart. The failure itself is engine-side and being
+  taken upstream.
+- **TXRWM_GrabLogs**: double-click it in the mod folder and it packs
+  every log and crash report a bug report needs into one zip on your
+  Desktop. If something goes wrong, run it BEFORE relaunching the
+  game: the most important log is overwritten on every boot.
+
+### Changed
+- Leak-fix geometry moved into its own data file
+  (`Scripts/data/gap_slabs.lua`) so the config stays a settings file
+  as the site list grows.
+- **The mod's game-thread plumbing was rebuilt to be much gentler on
+  UE4SS.** All cross-thread work now rides a single drained queue
+  (one engine action at a time) instead of dozens of independent
+  calls per second. This targets the root of the rare engine-side
+  failure above at its mechanism; the game-thread workload itself is
+  unchanged, so performance is unaffected. `Config.GT.SingleFlight =
+  false` restores the old behavior if you need to compare.
+
+### Known issues
+- A rare engine-side crash ("Abort signal received") can end a
+  session minutes to tens of minutes in. It shares a root with the
+  silent-stop above, is being investigated with the UE4SS project,
+  and corrupts nothing: relaunch and drive on.
+
 ## [3.9.0]: 2026-08-11
 
 ### Fixed

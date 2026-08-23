@@ -42,6 +42,7 @@ local Tuning = {}
 
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
+local GT = require("core.gt")
 local State = require("core.state")
 local Config = require("config")
 
@@ -141,7 +142,7 @@ end
 
 local function runOnGameThread(fn)
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(fn) end)
+        pcall(function() GT.Run(fn) end)
     else
         fn()
     end
@@ -205,7 +206,7 @@ local function applyStoredToDisplayVehicleDeferred(context)
         end)
     end
     if ExecuteWithDelay then
-        pcall(function() ExecuteWithDelay(250, run) end)
+        pcall(function() GT.After(0.25, run) end)
     else
         run()
     end
@@ -241,7 +242,7 @@ local function registerValueHooksGT()
                     end)
                 end
                 if ExecuteWithDelay then
-                    pcall(function() ExecuteWithDelay(100, reapply) end)
+                    pcall(function() GT.After(0.1, reapply) end)
                 else
                     reapply()
                 end
@@ -481,7 +482,7 @@ local function scheduleScan()
     local scheduled = false
     if ExecuteInGameThread then
         scheduled = pcall(function()
-            ExecuteInGameThread(function()
+            GT.Run(function()
                 pcall(scanAndWidenGT)
                 pendingScan = false
             end)

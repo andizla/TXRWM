@@ -14,6 +14,7 @@
 local WindDebris = {}
 
 local Log = require("core.logging")
+local GT = require("core.gt")
 local Config = require("config")
 
 local Actors = nil  -- lazy
@@ -101,7 +102,7 @@ end
 local function apply()
     if not getUDW() then return false end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(applyOnGameThread) end)
+        pcall(function() GT.Run(applyOnGameThread) end)
     else
         applyOnGameThread()
     end

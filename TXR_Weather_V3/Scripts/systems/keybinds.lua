@@ -46,6 +46,9 @@ local KEY_MAP = {
     NUMPAD3 = "NUM_THREE", NUMPAD4 = "NUM_FOUR", NUMPAD5 = "NUM_FIVE",
     NUMPAD6 = "NUM_SIX", NUMPAD7 = "NUM_SEVEN", NUMPAD8 = "NUM_EIGHT",
     NUMPAD9 = "NUM_NINE",
+    -- numpad symbols (UE4SS Key names; unknown ones just warn + skip)
+    NUMPADDOT = "DECIMAL", NUMPADPLUS = "ADD", NUMPADMINUS = "SUBTRACT",
+    NUMPADMUL = "MULTIPLY", NUMPADDIV = "DIVIDE",
 }
 
 -- Modifier key bit flags for UE4SS
@@ -236,13 +239,29 @@ end
 
 -- ============== KEYBIND ACTIONS ==============
 
+-- WEATHER-KEY DEBOUNCE (2026-08-12): spamming Alt+S crashed the session
+-- (symbolized dump: get_userdata AV inside a UObject member call fired
+-- from the apply path; a rapid re-apply races the previous apply's
+-- teardown of the same objects, and pcall cannot catch the native
+-- fault). One apply per 350 ms is imperceptible to a human press and
+-- removes the overlap window entirely.
+local WEATHER_KEY_DEBOUNCE_S = 0.35
+local lastWeatherKeyAt = 0.0
+local function weatherKeyDebounced()
+    local now = os.clock()
+    if (now - lastWeatherKeyAt) < WEATHER_KEY_DEBOUNCE_S then return true end
+    lastWeatherKeyAt = now
+    return false
+end
+
 local function onCycleWeatherNext()
+    if weatherKeyDebounced() then return end
     local weather = getWeather()
     if not weather then
         Log.Warn(MODULE, "Weather module not available")
         return
     end
-    
+
     local newPreset = weather.CycleNext()
     if newPreset then
         Log.Info(MODULE, "Weather cycled", {to = newPreset})
@@ -250,12 +269,13 @@ local function onCycleWeatherNext()
 end
 
 local function onCycleWeatherPrev()
+    if weatherKeyDebounced() then return end
     local weather = getWeather()
     if not weather then
         Log.Warn(MODULE, "Weather module not available")
         return
     end
-    
+
     local newPreset = weather.CyclePrev()
     if newPreset then
         Log.Info(MODULE, "Weather cycled back", {to = newPreset})
@@ -263,17 +283,19 @@ local function onCycleWeatherPrev()
 end
 
 local function onResetWeather()
+    if weatherKeyDebounced() then return end
     local weather = getWeather()
     if not weather then
         Log.Warn(MODULE, "Weather module not available")
         return
     end
-    
+
     weather.ApplyDefault()
     Log.Info(MODULE, "Weather reset to default")
 end
 
 local function onRandomPreset()
+    if weatherKeyDebounced() then return end
     local scheduler = getScheduler()
     if not scheduler then
         Log.Warn(MODULE, "Scheduler module not available")
@@ -454,6 +476,125 @@ local function onNoteRainSpot()
         return
     end
     Tunnels.NoteRainSpot()
+end
+
+--- LEAK-HUNT MODE (Alt+J, 2026-08-12, the slab-calibration campaign):
+--- one press = worst-case sun on demand. ON: remember the current
+--- preset and pause state, hold the scheduler off (2h), Clear_Skies
+--- fast-applied, TOD pinned at the config low-sun edge, clock frozen.
+--- OFF: unfreeze (only if we froze it), release the scheduler, restore
+--- the remembered preset. Workflow: Alt+J, drive the leaks, Alt+N at
+--- both ends of every lit band, Alt+J off.
+local leakTestOn = false
+local leakSavedPreset = nil
+local leakWasPaused = false
+local function onLeakTestToggle()
+    local weather = getWeather()
+    local okT, TOD = pcall(require, "systems.time_of_day")
+    local okS, Sched = pcall(require, "systems.scheduler")
+    if not (weather and okT and TOD) then
+        Log.Warn(MODULE, "Leak test: modules unavailable")
+        return
+    end
+    if not leakTestOn then
+        leakTestOn = true
+        leakSavedPreset = nil
+        pcall(function() leakSavedPreset = State.GetCurrentPreset() end)
+        leakWasPaused = false
+        pcall(function() leakWasPaused = TOD.IsPaused() end)
+        if okS and Sched and Sched.HoldFor then
+            pcall(function() Sched.HoldFor(7200) end)
+        end
+        local t = (Config.LeakTest and tonumber(Config.LeakTest.Time)) or 1800
+        pcall(function() weather.ApplyFast("Clear_Skies") end)
+        pcall(function() TOD.SetTOD(t) end)
+        if not leakWasPaused then pcall(function() TOD.Pause() end) end
+        Log.Info(MODULE, "Leak test ON", {
+            tod = t, saved = tostring(leakSavedPreset),
+        })
+    else
+        leakTestOn = false
+        if not leakWasPaused then pcall(function() TOD.Resume() end) end
+        if okS and Sched and Sched.HoldFor then
+            pcall(function() Sched.HoldFor(1) end)
+        end
+        if leakSavedPreset then
+            pcall(function() weather.ApplyFast(leakSavedPreset) end)
+        end
+        Log.Info(MODULE, "Leak test OFF", {
+            restored = tostring(leakSavedPreset),
+        })
+    end
+end
+
+--- SLAB TUNER (the Y-U-I-J cluster): live leak-fix authoring, see
+--- systems/gap_walls.lua (extracted from tunnels 2026-08-12).
+-- DEV-ONLY module: release builds omit systems/slab_editor.lua, so
+-- this require fails, every editor handler no-ops, and none of the
+-- editor keys register at all (the registrations below are gated on
+-- the module loading).
+local slabEditorMod = nil
+local slabEditorTried = false
+local function getSlabEditor()
+    if not slabEditorTried then
+        slabEditorTried = true
+        local ok, mod = pcall(require, "systems.slab_editor")
+        if ok then slabEditorMod = mod end
+    end
+    return slabEditorMod
+end
+
+local function onSlabTunerToggle()
+    local E = getSlabEditor()
+    if E and E.SlabTunerToggle then E.SlabTunerToggle() end
+end
+
+local function onSlabTunerParamNext()
+    local E = getSlabEditor()
+    if E and E.SlabTunerCycleParam then E.SlabTunerCycleParam(1) end
+end
+
+local function onSlabTunerParamPrev()
+    local E = getSlabEditor()
+    if E and E.SlabTunerCycleParam then E.SlabTunerCycleParam(-1) end
+end
+
+local function onSlabTunerInc()
+    local E = getSlabEditor()
+    if E and E.SlabTunerNudge then E.SlabTunerNudge(1) end
+end
+
+local function onSlabTunerDec()
+    local E = getSlabEditor()
+    if E and E.SlabTunerNudge then E.SlabTunerNudge(-1) end
+end
+
+local function onSlabSpawnHere()
+    local E = getSlabEditor()
+    if E and E.SlabSpawnHere then E.SlabSpawnHere() end
+end
+
+-- Numpad-grid handlers are TUNER-GATED (stray presses while driving
+-- must never touch slabs; the grid only lives inside the editor).
+local function tunerGated(fnName)
+    return function()
+        local E = getSlabEditor()
+        if not (E and E.IsTunerOn and E.IsTunerOn()) then return end
+        if E[fnName] then E[fnName]() end
+    end
+end
+
+local onSlabDelete = tunerGated("SlabDeleteSelected")
+local onSlabSelectNearest = tunerGated("SlabSelectNearest")
+local onSlabClone = tunerGated("SlabCloneSelected")
+local onSlabDeselect = tunerGated("SlabDeselect")
+local onSlabSpawnJump = tunerGated("SlabSpawnJump")
+local onSlabCloneTraced = tunerGated("SlabCloneTraced")
+
+local function onSlabSpawnHereGated()
+    local E = getSlabEditor()
+    if not (E and E.IsTunerOn and E.IsTunerOn()) then return end
+    if E.SlabSpawnHere then E.SlabSpawnHere() end
 end
 
 --- Skylight tuning session: Alt+Z/X/C nudge albedo/roughness/multiplier up,
@@ -655,6 +796,57 @@ function Keybinds.Init(config)
 
     if config.NoteRainSpot then
         registerKeybind("NoteRainSpot", config.NoteRainSpot, onNoteRainSpot)
+    end
+
+    if config.LeakTestToggle then
+        registerKeybind("LeakTestToggle", config.LeakTestToggle, onLeakTestToggle)
+    end
+
+    -- Slab editor (leak-fix authoring, DEV BUILDS ONLY): the whole
+    -- set registers only if systems/slab_editor.lua exists, so a
+    -- release build (file omitted) has no editor keys at all.
+    if getSlabEditor() == nil then
+        Log.Debug(MODULE, "Slab editor absent: editor keys not registered")
+    else
+        if config.SlabTunerToggle then
+            registerKeybind("SlabTunerToggle", config.SlabTunerToggle, onSlabTunerToggle)
+        end
+        if config.SlabSpawnHere then
+            registerKeybind("SlabSpawnHere", config.SlabSpawnHere, onSlabSpawnHere)
+        end
+        if config.SlabPadSpawn then
+            registerKeybind("SlabPadSpawn", config.SlabPadSpawn, onSlabSpawnHereGated)
+        end
+        if config.SlabPadParamNext then
+            registerKeybind("SlabPadParamNext", config.SlabPadParamNext, onSlabTunerParamNext)
+        end
+        if config.SlabPadParamPrev then
+            registerKeybind("SlabPadParamPrev", config.SlabPadParamPrev, onSlabTunerParamPrev)
+        end
+        if config.SlabPadInc then
+            registerKeybind("SlabPadInc", config.SlabPadInc, onSlabTunerInc)
+        end
+        if config.SlabPadDec then
+            registerKeybind("SlabPadDec", config.SlabPadDec, onSlabTunerDec)
+        end
+        if config.SlabPadConfirm then
+            registerKeybind("SlabPadConfirm", config.SlabPadConfirm, onSlabDeselect)
+        end
+        if config.SlabPadSelectNearest then
+            registerKeybind("SlabPadSelectNearest", config.SlabPadSelectNearest, onSlabSelectNearest)
+        end
+        if config.SlabPadClone then
+            registerKeybind("SlabPadClone", config.SlabPadClone, onSlabClone)
+        end
+        if config.SlabPadDelete then
+            registerKeybind("SlabPadDelete", config.SlabPadDelete, onSlabDelete)
+        end
+        if config.SlabPadJump then
+            registerKeybind("SlabPadJump", config.SlabPadJump, onSlabSpawnJump)
+        end
+        if config.SlabPadRayClone then
+            registerKeybind("SlabPadRayClone", config.SlabPadRayClone, onSlabCloneTraced)
+        end
     end
 
     -- Skylight tuning session (Alt+Z/X/C nudge, Alt+V confirm, Alt+Shift+V reset)

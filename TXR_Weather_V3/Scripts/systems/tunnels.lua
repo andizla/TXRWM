@@ -24,6 +24,7 @@ local Tunnels = {}
 
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
+local GT = require("core.gt")
 local State = require("core.state")
 local Config = require("config")
 
@@ -58,6 +59,9 @@ local rainZoneNow = false        -- car/lookahead/roof covered (drives the kill)
 local rainClearCount = 0
 local roofNow = false            -- roof signal from the last poll
 local coverWasRoad = false       -- last covered poll included the road-data bit
+local lastCoverRaw = false       -- raw cover signal edge memory (rain_collision
+                                 -- cover-enter trigger; independent of the
+                                 -- TUNNEL_RAIN_KILL config gate)
 local roofProbeLogged = false    -- one-shot per course: proves the trace call works
 local hitShapeLogged = false     -- one-shot per session: FHitResult shape dump
 local lastPX, lastPY, lastPZ, lastPollClock = nil, nil, nil, nil
@@ -125,6 +129,7 @@ local function tunnelReset()
     lastPX, lastPY, lastPZ, lastPollClock = nil, nil, nil, nil
     roofNow, rainClearCount, coverWasRoad = false, 0, false
     lastTunnelAttr = nil
+    lastCoverRaw = false
 end
 
 --- Apply the covered state computed by the poll (game thread). The rain
@@ -132,6 +137,20 @@ end
 --- which includes the lookahead point) so the kill lands at the portal or
 --- bridge edge.
 local function tunnelApplyState(carIn, rainAhead)
+    -- COVER-ENTER PASS TRIGGER (2026-08-11, from the five Alt+N reports:
+    -- all were rain under covers the collision pass had not reached).
+    -- The RAW cover signal (road data or roof trace), deliberately
+    -- outside the TUNNEL_RAIN_KILL gate: enablement must not depend on
+    -- whether the bore rain kill is configured on. Rising edge only;
+    -- rain_collision rate-limits itself.
+    local coverRaw = (carIn or rainAhead) or false
+    if coverRaw and not lastCoverRaw then
+        pcall(function()
+            local ok, RC = pcall(require, "systems.rain_collision")
+            if ok and RC and RC.OnCoverEnter then RC.OnCoverEnter() end
+        end)
+    end
+    lastCoverRaw = coverRaw
     if carIn ~= tunnelNow then
         tunnelNow = carIn
         Log.Info(MODULE, tunnelNow and "Tunnel cover ON (road data)" or "Tunnel cover OFF")
@@ -582,9 +601,10 @@ local function ppWatchTick(now)
         -- next Weather.Apply clears any lingering suppression itself.
         tunnelReset()
     elseif ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(ppPollGT) end)
+        pcall(function() GT.Run(ppPollGT) end)
     end
 end
+
 
 -- ============== PUBLIC API ==============
 
@@ -649,6 +669,14 @@ end
 --- Car inside a covered volume right now (feeds light_cycle's Alt+D line).
 function Tunnels.IsCovered()
     return tunnelNow
+end
+
+--- Poll-cached car position (cm, world; nil until the first poll).
+--- The ONLY coupling gap_walls.lua keeps to this module: the
+--- containment poll already pays for the pawn read, so consumers get
+--- plain numbers instead of a second GT round-trip.
+function Tunnels.GetCarPos()
+    return lastPX, lastPY, lastPZ
 end
 
 --- Rain currently suppressed by the covered-zone state.
@@ -872,6 +900,217 @@ local function assetCensusGT(keys)
             .. "noCast=%-4d e.g. %s",
             i, e.name, e.f.assets, e.f.flipped, e.f.unflipped, e.f.noCast,
             e.f.ex))
+    end
+end
+
+--- LOCAL INVENTORY (2026-08-12, the kerb-hunt reopening): enumerate, do
+--- not trace. The 07-30 "missing geometry" verdict rested on instruments
+--- with two blind spots: traces need collision (uncollidable art reads
+--- as "nothing rendering"), and the census sweeps StaticMeshComponent
+--- only, with SMsr-shaped family parsing. This dump closes both: every
+--- SMC AND every instanced component (ISM/HISM), any name family, listed
+--- with world transform + shadow flags, distance-sorted. Serialization
+--- placed it = it appears here; nothing about collision can hide it.
+--- Transforms are logged at full precision on purpose: they feed the
+--- gap-filler (spawned hidden shadow wall or pak bake) directly.
+local INV_RANGE = 20000.0     -- 200 m sphere for SMCs
+local INV_CAP = 200           -- log-line ceiling per press
+-- Section meshes are MODELED IN PLACE: their component pivots sit at the
+-- world origin (first field run 2026-08-12: the roof probe hit the 067A
+-- deck while the distance gate dropped every SMsr_* piece as "7.8km
+-- away"). In-place comps are admitted by SECTION TOKEN match instead:
+-- keys come from the caller (the same c1_0NN +-2 window the census uses).
+local function localInventoryGT(px, py, pz, keys)
+    local rows = {}
+    local instTotal, instListed = 0, 0
+    for _, cls in ipairs({
+        "StaticMeshComponent",
+        "InstancedStaticMeshComponent",
+        "HierarchicalInstancedStaticMeshComponent",
+    }) do
+        pcall(function()
+            local comps = FindAllOf(cls)
+            if type(comps) ~= "table" then return end
+            local isInst = cls ~= "StaticMeshComponent"
+            for _, c in ipairs(comps) do
+                if validRef(c) then
+                    -- HISM extends ISM; FindAllOf(parent) can return both.
+                    -- Dedupe by address so a component is listed once.
+                    local addr = nil
+                    pcall(function() addr = c:GetAddress() end)
+                    if not (addr and rows[addr]) then
+                        local lx, ly, lz = nil, nil, nil
+                        pcall(function()
+                            local l = c:K2_GetComponentLocation()
+                            if l then lx, ly, lz = l.X, l.Y, l.Z end
+                        end)
+                        local d = nil
+                        if lx then
+                            local dx, dy, dz = lx - px, ly - py, lz - pz
+                            d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                        end
+                        local inst = nil
+                        if isInst then
+                            instTotal = instTotal + 1
+                            pcall(function() inst = c:GetInstanceCount() end)
+                        end
+                        -- Admission: instanced comps always; placed comps
+                        -- by range; in-place comps (pivot at the world
+                        -- origin) by section-token match on the mesh name.
+                        local inPlace = lx and
+                            (lx * lx + ly * ly + lz * lz) < (1000.0 * 1000.0)
+                        local admit = isInst or (d and d <= INV_RANGE)
+                        local mesh = "?"
+                        pcall(function()
+                            local sm = c.StaticMesh
+                            local fn = sm and sm:GetFullName()
+                            if type(fn) == "string" then
+                                mesh = fn:match("([^%.%s/]+)$") or fn
+                            end
+                        end)
+                        -- In-place admission WIDENED (2026-08-12, the
+                        -- ramp/entry realization): section tokens missed
+                        -- pieces that carry no section number (entry
+                        -- ramps, toll structures). Any in-place course
+                        -- mesh is admitted; the cap and the inplc-first
+                        -- sort keep the listing readable.
+                        if not admit and inPlace then
+                            if mesh:find("SMsr_", 1, true)
+                               or mesh:find("SMsb_", 1, true)
+                               or mesh:find("SMef_", 1, true)
+                               or mesh:find("SMtn_", 1, true) then
+                                admit = true
+                            elseif type(keys) == "table" then
+                                for _, k in ipairs(keys) do
+                                    if mesh:find(k, 1, true) then
+                                        admit = true
+                                        break
+                                    end
+                                end
+                            end
+                        end
+                        if admit then
+                            local own = "?"
+                            pcall(function()
+                                local o = c:GetOwner()
+                                local fn = o and o:GetFullName()
+                                if type(fn) == "string" then
+                                    own = fn:match("PersistentLevel%.([^%.:%s]+)")
+                                        or fn:sub(-32)
+                                end
+                            end)
+                            -- Vehicles (player + AI) carry ~50 comps each
+                            -- and are never map geometry: the first field
+                            -- run buried the wall lines under one AI car.
+                            if own:find("BP_GV_", 1, true)
+                               or own:find("Vehicle", 1, true) then
+                                goto continue_inv
+                            end
+                            local cast, two, vis, hid, hs = "?", "?", "?", "?", "?"
+                            pcall(function() cast = tostring(c.CastShadow) end)
+                            pcall(function() two = tostring(c.bCastShadowAsTwoSided) end)
+                            pcall(function() vis = tostring(c.bVisible) end)
+                            pcall(function() hid = tostring(c.bHiddenInGame) end)
+                            pcall(function() hs = tostring(c.bCastHiddenShadow) end)
+                            -- Rotation via the plain RelativeRotation
+                            -- property. The K2_GetComponentRotation
+                            -- UFunction failed through the bridge on every
+                            -- component here (rot=? across the 01:24 run)
+                            -- and the session died in that bridge path
+                            -- with string bytes in a pointer register:
+                            -- 2026-08-12 crash. Property reads only.
+                            local ry, rp, rr, sx = nil, nil, nil, nil
+                            pcall(function()
+                                local r = c.RelativeRotation
+                                if r then
+                                    rp = tonumber(r.Pitch)
+                                    ry = tonumber(r.Yaw)
+                                    rr = tonumber(r.Roll)
+                                end
+                            end)
+                            pcall(function()
+                                local s = c.RelativeScale3D
+                                if s then sx = tonumber(s.X) end
+                            end)
+                            rows[addr or (#rows + 1)] = {
+                                -- in-place section pieces sort to the top:
+                                -- they ARE the local structure; origin
+                                -- distance would banish them to the tail
+                                d = inPlace and -1 or (d or 9e9),
+                                inPlace = inPlace or false,
+                                cls = isInst and
+                                    (cls:find("Hier") and "HISM" or "ISM") or "SMC",
+                                mesh = mesh, own = own, inst = inst,
+                                cast = cast, two = two, vis = vis,
+                                hid = hid, hs = hs,
+                                lx = lx, ly = ly, lz = lz,
+                                rp = rp, ry = ry, rr = rr, sx = sx,
+                            }
+                            if isInst then instListed = instListed + 1 end
+                        end
+                    end
+                end
+                ::continue_inv::
+            end
+        end)
+    end
+    local list = {}
+    for _, r in pairs(rows) do list[#list + 1] = r end
+    table.sort(list, function(a, b)
+        if a.inPlace ~= b.inPlace then return a.inPlace end
+        if a.inPlace then return a.mesh < b.mesh end   -- cluster families
+        return a.d < b.d
+    end)
+    -- FULL dump to Logs/inventory_dump.txt, uncapped (2026-08-12: the
+    -- widened admission collected 1600+ comps and the capped log spent
+    -- itself on SMef_* before any structure). Overwritten per press:
+    -- the file is always the LATEST press. Same directory idiom as
+    -- core/logging's ensureLogDirectory.
+    pcall(function()
+        -- Footgun 2026-08-12 (documented and stepped in anyway): getinfo
+        -- source paths carry MIXED slashes; normalize before matching or
+        -- the dir match silently fails and the file lands nowhere.
+        local src = debug.getinfo(1, "S").source:gsub("\\", "/")
+        local baseDir = src:match("@?(.*/)") or "./"
+        local logsDir = baseDir .. "../../Logs/"
+        os.execute('mkdir "' .. logsDir:gsub("/", "\\") .. '" 2>nul')
+        local f = io.open(logsDir .. "inventory_dump.txt", "w")
+        if not f then return end
+        f:write(string.format("# press %s pos=%.0f,%.0f,%.0f rows=%d\n",
+            os.date("%Y-%m-%d %H:%M:%S"), px, py, pz, #list))
+        for _, r in ipairs(list) do
+            f:write(string.format(
+                "%s\t%s\t%s\tcast=%s two=%s vis=%s hid=%s hs=%s\t"
+                .. "d=%s loc=%s\n",
+                r.inPlace and "inplc" or "place", r.cls, r.mesh,
+                r.cast, r.two, r.vis, r.hid, r.hs,
+                r.d >= 0 and string.format("%.0f", r.d) or "-",
+                r.lx and string.format("%.0f,%.0f,%.0f", r.lx, r.ly, r.lz)
+                    or "?"))
+        end
+        f:close()
+    end)
+    Log.Info(MODULE, string.format(
+        "LOCAL INVENTORY: %d comps within %dm (SMC) + %d/%d instanced comps"
+        .. " world-wide (cap %d)", #list, INV_RANGE / 100, instListed,
+        instTotal, INV_CAP))
+    for i, r in ipairs(list) do
+        if i > INV_CAP then
+            Log.Info(MODULE, string.format(
+                "INV: ... %d more suppressed by cap", #list - INV_CAP))
+            break
+        end
+        Log.Info(MODULE, string.format(
+            "INV[%03d] d=%-6s %-4s mesh=%-30s own=%-24s inst=%-4s "
+            .. "cast=%-5s two=%-5s vis=%-5s hid=%-5s hs=%-5s "
+            .. "loc=%s rot=%s scl=%s",
+            i, r.inPlace and "inplc"
+                or (r.d < 9e9 and string.format("%.0f", r.d) or "?"),
+            r.cls, r.mesh, r.own, r.inst and tostring(r.inst) or "-",
+            r.cast, r.two, r.vis, r.hid, r.hs,
+            r.lx and string.format("%.0f,%.0f,%.0f", r.lx, r.ly, r.lz) or "?",
+            r.rp and string.format("%.1f,%.1f,%.1f", r.rp, r.ry, r.rr) or "?",
+            r.sx and string.format("%.2f", r.sx) or "?"))
     end
 end
 
@@ -1190,6 +1429,10 @@ function Tunnels.NoteRainSpot()
             "SECTION: no section token in the probe hits; family census only")
     end
     assetCensusGT(keys)
+    -- Kerb-hunt reopening (2026-08-12): the enumeration dump rides the
+    -- same press. keys admit the in-place section pieces (see
+    -- localInventoryGT).
+    localInventoryGT(px, py, pz, keys)
 end
 
 

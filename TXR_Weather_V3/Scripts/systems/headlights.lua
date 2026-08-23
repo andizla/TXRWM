@@ -14,6 +14,7 @@ local Headlights = {}
 
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
+local GT = require("core.gt")
 local State = require("core.state")
 local Config = require("config")
 
@@ -772,7 +773,7 @@ end
 --- @return boolean attempted
 function Headlights.ToggleGarageLights()
     if not ExecuteInGameThread then return false end
-    ExecuteInGameThread(function()
+    GT.Run(function()
         local gm = nil
         pcall(function() gm = FindFirstOf("BP_OutGameGarageManager_C") end)
         if not (gm and gm.IsValid and gm:IsValid()) then return end
@@ -819,7 +820,7 @@ end
 --- @return boolean attempted
 function Headlights.EnsureGarageLightsOn()
     if not ExecuteInGameThread then return false end
-    ExecuteInGameThread(function()
+    GT.Run(function()
         local gm = nil
         pcall(function() gm = FindFirstOf("BP_OutGameGarageManager_C") end)
         if not (gm and gm.IsValid and gm:IsValid()) then return end

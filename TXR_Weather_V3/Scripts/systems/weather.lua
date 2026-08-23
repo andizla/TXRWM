@@ -7,6 +7,7 @@ local Weather = {}
 
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
+local GT = require("core.gt")
 local Utils = require("core.utils")
 local State = require("core.state")
 local Config = require("config")
@@ -1049,7 +1050,7 @@ function Weather.Apply(presetName, transitionTime)
                     })
                 end
                 if ExecuteInGameThread then
-                    pcall(function() ExecuteInGameThread(rainReadback) end)
+                    pcall(function() GT.Run(rainReadback) end)
                 else
                     Log.Warn(MODULE, "No ExecuteInGameThread: skipping rain readback")
                 end
@@ -1339,7 +1340,7 @@ function Weather.WarmUpUDW()
         Log.Info(MODULE, "UDW warmup (CCC method)", {calls = table.concat(trace, " ")})
     end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(warmGT) end)
+        pcall(function() GT.Run(warmGT) end)
     else
         pcall(warmGT)
     end

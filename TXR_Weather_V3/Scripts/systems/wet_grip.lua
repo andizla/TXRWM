@@ -29,6 +29,7 @@
 local WetGrip = {}
 
 local Log = require("core.logging")
+local GT = require("core.gt")
 local Config = require("config")
 local Actors = require("systems.actors")
 
@@ -213,7 +214,7 @@ function WetGrip.Tick()
     if not changed then return end
 
     if type(ExecuteInGameThread) == "function" then
-        ExecuteInGameThread(function()
+        GT.Run(function()
             -- Re-check at RUN time: a queued closure can land mid-teardown.
             -- Skipping is free: lastMainF stays stale, so the next tick
             -- still reads changed=true and re-applies.

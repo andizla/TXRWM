@@ -15,6 +15,7 @@
 local RealSun = {}
 
 local Log = require("core.logging")
+local GT = require("core.gt")
 local Config = require("config")
 
 local Actors = nil  -- lazy
@@ -420,7 +421,7 @@ end
 local function run()
     if not getUDS() then return end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(runOnGameThread) end)
+        pcall(function() GT.Run(runOnGameThread) end)
     else
         runOnGameThread()
     end
@@ -457,7 +458,7 @@ function RealSun.OnCourseLoad()
         applySunSimulation(uds, "entry")
     end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(applyGT) end)
+        pcall(function() GT.Run(applyGT) end)
     else
         pcall(applyGT)
     end

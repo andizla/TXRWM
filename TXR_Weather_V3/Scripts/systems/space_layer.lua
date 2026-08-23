@@ -18,6 +18,7 @@
 local SpaceLayer = {}
 
 local Log = require("core.logging")
+local GT = require("core.gt")
 local Utils = require("core.utils")
 local Config = require("config")
 
@@ -106,7 +107,7 @@ end
 local function apply()
     if not getUDS() then return false end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(applyOnGameThread) end)
+        pcall(function() GT.Run(applyOnGameThread) end)
     else
         applyOnGameThread()
     end

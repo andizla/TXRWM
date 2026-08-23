@@ -6,6 +6,7 @@ local Atmosphere = {}
 
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
+local GT = require("core.gt")
 local State = require("core.state")
 local Config = require("config")
 
@@ -284,7 +285,7 @@ local function applyAuroraStatic(reason)
     end
 
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(doApply) end)
+        pcall(function() GT.Run(doApply) end)
     else
         doApply()
     end
@@ -353,7 +354,7 @@ local function logAuroraDiagnostics()
     end
 
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(doDiag) end)
+        pcall(function() GT.Run(doDiag) end)
     else
         doDiag()
     end
@@ -595,7 +596,7 @@ local function logShaftComponent()
         })
     end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(doRead) end)
+        pcall(function() GT.Run(doRead) end)
     else
         doRead()
     end

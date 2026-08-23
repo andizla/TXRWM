@@ -345,6 +345,32 @@ Config.Keybinds = {
     -- any wrong-rain spot (raining under cover, dry in the open); the
     -- logged mesh names feed Config.RainCollision.TargetPatterns.
     NoteRainSpot = { Key = "N", Modifiers = {"Alt"} },
+    LeakTestToggle = { Key = "J", Modifiers = {"Alt"} },  -- leak-hunt: clear + low sun + frozen clock (toggle)
+    -- Slab editor (leak-fix authoring, pairs with Alt+J leak sun).
+    -- Alt+Shift+J opens/closes the editor (close prints + file-saves
+    -- rows); Alt+Y spawns from scratch anywhere. Everything else =
+    -- the NUMPAD GRID, active only while the editor is on:
+    --   7 select nearest   8 param next      9 clone selected
+    --   4 nudge -          5 confirm/desel   6 nudge +
+    --   1 spawn here       2 param prev      3 delete selected
+    SlabTunerToggle      = { Key = "J", Modifiers = {"Alt", "Shift"} },
+    SlabSpawnHere        = { Key = "Y", Modifiers = {"Alt"} },
+    SlabPadSelectNearest = { Key = "NUMPAD7" },
+    SlabPadParamNext     = { Key = "NUMPAD8" },
+    SlabPadClone         = { Key = "NUMPAD9" },
+    SlabPadDec           = { Key = "NUMPAD4" },
+    SlabPadConfirm       = { Key = "NUMPAD5" },
+    SlabPadInc           = { Key = "NUMPAD6" },
+    SlabPadSpawn         = { Key = "NUMPAD1" },
+    SlabPadParamPrev     = { Key = "NUMPAD2" },
+    SlabPadDelete        = { Key = "NUMPAD3" },
+    SlabPadJump          = { Key = "NUMPAD0" },     -- spawn a SOLID pitched ramp 12m ahead ;D
+    -- RAY CLONER: clone whatever the camera points at (150m Visibility
+    -- ray, first hit wins, shells included). The copy lands exactly on
+    -- the original and is selected: nudge it off with the grid. If this
+    -- key never registers ("Unknown key" in the log), the UE4SS name
+    -- for numpad-dot differs on this build: swap to a spare NUMPAD digit.
+    SlabPadRayClone      = { Key = "NUMPADDOT" },
     -- Dormant diagnostics, uncomment to re-arm. Alt+J toggles the (now
     -- fallback-only) covered-road precipitation hide; Alt+O logs the live
     -- UDW particle-collision properties plus an upward channel trace sweep
@@ -1151,6 +1177,47 @@ Config.LightCycle = {
 -- metering. This block also clears the course volumes' authored
 -- skylight-leak override (the boundary lighting flip). Rain occlusion
 -- lives in Config.RainCollision since 3.8.0.
+-- Leak-hunt mode (Alt+J toggle): the pinned time of day. 1800 = low
+-- gold sun mid-August Tokyo; nudge toward 1815-1830 for an even lower
+-- edge (headlights auto-off sits at elevation +0.5, sunset ~1835).
+Config.LeakTest = {
+    Time = 1800,
+}
+
+-- Gap shadow walls (systems/gap_walls.lua, extracted from tunnels
+-- 2026-08-12): invisible shadow-only slabs placed on light-leak seam
+-- lines, plus the live slab tuner (the Alt+Shift+J / Alt+Y / Alt+I/U
+-- cluster). The GINZA SEAM FIX is field-confirmed ("its the gapfix"):
+-- slab 1 = the gallery seam, tunnel side confirmed + far end extended;
+-- slab 2 = the ramp corridor ESTIMATE, tune in-game if it misses.
+-- Slabs is THE authoritative site list for the map-wide leak campaign:
+-- harvest tuner rows (printed at tuner OFF) straight into it.
+-- Slab editor (systems/slab_editor.lua, DEV BUILDS ONLY: release zips
+-- omit the module file, which is the real off switch: no file, no
+-- keys, no ticks). This block is inert without it.
+Config.SlabEditor = {
+    -- Editor follows the photomode session (the free camera IS the
+    -- authoring viewpoint): open on entry, close on exit (which saves
+    -- the rows). Edge-triggered, so a manual Alt+Shift+J close inside
+    -- a session sticks until the next session. NOTE: an open editor
+    -- renders every slab, so turn this off for clean photos near a
+    -- fixed leak site.
+    OnPhotomode = true,
+}
+
+Config.GapWalls = {
+    -- The shipping half: spawn the authored leak-fix slabs.
+    Enabled = true,
+    -- Debug: render the slabs (gray boxes) so placement can be checked
+    -- by eye at any sun state. Tuner-selected slabs render regardless.
+    Visible = false,
+    -- THE SITE LIST LIVES IN data/gap_slabs.lua (the campaign will be
+    -- large; config is user knobs and resets on update). Rows added
+    -- here APPEND on top of the data file: an extension hook for
+    -- experiments, ships empty.
+    Slabs = {},
+}
+
 Config.Tunnels = {
     Enabled = true,
 
@@ -1210,6 +1277,41 @@ Config.RainCollision = {
     -- CollisionTraceFlag override mounted (baseline without pak was 0),
     -- =0 means the container is not overriding at all.
     Enabled = true,
+    -- TEST 2026-08-11 (4.0.0 rehearsal, flip back to true to end it):
+    -- the pass does enablement+responses ONLY and relies on pak-baked
+    -- CollisionTraceFlag (pilot trio + FOUR zzz_TXRWM_ColTest_* area
+    -- paks: c1 + wn_i1 + wn_j1 + wn_j2 = 143 baked mesh packages).
+    -- Covered areas occlude; uncovered areas (yh_*, 11go, wn_i2/i3,
+    -- wn_k1/k2) rain through their covers = the visible negative
+    -- control. Watch preCtf3 / ctfMissing in the pass lines.
+    CtfWrite = false,
+    -- Player-car rain collision (2026-08-11, user request): flips the
+    -- BarelyCollide near-miss envelope to Block the rain channel, so
+    -- the player car (any car, incl. addons) sheds rain with native
+    -- splashes. Watch in cockpit cam: native overhead-cover consumers
+    -- (muffling/frost) may wake with a blocking roof.
+    -- Envelope flip retired 2026-08-12: it worked (the probe proved the
+    -- mechanism) but the envelope floats ~10cm proud of the body =
+    -- floating splash rings. PlayerCarBody above is the shipped shape.
+    PlayerCar = false,
+    -- PROBE SUCCEEDED 2026-08-12 (screenshots): rain collides with the
+    -- flipped hitbox envelope ~10cm over the roof: splashes + ring
+    -- effects render mid-air at the box surface. UDW does NOT ignore
+    -- the vehicle. Probe off for normal play.
+    PlayerCarProbe = false,
+    -- TEST 2026-08-12 (the probe's refinement): rain ends ON THE PAINT.
+    -- BaseBody (tight body mesh, per-car sizing) gets QueryOnly enable
+    -- + rain-channel Block only: no ObjectType/CTF writes (the game
+    -- keeps seeing the car; the mesh BodySetup is shared with AI cars).
+    -- VERIFY parked in rain: splashes ride the actual roofline, no
+    -- floating rings. Watch: near-miss scoring, camera, AI behavior
+    -- around traffic of the same model.
+    PlayerCarBody = true,
+    -- Field verdict 2026-08-12 evening: castForced=0 every pass at the
+    -- ginza stretch = no CastShadow=false meshes in the shadow roster
+    -- there: this lever is a no-op for that leak (the leak is a SEAM:
+    -- geometry gap). Key kept for other areas later.
+    ForceCastShadow = false,
     -- ECollisionChannel index for rain particle traces. 3 = stock
     -- ECC_Visibility (field-verified: occlusion correct). 22..31 = the
     -- private-channel experiment (25 verified game-unused): arms the
@@ -1373,8 +1475,18 @@ Config.ModuleToggles = {
 -- Bump String only; FullName derives from it. (2026-08-09 cleanup:
 -- Major/Minor/Patch and Name had no readers anywhere, release tooling
 -- included, and the duplicated version string was a bump hazard.)
+Config.GT = {
+    -- Single-flight game-thread marshal queue (core/gt.lua): all
+    -- module marshals ride ONE drained ExecuteInGameThread action at
+    -- a time, near-eliminating the shared-registry ref churn behind
+    -- the UE4SS "Ref was not function" hook-death/abort family.
+    -- false = raw per-call marshals (the old behavior), kept as the
+    -- field A/B lever while the crash-rate claim is being proven.
+    SingleFlight = true,
+}
+
 Config.Version = {
-    String = "3.9.0",
+    String = "3.10.0",
 }
 Config.Version.FullName = "TXR Weather Mod v" .. Config.Version.String
 

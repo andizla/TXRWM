@@ -19,6 +19,7 @@ local LightCycle = {}
 
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
+local GT = require("core.gt")
 local State = require("core.state")
 local Config = require("config")
 
@@ -270,7 +271,7 @@ local function scheduleExec(cmds)
         end
     end
     if ExecuteInGameThread then
-        return pcall(function() ExecuteInGameThread(run) end)
+        return pcall(function() GT.Run(run) end)
     end
     run()
     return true
@@ -688,7 +689,7 @@ local function applyAbsentBrightness(uds)
         Log.Info(MODULE, "Night floor bake (Hard Reset Cache)", {ok = ok})
     end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(bakeGT) end)
+        pcall(function() GT.Run(bakeGT) end)
     else
         pcall(bakeGT)
     end
@@ -855,7 +856,7 @@ local function resolveDisplayProfile(force)
     if not profileProbeInFlight and ExecuteInGameThread then
         profileProbeInFlight = true
         local ok = pcall(function()
-            ExecuteInGameThread(function()
+            GT.Run(function()
                 local hdrOn = nil
                 pcall(function()
                     local gus = FindFirstOf("GameUserSettings")
@@ -1071,13 +1072,13 @@ function LightCycle.Update()
         if not displayProfile then resolveDisplayProfile(true) end
         ppShotsApplied = true
         if ExecuteInGameThread then
-            pcall(function() ExecuteInGameThread(applyPPShotsGT) end)
+            pcall(function() GT.Run(applyPPShotsGT) end)
         end
     elseif ppShotsWroteClock and not ppShotsCheckDone
         and (now - ppShotsWroteClock) >= 8.0 then
         ppShotsCheckDone = true
         if ExecuteInGameThread then
-            pcall(function() ExecuteInGameThread(ppShotsReadbackGT) end)
+            pcall(function() GT.Run(ppShotsReadbackGT) end)
         end
     end
 
@@ -1265,7 +1266,7 @@ function LightCycle.ToggleHDRDebug()   -- name kept for the keybind wiring
         Log.Info(MODULE, "UDS bias test " .. (on and "ON (+2 EV all scenarios)" or "OFF (0.0)"), {ok = ok})
     end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(run) end)
+        pcall(function() GT.Run(run) end)
     else
         run()
     end

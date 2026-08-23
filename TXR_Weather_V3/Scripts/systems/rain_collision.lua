@@ -35,6 +35,7 @@ local RainCollision = {}
 
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
+local GT = require("core.gt")
 local State = require("core.state")
 local Config = require("config")
 
@@ -51,6 +52,52 @@ local REAPPLY_S = 20.0      -- streamed-cell re-pass cadence while wet
 local SETTLE_S = 3.0        -- course-arm settle before the first pass
 local ENFORCE_S = 2.0       -- UDW channel enforcement cadence (cheap read)
 local FIX_SHADOW_LEAK = false  -- sun-leak fix; permanent shipping feature, config default true (see processCompGT)
+-- 4.0.0 REHEARSAL SWITCH (Config.RainCollision.CtfWrite, default true =
+-- shipping behavior). false = the pass never writes BodySetup
+-- CollisionTraceFlag and relies on the pak-baked ComplexAsSimple instead:
+-- exactly the planned 4.0.0 module shape. Field discriminator: with the
+-- test paks installed, occlusion works ONLY where a pak covers the mesh
+-- (preCtf3 counts those); an enabled target whose BodySetup still lacks
+-- CTF shows up in ctfMissing= and rains through = the visible negative
+-- control. Flip back to true to restore the self-sufficient module.
+local CTF_WRITE = true
+-- PLAYER-CAR RAIN COLLISION (Config.RainCollision.PlayerCar, default
+-- false). The stock car does NOT block the rain channel (user parked-in-
+-- rain test, confirmed negative), so drops path straight through the
+-- roof. BarelyCollide is the game's near-miss envelope on BP_GameVehicle:
+-- an ALREADY-ENABLED query component that hugs the body on every vehicle
+-- incl. addon cars, so one response flip (Block on the rain channel
+-- alone) makes whatever the player drives shed rain, with the native
+-- splash emitters landing at path ends. No enablement, no ObjectType,
+-- no BodySetup writes = none of the mass-enablement AI surface. The 2s
+-- enforce cadence re-reads the response, so pawn swaps (respawns, garage
+-- changes, addon cars) self-heal without a pawn-change event. Cockpit
+-- caveat (field watch): native ch3 consumers overhead (muffling/frost)
+-- may wake with a blocking roof.
+local PLAYER_CAR = false
+-- ONE-BOOT PROBE (Config.RainCollision.PlayerCarProbe, default false):
+-- the BarelyCollide flip alone produced no occlusion (2026-08-11 field),
+-- and the AE86 sun-probe hit proved vehicle BaseBody comps DO answer
+-- channel traces. Probe mode flips ch3 to Block on EVERY enabled
+-- StaticMeshComponent the pawn owns and logs each one: if rain then
+-- sheds on the car, the logged list names the working component and the
+-- shipped feature narrows to it. Ch3 IS stock Visibility, so during a
+-- probe boot watch for camera/HUD oddities; that risk is why this is a
+-- probe and not the feature.
+local PLAYER_CAR_PROBE = false
+-- PLAYER-CAR BODY OCCLUSION (Config.RainCollision.PlayerCarBody,
+-- 2026-08-12): the probe proved UDW rain paths DO collide with
+-- pawn-owned blockers (splashes + rings on the flipped hitbox envelope,
+-- floating ~10cm over the roof: the envelope is oversized). The right
+-- surface is BaseBody: the tight visual body mesh, per-car automatic
+-- sizing, and AI vehicles already run it collision-ENABLED (the AE86
+-- sun-probe hit), so enabling the player's matches the game's own
+-- state. Full v9 stealth recipe: QueryOnly + ObjectType 25 +
+-- ignore-all + Block rain only: paths end ON the paint.
+local PLAYER_CAR_BODY = false
+-- Shadow-roster meshes shipping CastShadow=false never cast regardless
+-- of two-sided flags; test key forces them on (see processCompGT).
+local FORCE_CAST_SHADOW = false
 local DEBUG = false
 -- Lua patterns matched against each disabled mesh component's STATIC MESH
 -- asset full name: tunnel linings/pieces ("tnl"), the Mesh_tn interior-set
@@ -169,6 +216,214 @@ local function enforceChannelGT()
         channel = CHANNEL, was = cur,
         wrote = tostring(wrote), rebaked = tostring(rebaked),
     })
+end
+
+-- ============== INTERNAL: player-car rain collision (game thread) ==============
+
+-- Probe state: pawns already swept this world (keyed by pawn address)
+local probeDonePawns = {}
+-- Panel-route state: pawns whose body panels are already flipped
+local panelDonePawns = {}
+
+-- Body-panel mesh families (Lua patterns on the SHORT mesh name).
+-- Ordered so the cheap literal prefixes come first; _EF_ and SM_Hit are
+-- excluded by the explicit rejects below, not by pattern gymnastics.
+local PANEL_PATTERNS = {
+    "^SM_Body_", "^SM_BN_", "^SM_FB_", "^SM_RB_",
+    "^SM_SS_", "^SM_RS_", "^SM_Window_", "^SM_RHL_",
+}
+-- SM_Aura_Body rejected 2026-08-12 same-night: it is an INFLATED ghost
+-- shell (outline/aura effect mesh), and flipping it recreated the
+-- floating-plane artifact a few cm off the paint (field: rings on an
+-- invisible plane + door hits only where the shell does not wrap).
+-- SM_Hit = the even bigger envelope, same disease.
+local PANEL_REJECTS = { "_EF_", "EF$", "^SM_Hit", "^SM_Aura", "DriverModel" }
+
+local function isPanelMesh(short)
+    for _, rej in ipairs(PANEL_REJECTS) do
+        if short:find(rej) then return false end
+    end
+    for _, pat in ipairs(PANEL_PATTERNS) do
+        if short:find(pat) then return true end
+    end
+    return false
+end
+
+--- Flip the rain response on every pawn-owned body-panel SMC, once per
+--- pawn instance. Runs in the GT closure like the probe sweep.
+local function playerCarPanelsGT(pawn)
+    local pawnAddr = nil
+    pcall(function() pawnAddr = pawn:GetAddress() end)
+    if not pawnAddr or panelDonePawns[pawnAddr] then return end
+    panelDonePawns[pawnAddr] = true
+    local flipped, enabled, suppressed = 0, 0, 0
+    pcall(function()
+        local comps = FindAllOf("StaticMeshComponent")
+        if type(comps) ~= "table" then return end
+        for _, c in ipairs(comps) do
+            if validRef(c) then
+                local mine = false
+                pcall(function()
+                    local o = c:GetOwner()
+                    mine = o and o:GetAddress() == pawnAddr
+                end)
+                if mine then
+                    local short = nil
+                    pcall(function()
+                        local sm = c.StaticMesh
+                        local fn = sm and sm:GetFullName()
+                        if type(fn) == "string" then
+                            short = fn:match("([^%.%s/]+)$")
+                        end
+                    end)
+                    if short and isPanelMesh(short) then
+                        local en = nil
+                        pcall(function() en = c:GetCollisionEnabled() end)
+                        if en == 0 then
+                            pcall(function() c:SetCollisionResponseToAllChannels(0) end)
+                            pcall(function() c:SetCollisionEnabled(1) end)
+                            enabled = enabled + 1
+                        end
+                        local wrote = pcall(function()
+                            c:SetCollisionResponseToChannel(CHANNEL, 2)
+                        end)
+                        if wrote then flipped = flipped + 1 end
+                    elseif short and (short:find("^SM_Hit")
+                            or short:find("^SM_Aura")) then
+                        -- COUNTER-FLIP the inflated envelopes (10cm-proud
+                        -- shells): if one is enabled and blocking the
+                        -- rain channel (stock state unknowable from old
+                        -- logs: the probe only logged what it CHANGED),
+                        -- it eats the paths before the real panels can.
+                        -- Force its rain response to Ignore.
+                        local resp = nil
+                        pcall(function() resp = c:GetCollisionResponseToChannel(CHANNEL) end)
+                        if resp and resp ~= 0 then
+                            pcall(function() c:SetCollisionResponseToChannel(CHANNEL, 0) end)
+                            suppressed = suppressed + 1
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    Log.Info(MODULE, "Player car panels rain collision applied", {
+        panels = flipped, newlyEnabled = enabled,
+        envelopesSuppressed = suppressed, channel = CHANNEL,
+    })
+end
+
+--- PROBE sweep (PLAYER_CAR_PROBE): flip ch3 Block on every enabled SMC
+--- the current pawn owns, once per pawn instance. FindAllOf runs inside
+--- the GT closure that called us, matching the pass's own pattern.
+local function playerCarProbeGT(pawn)
+    local pawnAddr = nil
+    pcall(function() pawnAddr = pawn:GetAddress() end)
+    if not pawnAddr or probeDonePawns[pawnAddr] then return end
+    probeDonePawns[pawnAddr] = true
+    local flipped = 0
+    pcall(function()
+        local comps = FindAllOf("StaticMeshComponent")
+        if type(comps) ~= "table" then return end
+        for _, c in ipairs(comps) do
+            if validRef(c) then
+                local mine = false
+                pcall(function()
+                    local o = c:GetOwner()
+                    mine = o and o:GetAddress() == pawnAddr
+                end)
+                if mine then
+                    local en = nil
+                    pcall(function() en = c:GetCollisionEnabled() end)
+                    if en and en ~= 0 then
+                        local resp = nil
+                        pcall(function() resp = c:GetCollisionResponseToChannel(CHANNEL) end)
+                        if resp ~= 2 then
+                            local wrote = pcall(function()
+                                c:SetCollisionResponseToChannel(CHANNEL, 2)
+                            end)
+                            flipped = flipped + 1
+                            local nm = "?"
+                            pcall(function()
+                                local sm = c.StaticMesh
+                                local fn = sm and sm:GetFullName()
+                                if type(fn) == "string" then
+                                    nm = fn:match("([^%.%s/]+)$") or fn
+                                end
+                            end)
+                            Log.Info(MODULE, "CarProbe flip", {
+                                mesh = nm, en = en, was = resp,
+                                wrote = tostring(wrote),
+                            })
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    Log.Info(MODULE, "CarProbe pawn sweep done", { flipped = flipped })
+end
+
+--- One response write on the pawn's BarelyCollide component (see the
+--- PLAYER_CAR note at the top). Runs on the enforce cadence; the resp
+--- read short-circuits once applied, so the steady state is one cheap
+--- UFunction read per 2s. Never touches enablement or object type: the
+--- envelope keeps its stock near-miss behavior (object-space overlaps
+--- are per-channel-independent of the rain response).
+local function playerCarGT()
+    local actors = getActors()
+    if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
+        return
+    end
+    pcall(function()
+        local UEH = getUEHelpers()
+        local pc = UEH and UEH.GetPlayerController and UEH.GetPlayerController()
+        local pawn = pc and pc.Pawn
+        if not (pawn and pawn.IsValid and pawn:IsValid()) then return end
+        -- (2026-08-12 evening bug: this function is the worker for ALL
+        -- three car features; the Tick gate below must arm it when ANY
+        -- of them is on. The first PlayerCarBody boot silently did
+        -- nothing because the gate only checked PLAYER_CAR.)
+        if PLAYER_CAR_PROBE then playerCarProbeGT(pawn) end
+        -- PANEL-FAMILY route (user design 2026-08-12, from the mesh
+        -- catalog: the visible body panels are the right rain surface).
+        -- Flip every pawn-owned SMC whose MESH belongs to a body-panel
+        -- family: Body/Aura_Body shell, BN bonnet, FB/RB bumpers, SS
+        -- skirts, RS spoiler, Window. The convention holds across the
+        -- whole Car tree, addons included. EXCLUDED on purpose: SM_Hit
+        -- (the oversized envelope: the floating-ring artifact) and _EF_
+        -- effect cards (emissive glows, not surfaces). Recipe per
+        -- panel = the minimal one: enable QueryOnly with zeroed
+        -- responses when disabled stock, then Block the rain channel;
+        -- never ObjectType, never BodySetup (shared assets).
+        if PLAYER_CAR_BODY then
+            pcall(function() playerCarPanelsGT(pawn) end)
+        end
+        if not PLAYER_CAR then return end
+        local bc = pawn.BarelyCollide
+        if not bc then return end
+        local resp = nil
+        pcall(function() resp = bc:GetCollisionResponseToChannel(CHANNEL) end)
+        if resp == nil or resp == 2 then return end
+        local wrote = pcall(function()
+            bc:SetCollisionResponseToChannel(CHANNEL, 2)
+        end)
+        -- Shape facts ride the log line: the class answers whether the
+        -- envelope is a simple prim (Box/Sphere/Capsule = simple traces
+        -- hit natively, no CTF question) and en/ot document the stock
+        -- state we are NOT touching.
+        local en, ot, nm = nil, nil, "?"
+        pcall(function() en = bc:GetCollisionEnabled() end)
+        pcall(function() ot = bc:GetCollisionObjectType() end)
+        pcall(function()
+            local fn = bc:GetFullName()
+            if type(fn) == "string" then nm = fn:match("^(%S+)") or fn end
+        end)
+        Log.Info(MODULE, "Player car rain collision applied", {
+            comp = nm, was = resp, en = tostring(en), ot = tostring(ot),
+            wrote = tostring(wrote), channel = CHANNEL,
+        })
+    end)
 end
 
 -- ============== INTERNAL: containment fan (game thread) ==============
@@ -505,6 +760,22 @@ local function processCompGT(st, c)
             pcall(function() c:SetCastShadow(true) end)
             st.shadowN = (st.shadowN or 0) + 1
         end
+        -- FORCE-CAST TEST (Config.RainCollision.ForceCastShadow,
+        -- 2026-08-12): pieces shipping CastShadow=FALSE never benefit
+        -- from the two-sided flip at all (the sweep's twoSided
+        -- short-circuit skips the rebuild, and a non-casting mesh
+        -- passes every sun ray regardless). The ginza-ramp leak
+        -- candidates include exactly that failure mode. When enabled,
+        -- any shadow-roster mesh with CastShadow=false gets it forced
+        -- true (counter castForced=; A/B by course reload).
+        if FORCE_CAST_SHADOW then
+            local casting = nil
+            pcall(function() casting = c.CastShadow end)
+            if casting == false then
+                pcall(function() c:SetCastShadow(true) end)
+                st.castForcedN = (st.castForcedN or 0) + 1
+            end
+        end
     end
 
     -- Matching COLLISION mesh (narrow v9 set only): only now pay for the
@@ -542,8 +813,13 @@ local function processCompGT(st, c)
         if bs then
             if tonumber(bs.CollisionTraceFlag) == 3 then
                 st.casN = st.casN + 1
-            else
+            elseif CTF_WRITE then
                 bs.CollisionTraceFlag = 3
+            else
+                -- 4.0.0 rehearsal: no write. This body stays trimesh-
+                -- invisible to simple rain traces = rains through, and
+                -- the counter names the gap the pak failed to cover.
+                st.ctfMissN = (st.ctfMissN or 0) + 1
             end
         end
     end)
@@ -675,6 +951,12 @@ finishWorldPassGT = function(st)
             -- field "AI bugged HERE around THEN" report be matched against
             -- pass activity (shadow rebuilds / enables) near that spot.
             stockEnabledTargets = st.collStockN or 0,
+            -- CtfWrite=false rehearsal only: enabled targets whose
+            -- BodySetup had no baked CTF (0 everywhere = pak complete)
+            ctfMissing = st.ctfMissN or 0,
+            -- ForceCastShadow test only: shadow-roster meshes that
+            -- shipped CastShadow=false and got it forced on
+            castForced = st.castForcedN or 0,
             -- cacheMiss (2026-08-09): fresh meshVerdict computes this
             -- pass. If it tracks scanned pass after pass, the address
             -- key is not stable and the cache never hits (see the note
@@ -702,6 +984,11 @@ function RainCollision.Init()
         if tonumber(cfg.SettleSeconds) then SETTLE_S = tonumber(cfg.SettleSeconds) end
         if cfg.Debug ~= nil then DEBUG = cfg.Debug end
         if cfg.FixShadowLeak ~= nil then FIX_SHADOW_LEAK = cfg.FixShadowLeak end
+        if cfg.CtfWrite ~= nil then CTF_WRITE = cfg.CtfWrite end
+        if cfg.PlayerCar ~= nil then PLAYER_CAR = cfg.PlayerCar end
+        if cfg.PlayerCarProbe ~= nil then PLAYER_CAR_PROBE = cfg.PlayerCarProbe end
+        if cfg.PlayerCarBody ~= nil then PLAYER_CAR_BODY = cfg.PlayerCarBody end
+        if cfg.ForceCastShadow ~= nil then FORCE_CAST_SHADOW = cfg.ForceCastShadow end
         if type(cfg.TargetPatterns) == "table" and #cfg.TargetPatterns > 0 then
             TARGET_PATTERNS = cfg.TargetPatterns
         end
@@ -721,6 +1008,8 @@ function RainCollision.Init()
     end
     Log.Info(MODULE, "Initializing rain collision", {
         channel = CHANNEL, reapply_s = REAPPLY_S,
+        ctfWrite = tostring(CTF_WRITE),
+        playerCar = tostring(PLAYER_CAR),
         patterns = table.concat(TARGET_PATTERNS, ","),
         shadow_patterns = table.concat(SHADOW_PATTERNS, ","),
     })
@@ -735,6 +1024,8 @@ function RainCollision.OnCourseLoad()
     passPending = true      -- first pass after the settle window
     passTrigger = "load"
     passState = nil         -- never carry a walker (and its refs) across worlds
+    probeDonePawns = {}     -- pawn addresses are world-local
+    panelDonePawns = {}
     meshVerdict = {}        -- asset addresses do not survive a world swap
     matchedNamesLogged = 0
     matchedNamesSeen = {}
@@ -748,6 +1039,8 @@ function RainCollision.OnCourseUnload()
     lastPass = nil
     passPending = false
     passState = nil
+    probeDonePawns = {}
+    panelDonePawns = {}
     meshVerdict = {}
     matchedNamesLogged = 0
     matchedNamesSeen = {}
@@ -764,6 +1057,32 @@ function RainCollision.OnWeatherChange(_presetName)
     if isWet() then
         passPending = true
         passTrigger = "rain-start"
+    end
+end
+
+-- Cover-enter trigger cooldown: the roof trace flaps through girder
+-- gaps, so rising edges can arrive every poll on lattice bridges. One
+-- pass per window is plenty (the pass covers the whole world anyway).
+local COVER_TRIGGER_COOLDOWN_S = 8.0
+local lastCoverTrigger = nil
+
+--- Cover began (tunnels.lua, road-data bit OR roof trace rising edge).
+--- THE FIVE 2026-08-11 Alt+N REPORTS: every one was rain under a cover
+--- whose deck the pass had not reached yet (streamed-in cells wait for
+--- the periodic cadence, up to REAPPLY_S late on a first approach). A
+--- pass requested the moment a cover begins closes that window at
+--- exactly the places where being un-flipped is visible.
+function RainCollision.OnCoverEnter()
+    if not (enabled and armed) then return end
+    if not isWet() then return end
+    local now = os.clock()
+    if lastCoverTrigger and (now - lastCoverTrigger) < COVER_TRIGGER_COOLDOWN_S then
+        return
+    end
+    lastCoverTrigger = now
+    if passState == nil and not passPending then
+        passPending = true
+        passTrigger = "cover-enter"
     end
 end
 
@@ -833,10 +1152,13 @@ function RainCollision.Tick()
 
     if ExecuteInGameThread then
         pcall(function()
-            ExecuteInGameThread(function()
+            GT.Run(function()
                 if doEnforce then
                     enforceChannelGT()
                     updateCarPosGT()   -- feeds the async distance gate
+                    if PLAYER_CAR or PLAYER_CAR_BODY or PLAYER_CAR_PROBE then
+                        playerCarGT()
+                    end
                     -- The fan mutates responses on game bodies: private
                     -- channels only (on a game channel like Visibility
                     -- it would rewrite real game behavior)

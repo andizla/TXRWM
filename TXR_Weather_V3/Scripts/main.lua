@@ -25,6 +25,7 @@ end
 
 -- Load logging (depends on nothing)
 local Log = safeRequire("core.logging", "Logging")
+local GT = safeRequire("core.gt", "GT")
 if not Log then
     error("Cannot continue without Logging module")
 end
@@ -90,6 +91,8 @@ local Audio = nil
 local Stars = nil
 local LightCycle = nil
 local Tunnels = nil
+local GapWalls = nil
+local SlabEditor = nil
 local RainCollision = nil
 local WindDebris = nil
 local LightRays = nil
@@ -244,6 +247,22 @@ local function loadSystemModules()
         if Tunnels.Init then Tunnels.Init() end
     else
         Log.Debug("Main", "Tunnels module not loaded")
+    end
+
+    GapWalls = safeRequire("systems.gap_walls", "GapWalls")
+    if GapWalls then
+        Log.Info("Main", "System module loaded: GapWalls")
+        if GapWalls.Init then GapWalls.Init() end
+    else
+        Log.Debug("Main", "GapWalls module not loaded")
+    end
+
+    -- DEV-ONLY: release builds omit systems/slab_editor.lua entirely,
+    -- so this stays nil and no editor keys or ticks exist.
+    SlabEditor = safeRequire("systems.slab_editor", "SlabEditor")
+    if SlabEditor then
+        Log.Info("Main", "System module loaded: SlabEditor (dev build)")
+        if SlabEditor.Init then SlabEditor.Init() end
     end
 
     -- Weather audio (rain/wind/thunder loops; restored for 3.8.0)
@@ -519,6 +538,12 @@ local function applyPAState()
     if Tunnels and Tunnels.OnCourseLoad then
         Tunnels.OnCourseLoad()
     end
+    if GapWalls and GapWalls.OnCourseLoad then
+        GapWalls.OnCourseLoad()
+    end
+    if SlabEditor and SlabEditor.OnCourseLoad then
+        SlabEditor.OnCourseLoad()
+    end
     if RainCollision and RainCollision.OnCourseLoad then
         RainCollision.OnCourseLoad()
     end
@@ -622,6 +647,47 @@ local function paClockWatchTick()
     end
 end
 
+-- GT pump watchdog (2026-08-21): UE4SS can silently remove its own
+-- engine-tick Lua hook after a "[Lua::Registry::get_function_ref] Ref
+-- was not function" error (upstream #346, multi-mod hook collision).
+-- That kills EVERY ExecuteInGameThread marshal for the rest of the
+-- session (photomode edge toggles, pulse reverts, cvar batches, dark
+-- garage) while the async side keeps running = silent feature death
+-- (field 2026-08-20 23:50:31). Beat a trivial GT closure every 10s;
+-- no beat landing for 60s = pump dead: flag State + warn loudly.
+-- Beats pause while dead (nothing to revive, no point queueing); a
+-- late beat landing flips it back automatically.
+local gtPumpLastBeat = nil
+local gtPumpNextSend = 0.0
+local gtPumpWarnedAt = nil
+local function gtPumpWatch()
+    local now = os.clock()
+    if gtPumpLastBeat == nil then gtPumpLastBeat = now end
+    local dead = (now - gtPumpLastBeat) > 60.0
+    if not dead and now >= gtPumpNextSend and ExecuteInGameThread then
+        gtPumpNextSend = now + 10.0
+        -- the beat rides the single-flight queue: it verifies the WHOLE
+        -- marshal path (queue -> pump -> drain), not just raw EIGT
+        if GT and GT.Run then
+            GT.Run(function() gtPumpLastBeat = os.clock() end)
+        end
+    end
+    if dead then
+        if State and State.SetGTPumpAlive then State.SetGTPumpAlive(false) end
+        if gtPumpWarnedAt == nil or (now - gtPumpWarnedAt) > 300.0 then
+            gtPumpWarnedAt = now
+            Log.Warn("Main", "GAME-THREAD PUMP DEAD: UE4SS removed its"
+                .. " engine-tick hook (registry bug, upstream #346)."
+                .. " Marshalled features are inert (photomode auto-open,"
+                .. " pulse revert, cvar batches, dark garage)."
+                .. " RESTART THE GAME to restore them.")
+        end
+    else
+        if State and State.SetGTPumpAlive then State.SetGTPumpAlive(true) end
+        gtPumpWarnedAt = nil
+    end
+end
+
 local function onTick()
     -- Increment counters
     tickCount = tickCount + 1
@@ -651,6 +717,15 @@ local function onTick()
         -- Periodic loop count log
         if tickCount % Config.MainLoop.LogEveryNLoops == 0 then
             Log.Debug("Main", string.format("Loop #%d", tickCount))
+        end
+
+        -- GT pump watchdog (self-paced inside)
+        gtPumpWatch()
+
+        -- Single-flight marshal pump: drains everything queued via
+        -- GT.Run/GT.After onto the game thread, one action at a time
+        if GT and GT.PumpTick then
+            GT.PumpTick()
         end
         
         -- Phase 2+: Actor discovery
@@ -769,6 +844,12 @@ local function onTick()
                 if Tunnels and Tunnels.OnCourseLoad then
                     Tunnels.OnCourseLoad()
                 end
+                if GapWalls and GapWalls.OnCourseLoad then
+                    GapWalls.OnCourseLoad()
+                end
+                if SlabEditor and SlabEditor.OnCourseLoad then
+                    SlabEditor.OnCourseLoad()
+                end
                 if RainCollision and RainCollision.OnCourseLoad then
                     RainCollision.OnCourseLoad()
                 end
@@ -834,6 +915,12 @@ local function onTick()
                 if Tunnels and Tunnels.OnCourseUnload then
                     Tunnels.OnCourseUnload()
                 end
+                if GapWalls and GapWalls.OnCourseUnload then
+                    GapWalls.OnCourseUnload()
+                end
+                if SlabEditor and SlabEditor.OnCourseUnload then
+                    SlabEditor.OnCourseUnload()
+                end
                 if RainCollision and RainCollision.OnCourseUnload then
                     RainCollision.OnCourseUnload()
                 end
@@ -871,6 +958,12 @@ local function onTick()
             end
             if Tunnels and Tunnels.OnCourseUnload then
                 Tunnels.OnCourseUnload()
+            end
+            if GapWalls and GapWalls.OnCourseUnload then
+                GapWalls.OnCourseUnload()
+            end
+            if SlabEditor and SlabEditor.OnCourseUnload then
+                SlabEditor.OnCourseUnload()
             end
             if RainCollision and RainCollision.OnCourseUnload then
                 RainCollision.OnCourseUnload()
@@ -990,6 +1083,15 @@ local function onTick()
         -- self-paced inside, so portal reactions stay at the 0.25s budget)
         if Tunnels and Tunnels.Tick then
             Tunnels.Tick()
+        end
+
+        -- Gap shadow walls (leak-fix slabs + tuner; self-paced inside)
+        if GapWalls and GapWalls.Tick then
+            GapWalls.Tick()
+        end
+
+        if SlabEditor and SlabEditor.Tick then
+            SlabEditor.Tick()
         end
 
         -- Rain collision (channel enforcement + streamed-cell re-pass;

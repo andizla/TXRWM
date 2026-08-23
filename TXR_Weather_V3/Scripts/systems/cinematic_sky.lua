@@ -17,6 +17,7 @@
 local CinematicSky = {}
 
 local Log = require("core.logging")
+local GT = require("core.gt")
 local Config = require("config")
 
 local Actors = nil  -- lazy
@@ -243,7 +244,7 @@ end
 local function apply()
     if not getUDS() then return false end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(applyOnGameThread) end)
+        pcall(function() GT.Run(applyOnGameThread) end)
     else
         applyOnGameThread()
     end
@@ -271,7 +272,7 @@ function CinematicSky.ApplyWeatherGrade(grade)
     pendingGradeSet = true
     if gradeBaseline then
         if ExecuteInGameThread then
-            pcall(function() ExecuteInGameThread(function() applyWeatherGradeGT(nil) end) end)
+            pcall(function() GT.Run(function() applyWeatherGradeGT(nil) end) end)
         else
             applyWeatherGradeGT(nil)
         end

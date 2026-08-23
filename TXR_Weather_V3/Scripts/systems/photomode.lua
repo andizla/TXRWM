@@ -31,6 +31,7 @@
 local PhotoMode = {}
 
 local Log = require("core.logging")
+local GT = require("core.gt")
 local Config = require("config")
 
 local MODULE = "PhotoMode"
@@ -393,7 +394,7 @@ local function tryRegisterOpenHooks()
     if (now - _hookRegTried) < 1.0 then return end
     _hookRegTried = now
     if type(RegisterHook) ~= "function" or type(ExecuteInGameThread) ~= "function" then return end
-    ExecuteInGameThread(function()
+    GT.Run(function()
         if _openHooksLive then return end
         _openHooksLive = pcall(function()
             RegisterHook(HOOK_TOGGLE, function()
@@ -631,7 +632,7 @@ local function reassert()
     end
 
     if type(ExecuteInGameThread) ~= "function" then return end
-    ExecuteInGameThread(function()
+    GT.Run(function()
         -- Re-check at RUN time: comp/cam were found up to a pass ago on the
         -- async thread and a teardown may have started since
         if teardownActive() then return end

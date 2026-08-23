@@ -21,6 +21,7 @@ local Stars = {}
 
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
+local GT = require("core.gt")
 local State = require("core.state")
 local Config = require("config")
 
@@ -202,7 +203,7 @@ end
 local function applyStars()
     if not getUDS() then return false end
     if ExecuteInGameThread then
-        pcall(function() ExecuteInGameThread(enableStarsOnGameThread) end)
+        pcall(function() GT.Run(enableStarsOnGameThread) end)
     else
         enableStarsOnGameThread()
     end
@@ -494,7 +495,7 @@ function Stars.Tick()
             end)
             midOverrideAt = os.clock() + period
             if ExecuteInGameThread then
-                pcall(function() ExecuteInGameThread(overrideSkyMIDGT) end)
+                pcall(function() GT.Run(overrideSkyMIDGT) end)
             end
             -- Stomp-watch verdict line every 30s (night only): stomps=0
             -- with visible blinking = compositing, stomps>0 = still-drifting
@@ -524,7 +525,7 @@ function Stars.Tick()
              or settleTicks >= SETTLE_TICKS + 80) then
         midDumpDone = true
         if ExecuteInGameThread then
-            pcall(function() ExecuteInGameThread(dumpSkyMIDGT) end)
+            pcall(function() GT.Run(dumpSkyMIDGT) end)
         end
     end
 

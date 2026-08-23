@@ -22,6 +22,7 @@ local Audio = {}
 
 -- ============== DEPENDENCIES ==============
 local Log = require("core.logging")
+local GT = require("core.gt")
 local State = require("core.state")
 local Config = require("config")
 
@@ -356,7 +357,7 @@ local function scheduleGuarded(fn)
     local scheduled = false
     if ExecuteInGameThread then
         scheduled = pcall(function()
-            ExecuteInGameThread(function()
+            GT.Run(function()
                 pcall(fn)
                 pendingUpdate = false
             end)

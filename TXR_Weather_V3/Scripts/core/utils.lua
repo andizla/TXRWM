@@ -4,6 +4,8 @@
 
 local Utils = {}
 
+local GT = require("core.gt")
+
 -- ============== ACTOR/UOBJECT VALIDATION ==============
 
 --- Check if a UObject reference is valid
@@ -334,12 +336,9 @@ function Utils.ExecConsoleCommands(cmds)
             pcall(function() ksl:ExecuteConsoleCommand(eng, cmd, nil) end)
         end
     end
-    if ExecuteInGameThread then
-        return pcall(function() ExecuteInGameThread(run) end)
-    end
-    -- Fallback (older UE4SS without ExecuteInGameThread): best-effort direct.
-    run()
-    return true
+    -- Rides the single-flight marshal queue (core/gt.lua); GT.Run
+    -- falls back to a direct call when no marshalling exists at all.
+    return GT.Run(run)
 end
 
 -- ============== RANDOM SELECTION ==============

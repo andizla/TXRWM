@@ -369,6 +369,19 @@ function State.IsPhotoSessionOpen()
     return state.photo.sessionOpen
 end
 
+--- GT pump health (set by main's watchdog): false means UE4SS removed
+--- its engine-tick Lua hook ("Ref was not function", upstream #346) and
+--- EVERY ExecuteInGameThread marshal is silently inert until the game
+--- restarts. Consumers use this to skip futile marshals and to surface
+--- the condition (overlay banner, pulse gate).
+function State.SetGTPumpAlive(alive)
+    state.gtPumpAlive = alive
+end
+
+function State.IsGTPumpAlive()
+    return state.gtPumpAlive ~= false   -- default true before first beat
+end
+
 --- Check if we have captured state from course
 --- @return boolean
 function State.HasCapturedPAState()
