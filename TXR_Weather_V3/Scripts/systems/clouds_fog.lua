@@ -220,6 +220,31 @@ local function presetLiving(offset, cap)
     return Utils.Clamp(offset * scale, -cap, cap)
 end
 
+-- Living-sky WRITE quantization (2026-08-31 sunset-fps fix). The preset
+-- path's continuously wandering writes defeated UDS's cached-MID
+-- tolerance check (a CONSTANT value = zero pushes, the star-fix
+-- mechanism) and the volumetric clouds' temporal caching; dusk, where
+-- the turbulence term peaks, dropped 50-60 fps to ~30 (field A/B:
+-- PresetLivingScale=0 restored it). Quantizing the TARGET would not
+-- help: ExpSmooth micro-converges forever. So the WRITTEN value is
+-- snapped to Config.CloudsFog.LivingStep and identical writes are
+-- skipped (2s re-assert floor keeps the self-healing write-through);
+-- the internal smoothing state stays continuous. The no-preset auto
+-- path is unchanged by construction: its value moves every tick, so
+-- the gate never skips it (exact pre-4.0 behaviour there).
+local lastWrittenCloud = nil
+local lastWrittenFog = nil
+local lastCloudWriteAt = 0.0
+local lastFogWriteAt = 0.0
+local WRITE_REASSERT_S = 2.0
+
+local function quantizeLiving(v, presetActive)
+    if not presetActive then return v end
+    local step = Config.CloudsFog.LivingStep
+    if not step or step <= 0 then return v end
+    return math.floor(v / step + 0.5) * step
+end
+
 --- Calculate target cloud coverage based on time of day
 --- @param tod number Time of day (0-2400)
 --- @return number Target cloud coverage (0-10)
@@ -536,7 +561,16 @@ function CloudsFog.Tick(dt)
             dt
         )
 
-        writeCloudCoverage(newCloud)
+        -- Snap the WRITTEN value (see quantizeLiving); the smoothing
+        -- state itself stays continuous so ramps are unaffected.
+        local outCloud = quantizeLiving(newCloud, presetActive)
+        local nowW = os.clock()
+        if outCloud ~= lastWrittenCloud
+            or (nowW - lastCloudWriteAt) >= WRITE_REASSERT_S then
+            writeCloudCoverage(outCloud)
+            lastWrittenCloud = outCloud
+            lastCloudWriteAt = nowW
+        end
         internalState.cloudCurrent = newCloud
     end
     
@@ -575,7 +609,14 @@ function CloudsFog.Tick(dt)
             dt
         )
 
-        writeFog(newFog)
+        local outFog = quantizeLiving(newFog, presetActive)
+        local nowF = os.clock()
+        if outFog ~= lastWrittenFog
+            or (nowF - lastFogWriteAt) >= WRITE_REASSERT_S then
+            writeFog(outFog)
+            lastWrittenFog = outFog
+            lastFogWriteAt = nowF
+        end
         internalState.fogCurrent = newFog
     end
     

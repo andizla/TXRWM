@@ -5,6 +5,16 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [4.0.0]: 2026-08-31
 
+### Hotfix (2026-08-31, rolled into the 4.0.0 download)
+- Fixed a large fps drop at dusk and night under weather presets: the
+  living sky's continuous value changes defeated the engine's cloud
+  caching. Living changes now step (`Config.CloudsFog.LivingStep`) so
+  the sky still breathes while the cache holds between steps.
+- The installer detects the old TXR_DayNightCycle mod and offers to
+  disable it (it drives the same sky and fights this mod).
+- TXRWM_GrabLogs also collects Content\Paks and installed-mod
+  inventories, Engine.ini with its backups, and the game build id.
+
 ### Fixed
 - Opening photo mode (or the game's own mid-course resets) no longer
   makes the mod tear down and rebuild its world state. Every seam

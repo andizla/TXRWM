@@ -359,6 +359,12 @@ Config.CloudsFog = {
     -- modulation only ran with weather disabled and the sky sat still).
     -- The deviation is capped internally so a preset stays recognisable.
     PresetLivingScale = 1.0,
+    -- Living writes are snapped to this step so UDS sees a CONSTANT
+    -- between steps (its cached-MID check then pushes nothing and the
+    -- volumetric clouds keep their temporal cache: the 2026-08-31
+    -- sunset fps fix). Bigger = cheaper and chunkier breathing;
+    -- 0 = continuous writes (the behaviour that halved dusk fps).
+    LivingStep = 0.05,
 
     -- Long-term drift
     CloudDriftAmplitude = 0.4, CloudDriftPeriod = 180.0,
