@@ -1,7 +1,6 @@
 # TXRWM - TXR Weather Mod V3
 
 Modular weather system for **Tokyo Xtreme Racer**, built on Ultra Dynamic Sky/Weather via UE4SS.
-Lightweight and modular - roughly half the code of the original, streamlined and optimised.
 
 ## Features
 - Dynamic time of day - adjustable speed, pause, and persistence across sessions
@@ -44,32 +43,11 @@ Lightweight and modular - roughly half the code of the original, streamlined and
 - Auto-exposure / photomode aperture (ported from VEAO)
 - Manual time control is built in (`Alt+T` cycles pause / normal / fast); since 3.9.0 the mod also includes its own course-entry weather warmup (approach credited to Shibe), so no companion console-commands mod is needed alongside
 
-## How this differs from Ultra Dynamic TXR 1.34
-TXR Weather Mod V3 is a **ground-up rewrite** of the Ultra Dynamic TXR 1.34 weather system - it
-shares the same goal (driving Ultra Dynamic Sky/Weather inside TXR) but **none of the 1.34 code**.
-
-- **Architecture.** 1.34 was a single ~6,700-line `main.lua` monolith plus a handful of loose helper
-  scripts. V3 is a modular system: a small bootstrap + one focused module per feature under
-  `Scripts/systems/`, a single `config.lua` tuning surface, and per-module on/off toggles.
-- **Stability.** The rain/dry-enforcement and parking-area persistence paths were rebuilt and hardened
-  (the long-standing "stuck rain on preset change" and PA state issues). New visual features use a
-  deferred, game-thread "settle gate" apply so they can't corrupt actors during level load.
-- **What's the same idea, done cleaner.** Weather presets, time-of-day, lightning, fog, stars,
-  and vehicle-aware headlights all exist in both - V3 reimplements them and tends to drive them through
-  Ultra Dynamic Sky/Weather's own functions rather than ad-hoc property pokes.
-- **What's new in V3 (not in 1.34).** Auto-exposure (ex-VEAO) on a 144-step day/night curve,
-  exposure-driven auto headlights with animated pop-ups + a controller light-button gesture, a weighted
-  time-of-day-aware random weather scheduler, dawn/dusk slow-time, Tokyo city glow, volumetric cloud
-  light rays, wind debris, moon phases, rainbows, a rotating real-star night sky with the Milky
-  Way, wider garage alignment sliders, a night-only time cycle, a cinematic daytime sky pass,
-  per-weather exposure compensation, and an installer with Engine.ini graphics profiles.
-- **What 1.34 had that V3 deliberately leaves out.** Surface/vehicle wetness and screen-space weather
-  effects (rain-on-lens, frost) - they rely on material/post-process paths the game doesn't composite,
-  so they never rendered reliably; V3 focuses on the effects that actually show in TXR.
+The full code-verified feature inventory lives in [FEATURES.md](FEATURES.md).
 
 ## Requirements
 - Tokyo Xtreme Racer (Steam)
-- Silents UE4SS - the installer downloads it for you from Silent github
+- UE4SS (a pinned, field-tested build; the installer downloads it from this repo's releases)
 - Ultra Dynamic Sky/Weather is present in the game (the mod *drives* it; UDS content is **not** redistributed here)
 
 ## Installation

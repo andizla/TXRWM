@@ -9,19 +9,14 @@ landing `README.md`. For per-version changes, see `CHANGELOG.md`.
 
 ---
 
-## 1. What this is, and how it differs from Ultra Dynamic TXR 1.34
+## 1. What this is
 
-TXR Weather Mod V3 is a **ground-up rewrite** of the older Ultra Dynamic TXR 1.34 weather system.
-Same goal, drive UDS/UDW inside TXR, but **none of the 1.34 code**.
+TXR Weather Mod V3 drives UDS/UDW inside TXR from a small bootstrap plus one focused module per
+feature under `Scripts/systems/`, with a single `config.lua` tuning surface and per-module
+`Config.ModuleToggles`. New visuals apply through UDS/UDW's own `Static Properties - X` functions
+on the game thread behind a deferred "settle gate", so they cannot corrupt actors at level load.
 
-| | Ultra Dynamic TXR 1.34 | TXR Weather Mod V3 |
-|---|---|---|
-| Structure | One ~6,700-line `main.lua` monolith + loose helper scripts | Small bootstrap + one focused module per feature under `Scripts/systems/`, single `config.lua` |
-| Config | Scattered constants | One `config.lua` tuning surface + per-module `Config.ModuleToggles` |
-| Stability | Recurring "stuck rain on preset change", PA state issues | Rain/dry + PA persistence rebuilt and hardened; new visuals use a deferred game-thread "settle gate" so they can't corrupt actors at level load |
-| New visual features apply via | Ad-hoc property pokes | UDS/UDW's own `Static Properties - X` functions on the game thread |
-
-**New in V3 that 1.34 did not have:** auto-exposure (ex-VEAO) on a 144-step day/night curve;
+**Feature highlights:** auto-exposure (ex-VEAO) on a 144-step day/night curve;
 exposure-driven auto headlights with animated pop-ups and a controller light-button gesture; a
 weighted, time-of-day-aware random weather scheduler; dawn/dusk slow-time + Tokyo tint; Tokyo city
 glow (light pollution + night sky glow); a real-star night sky with the Milky Way that rotates like
@@ -29,9 +24,9 @@ the real thing; volumetric cloud light rays; wind debris; moon phases and a scal
 and an installer with Engine.ini graphics profiles. 4.0.0 adds city building shadows, pre-baked
 covered-road shadow and collision data, and the 112-site covered-road seam campaign.
 
-**Intentionally dropped from 1.34:** surface/vehicle wetness and screen-space weather effects
+**Deliberately out of scope:** surface/vehicle wetness and screen-space weather effects
 (rain-on-lens, frost, heat distortion). They rely on material/post-process paths TXR does not
-composite, so they never rendered reliably. See section 6.
+composite, so they never render reliably. See section 6.
 
 ---
 

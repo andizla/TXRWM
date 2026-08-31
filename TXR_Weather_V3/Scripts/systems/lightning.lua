@@ -130,7 +130,7 @@ local function configureLightningFlashes(intensity)
     end)
     
     -- Scale frequency inversely with intensity (more intense = more frequent)
-    -- At intensity 10: frequency ~7s, at intensity 5: frequency ~14s
+    -- At intensity 10: frequency ~14s, at intensity 5: frequency ~28s
     if intensity > 0 then
         local scaledFrequency = DEFAULTS.flashFrequency * (10.0 / math.max(intensity, 1))
         scaledFrequency = Utils.Clamp(scaledFrequency, 5.0, 30.0)
