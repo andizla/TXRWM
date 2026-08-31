@@ -61,20 +61,10 @@ local FIX_SHADOW_LEAK = false  -- sun-leak fix; permanent shipping feature, conf
 -- CTF shows up in ctfMissing= and rains through = the visible negative
 -- control. Flip back to true to restore the self-sufficient module.
 local CTF_WRITE = true
--- PLAYER-CAR RAIN COLLISION (Config.RainCollision.PlayerCar, default
--- false). The stock car does NOT block the rain channel (user parked-in-
--- rain test, confirmed negative), so drops path straight through the
--- roof. BarelyCollide is the game's near-miss envelope on BP_GameVehicle:
--- an ALREADY-ENABLED query component that hugs the body on every vehicle
--- incl. addon cars, so one response flip (Block on the rain channel
--- alone) makes whatever the player drives shed rain, with the native
--- splash emitters landing at path ends. No enablement, no ObjectType,
--- no BodySetup writes = none of the mass-enablement AI surface. The 2s
--- enforce cadence re-reads the response, so pawn swaps (respawns, garage
--- changes, addon cars) self-heal without a pawn-change event. Cockpit
--- caveat (field watch): native ch3 consumers overhead (muffling/frost)
--- may wake with a blocking roof.
-local PLAYER_CAR = false
+-- (The legacy BarelyCollide envelope flip, Config.RainCollision.PlayerCar,
+-- was removed in the pre-4.0.0 dead-code pass: superseded by PlayerCarBody,
+-- which occludes on the tight BaseBody panels instead of the oversized
+-- envelope. History in HANDOFF.md.)
 -- ONE-BOOT PROBE (Config.RainCollision.PlayerCarProbe, default false):
 -- the BarelyCollide flip alone produced no occlusion (2026-08-11 field),
 -- and the AE86 sun-probe hit proved vehicle BaseBody comps DO answer
@@ -399,30 +389,6 @@ local function playerCarGT()
         if PLAYER_CAR_BODY then
             pcall(function() playerCarPanelsGT(pawn) end)
         end
-        if not PLAYER_CAR then return end
-        local bc = pawn.BarelyCollide
-        if not bc then return end
-        local resp = nil
-        pcall(function() resp = bc:GetCollisionResponseToChannel(CHANNEL) end)
-        if resp == nil or resp == 2 then return end
-        local wrote = pcall(function()
-            bc:SetCollisionResponseToChannel(CHANNEL, 2)
-        end)
-        -- Shape facts ride the log line: the class answers whether the
-        -- envelope is a simple prim (Box/Sphere/Capsule = simple traces
-        -- hit natively, no CTF question) and en/ot document the stock
-        -- state we are NOT touching.
-        local en, ot, nm = nil, nil, "?"
-        pcall(function() en = bc:GetCollisionEnabled() end)
-        pcall(function() ot = bc:GetCollisionObjectType() end)
-        pcall(function()
-            local fn = bc:GetFullName()
-            if type(fn) == "string" then nm = fn:match("^(%S+)") or fn end
-        end)
-        Log.Info(MODULE, "Player car rain collision applied", {
-            comp = nm, was = resp, en = tostring(en), ot = tostring(ot),
-            wrote = tostring(wrote), channel = CHANNEL,
-        })
     end)
 end
 
@@ -754,6 +720,18 @@ local function processCompGT(st, c)
         local twoSided = nil
         pcall(function() twoSided = c.bCastShadowAsTwoSided end)
         if twoSided == false then
+            -- Count casters this flip TURNS ON (they shipped CastShadow
+            -- false, e.g. every BUIL building): the SetCastShadow(true)
+            -- below enables them, so the force block underneath never
+            -- sees them and castForced= alone undercounts the building
+            -- work. castForced is the building verifier; count both paths.
+            if FORCE_CAST_SHADOW then
+                local preCast = nil
+                pcall(function() preCast = c.CastShadow end)
+                if preCast == false then
+                    st.castForcedN = (st.castForcedN or 0) + 1
+                end
+            end
             pcall(function() c.bCastShadowAsTwoSided = true end)
             -- Force the proxy rebuild that makes the flag take effect
             pcall(function() c:SetCastShadow(false) end)
@@ -933,7 +911,7 @@ finishWorldPassGT = function(st)
     -- Log every triggered pass and any periodic pass that found
     -- streamed-in work; quiet no-op periodic re-passes unless Debug.
     if st.trigger ~= "periodic" or st.enabledN > 0 or shapesN > 0
-        or (st.shadowN or 0) > 0 or DEBUG then
+        or (st.shadowN or 0) > 0 or (st.castForcedN or 0) > 0 or DEBUG then
         local byClass = {}
         for _, cls in ipairs(CLASSES) do
             byClass[#byClass + 1] = cls:sub(1, 4) .. "=" .. (st.perClass[cls] or 0)
@@ -985,7 +963,6 @@ function RainCollision.Init()
         if cfg.Debug ~= nil then DEBUG = cfg.Debug end
         if cfg.FixShadowLeak ~= nil then FIX_SHADOW_LEAK = cfg.FixShadowLeak end
         if cfg.CtfWrite ~= nil then CTF_WRITE = cfg.CtfWrite end
-        if cfg.PlayerCar ~= nil then PLAYER_CAR = cfg.PlayerCar end
         if cfg.PlayerCarProbe ~= nil then PLAYER_CAR_PROBE = cfg.PlayerCarProbe end
         if cfg.PlayerCarBody ~= nil then PLAYER_CAR_BODY = cfg.PlayerCarBody end
         if cfg.ForceCastShadow ~= nil then FORCE_CAST_SHADOW = cfg.ForceCastShadow end
@@ -1009,7 +986,7 @@ function RainCollision.Init()
     Log.Info(MODULE, "Initializing rain collision", {
         channel = CHANNEL, reapply_s = REAPPLY_S,
         ctfWrite = tostring(CTF_WRITE),
-        playerCar = tostring(PLAYER_CAR),
+        playerCarBody = tostring(PLAYER_CAR_BODY),
         patterns = table.concat(TARGET_PATTERNS, ","),
         shadow_patterns = table.concat(SHADOW_PATTERNS, ","),
     })
@@ -1156,7 +1133,7 @@ function RainCollision.Tick()
                 if doEnforce then
                     enforceChannelGT()
                     updateCarPosGT()   -- feeds the async distance gate
-                    if PLAYER_CAR or PLAYER_CAR_BODY or PLAYER_CAR_PROBE then
+                    if PLAYER_CAR_BODY or PLAYER_CAR_PROBE then
                         playerCarGT()
                     end
                     -- The fan mutates responses on game bodies: private

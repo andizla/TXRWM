@@ -146,6 +146,32 @@ local function getKeyDescriptor(keyConfig)
     return table.concat(parts, "+")
 end
 
+-- Per-bind refire guard: the 2026-08-24 UE4SS build delivers EXTRA fire
+-- events per physical press (field: every Alt+J landed as ON then a
+-- phantom OFF within a second, un-doing leak mode all day; the pinned
+-- build fired once). Fires inside the window are dropped. Mode toggles
+-- latch long, spawn/clone/delete one-shots latch mid, nudge keys stay
+-- fast for sculpting; everything else gets the default.
+local DEBOUNCE_DEFAULT_S = 0.25
+local DEBOUNCE_S = {
+    LeakTestToggle = 1.0, SlabTunerToggle = 1.0, CycleHeadlights = 1.0,
+    PhotoDarkLook = 1.0, ToggleTimeSpeed = 1.0, ExposureDebugOverlay = 1.0,
+    PrecipSuppressTest = 1.0,
+    SlabSpawnHere = 0.4, SlabPadSpawn = 0.4, SlabPadJump = 0.4,
+    SlabPadClone = 0.4, SlabPadRayClone = 0.4, SlabPadDelete = 0.4,
+    SlabPadConfirm = 0.3, SlabPadSelectNearest = 0.2,
+    SlabPadParamNext = 0.15, SlabPadParamPrev = 0.15,
+    SlabPadInc = 0.12, SlabPadDec = 0.12,
+    BrightnessUp = 0.12, BrightnessDown = 0.12,
+    ShadowDistanceUp = 0.12, ShadowDistanceDown = 0.12,
+    PhotoExposureUp = 0.12, PhotoExposureDown = 0.12,
+    SkylightAlbedoUp = 0.12, SkylightAlbedoDown = 0.12,
+    SkylightRoughUp = 0.12, SkylightRoughDown = 0.12,
+    SkylightMultUp = 0.12, SkylightMultDown = 0.12,
+    StarIntensityUp = 0.12, StarIntensityDown = 0.12,
+}
+local lastKeyFire = {}   -- bind name -> os.clock of the last accepted fire
+
 --- Register a single keybind
 --- @param name string Keybind name for logging
 --- @param keyConfig table {Key = "S", Modifiers = {"Alt"}}
@@ -193,36 +219,34 @@ local function registerKeybind(name, keyConfig, callback)
         end
     end
     
+    -- One runner for every registration variant: refire guard first,
+    -- then the pcall'd callback.
+    local runner = function()
+        local now = os.clock()
+        local last = lastKeyFire[name]
+        if last and (now - last) < (DEBOUNCE_S[name] or DEBOUNCE_DEFAULT_S) then
+            Log.Debug(MODULE, "Key refire dropped", {bind = name})
+            return
+        end
+        lastKeyFire[name] = now
+        Log.Debug(MODULE, "Key pressed", {bind = name, key = descriptor})
+        local ok, callErr = pcall(callback)
+        if not ok then
+            Log.Error(MODULE, "Keybind callback error", {bind = name, error = tostring(callErr)})
+        end
+    end
     local success, err = pcall(function()
         if #modifierTable > 0 then
             -- Register with modifier table (UE4SS v3.x style)
-            RegisterKeyBind(key, modifierTable, function()
-                Log.Debug(MODULE, "Key pressed", {bind = name, key = descriptor})
-                local ok, callErr = pcall(callback)
-                if not ok then
-                    Log.Error(MODULE, "Keybind callback error", {bind = name, error = tostring(callErr)})
-                end
-            end)
+            RegisterKeyBind(key, modifierTable, runner)
         else
             -- Try with integer modifiers as fallback
             local modFlags = getModifierFlags(keyConfig.Modifiers)
             if modFlags > 0 then
-                RegisterKeyBind(key, modFlags, function()
-                    Log.Debug(MODULE, "Key pressed", {bind = name, key = descriptor})
-                    local ok, callErr = pcall(callback)
-                    if not ok then
-                        Log.Error(MODULE, "Keybind callback error", {bind = name, error = tostring(callErr)})
-                    end
-                end)
+                RegisterKeyBind(key, modFlags, runner)
             else
                 -- Register without modifiers
-                RegisterKeyBind(key, function()
-                    Log.Debug(MODULE, "Key pressed", {bind = name, key = descriptor})
-                    local ok, callErr = pcall(callback)
-                    if not ok then
-                        Log.Error(MODULE, "Keybind callback error", {bind = name, error = tostring(callErr)})
-                    end
-                end)
+                RegisterKeyBind(key, runner)
             end
         end
     end)
@@ -505,7 +529,18 @@ local function onLeakTestToggle()
         if okS and Sched and Sched.HoldFor then
             pcall(function() Sched.HoldFor(7200) end)
         end
-        local t = (Config.LeakTest and tonumber(Config.LeakTest.Time)) or 1800
+        -- Re-land the pinned calendar date before pinning the TOD: with
+        -- Simulate Real Sun the sun position depends on the DATE, which
+        -- drifts every in-game midnight mid-session (course entry resets
+        -- it, long fast-clock sessions walk it forward again), so a
+        -- calibrated leak TOD goes stale. RealSun's entry pass rewrites
+        -- the config date + Hard Reset Cache (queued marshal: it lands
+        -- right after the TOD write below and re-evaluates the sun).
+        pcall(function()
+            local okR, RS = pcall(require, "systems.real_sun")
+            if okR and RS and RS.OnCourseLoad then RS.OnCourseLoad() end
+        end)
+        local t = (Config.LeakTest and tonumber(Config.LeakTest.Time)) or 1820
         pcall(function() weather.ApplyFast("Clear_Skies") end)
         pcall(function() TOD.SetTOD(t) end)
         if not leakWasPaused then pcall(function() TOD.Pause() end) end

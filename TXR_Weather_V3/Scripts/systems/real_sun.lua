@@ -129,7 +129,10 @@ local function applySunSimulation(uds, pass)
     dirty = setAbs(uds, PROP_DAY, cfg.Day, changes) or dirty
     dirty = setAbs(uds, PROP_NORTH_YAW, cfg.NorthYaw, changes) or dirty
     dirty = setAbs(uds, PROP_APPLY_DST, false, changes) or dirty
-    dirty = setAbs(uds, PROP_SIM_SUN, true, changes) or dirty
+    -- SimulateSun=false writes the flag OFF (stock ships it ON): the sun
+    -- becomes a pure TOD curve, independent of the drifting calendar.
+    -- Dev-stage lever for reproducible leak-sun TODs; see Config.RealSun.
+    dirty = setAbs(uds, PROP_SIM_SUN, cfg.SimulateSun ~= false, changes) or dirty
     if cfg.RealMoon ~= false then
         dirty = setAbs(uds, PROP_SIM_MOON, true, changes) or dirty
     end

@@ -21,7 +21,6 @@ local assetCache = {}  -- Cache loaded weather preset assets
 local lastApplyTime = 0
 local applyCount = 0
 local enabled = true   -- master switch (Config.Weather.Enabled); false = ToD/visuals only, no weather
-local lastApplyClock = 0.0  -- os.clock() of the last Weather.Apply (stars burst pacing)
 
 -- Pending rain activation for retry after map load
 local pendingRainActivation = false
@@ -324,11 +323,6 @@ function Weather.Apply(presetName, transitionTime)
         Log.Debug(MODULE, "Weather disabled: skipping apply", {preset = presetName})
         return false
     end
-    -- Timestamp for consumers that pace around weather churn (stars.lua
-    -- post-apply burst: transitions re-push sky-material params
-    -- unconditionally, 2026-07-23)
-    lastApplyClock = os.clock()
-
     -- A weather (re)apply re-establishes particles, so any transient tunnel
     -- suppression is void. Full restore path (NOT just a state clear): it
     -- un-hides the suppressed components; a bare clear would leave them
@@ -420,15 +414,6 @@ function Weather.Apply(presetName, transitionTime)
                 end
             end)
             
-            -- Apply wetness settings via Wetness module (Phase 6)
-            local Wetness = nil
-            pcall(function()
-                Wetness = require("systems.wetness")
-            end)
-            if Wetness and Wetness.ApplyFromPreset then
-                Wetness.ApplyFromPreset(presetData)
-            end
-
             -- God-ray plausibility gate (2026-07-28): sun shafts are forced
             -- off under solid decks/fog/rain; the module re-applies on its
             -- own GT path only when the blocked state actually changes
@@ -1098,13 +1083,6 @@ end
 function Weather.ApplyFast(presetName)
     local fastTime = Config.Weather.FastTransitionTime or 2.0
     return Weather.Apply(presetName, fastTime)
-end
-
---- os.clock() of the last Weather.Apply. Consumers pace around weather
---- churn (weather transitions re-push sky-material params; stars.lua runs
---- its re-assert burst for a few seconds after every apply).
-function Weather.GetLastApplyClock()
-    return lastApplyClock
 end
 
 --- Apply the default weather preset

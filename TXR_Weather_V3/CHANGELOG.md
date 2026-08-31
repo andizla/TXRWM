@@ -3,6 +3,77 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [4.0.0]: 2026-08-31
+
+### Fixed
+- Opening photo mode (or the game's own mid-course resets) no longer
+  makes the mod tear down and rebuild its world state. Every seam
+  blocker respawned and the heaviest collision pass re-ran on each of
+  those moments, felt as stutter bursts while driving, and the time of
+  day could snap backward mid-session. Momentary losses are now
+  absorbed; real course changes behave exactly as before.
+- Leaving a covered parking spot no longer carries the tunnel fog
+  thinning into the next course, and loading straight into heavy fog
+  no longer corrupts the fog falloff for the rest of that course.
+- Updating the mod no longer wipes your saved state. The installer again
+  carries your time of day, weather, headlight settings and your collected
+  tuning feedback across an update, as it did before 3.9.0.
+- The installer offers the graphics profiles again (Photomode, Optimizations
+  only, Minimal), plus a Merge option that keeps your own Engine.ini and just
+  adds the cvars the mod needs, and the dynamic exposure question is back.
+- The installer's config editing is sturdier: it survives future config
+  reformatting and warns with the manual fix instead of failing silently
+  when a setting cannot be written.
+- The sky is alive under a weather preset again. Slow cloud drift, micro
+  jitter, the restless dawn and dusk hours, the day mood and the morning
+  profiles only reached the sky when weather was switched off entirely, so in
+  normal play cloud and fog sat on flat preset values. They now modulate the
+  chosen weather, bounded so a preset still reads as itself
+  (Config.CloudsFog.PresetLivingScale = 0 restores the old flat behaviour).
+- Photo mode's time freeze now actually holds: a background enforcer
+  was quietly restarting the clock a few seconds into every shoot, so
+  the sun and shadows drifted while composing. Long exposures and
+  carefully lined-up shots stay put now. The freeze also retries when
+  a shoot opens during a scene swap, where the write could silently
+  miss and the sun kept crawling.
+- Fog no longer disappears for the rest of the session after leaving a
+  course from inside a tunnel. The covered-road fog thinning could get
+  stuck applied to every later course, muting foggy weather entirely.
+- Night city glow now peaks at midnight and eases toward dawn during
+  the first moments after a course loads (it briefly ramped the wrong
+  way before the sun position was available).
+- Wet-grip's cached "dry road" baseline can no longer be corrupted by
+  an interrupted first application; grip always recovers to exact
+  stock when the road dries.
+- Returning from a parking area no longer risks carrying an invalid
+  fog value into the scene when the previous course's weather could
+  not be read.
+- Assorted robustness fixes from the pre-4.0.0 full code review:
+  headlight gesture state across course loads, a corrupt headlight
+  settings file no longer prevents the mod from starting, sturdier
+  scheduler hold behavior around the tuning tools, and several
+  internal self-heals for rare stuck states.
+- City buildings now cast shadows in daylight. The game ships them
+  with shadow casting turned off and re-applies that on every load
+  (vanilla never shows the sun), so the mod re-enables casting each
+  time a course loads.
+- The covered-road sun-leak shadow fixes (tunnel decks, walls, kerbs)
+  are now pre-baked too: covered sections arrive sealed instead of
+  fixing themselves a few seconds into each course, and streamed-in
+  areas are correct on arrival.
+- The rain-occlusion collision data for covered roads ships pre-baked
+  as well, removing the heaviest part of the in-session patching.
+
+### Changed
+- Seam-fix blockers can now follow road grade and banking (tilt and
+  lean), so sites on climbing or banked covered sections seal cleanly.
+
+### Removed
+- Two long-dormant experimental systems (the road-wetness visual sim
+  and the nebula space layer) and their config sections. Neither has
+  been active in any release; the real-star sky and the wet-grip
+  system are unaffected.
+
 ## [3.10.0]: 2026-08-24
 
 ### Fixed

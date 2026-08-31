@@ -5,7 +5,7 @@ A modular UE4SS Lua mod for **Tokyo Xtreme Racer** that drives **Ultra Dynamic S
 full feature + configuration + developer reference. For install and a short feature list, see the
 landing `README.md`. For per-version changes, see `CHANGELOG.md`.
 
-**Current version: 3.8.0**
+**Current version: 4.0.0**
 
 ---
 
@@ -26,7 +26,8 @@ exposure-driven auto headlights with animated pop-ups and a controller light-but
 weighted, time-of-day-aware random weather scheduler; dawn/dusk slow-time + Tokyo tint; Tokyo city
 glow (light pollution + night sky glow); a real-star night sky with the Milky Way that rotates like
 the real thing; volumetric cloud light rays; wind debris; moon phases and a scalable moon; rainbows;
-and an installer with Engine.ini graphics profiles.
+and an installer with Engine.ini graphics profiles. 4.0.0 adds city building shadows, pre-baked
+covered-road shadow and collision data, and the 112-site covered-road seam campaign.
 
 **Intentionally dropped from 1.34:** surface/vehicle wetness and screen-space weather effects
 (rain-on-lens, frost, heat distortion). They rely on material/post-process paths TXR does not
@@ -36,26 +37,33 @@ composite, so they never rendered reliably. See section 6.
 
 ## 2. Install and Engine.ini (summary)
 
-Run `install.bat`. It auto-detects the Steam install, downloads UE4SS, installs the mod, registers
-it in `mods.txt`, and writes `Engine.ini` from a graphics profile you pick (backing up any existing
-file). Pick a profile, every profile ships the cvars the mod relies on (exposure + fog):
+Run `install.bat`. It auto-detects the Steam install, downloads a pinned and tested UE4SS build,
+installs the mod, registers it in `mods.txt`, copies the content paks into the game's
+`Content\Paks`, and sets up `Engine.ini` (backing up any existing file first).
 
-- **Photomode (+/- exposure)**, highest fidelity, heavier.
-- **Optimizations only (+/- exposure)**, lighter, good for midrange / non-DLSS rigs.
-- **Minimal**, only what the mod needs.
+For Engine.ini it offers:
 
-"Exposure" enables the mod's dynamic day/night exposure (the game's own auto-exposure steered by
-the real sun, see Lighting and exposure below); "no exposure" leaves vanilla brightness. If dusk
-or night look wrong, you most likely skipped the Engine.ini step, re-run the installer and pick
-a profile. **Updating from 3.3.x or older: download a fresh `install.bat` + `install.ps1` first**:
-old installer copies write an Engine.ini line that breaks the 3.4+ exposure.
+- **Photomode**, highest fidelity, heavier.
+- **Optimizations only**, lighter, good for midrange / non-DLSS rigs.
+- **Minimal**, only the cvars the mod needs.
+- **Merge**, keeps your own Engine.ini and just appends the required cvars at the end.
+- **Skip**, changes nothing.
+
+It then asks whether to use the mod's dynamic day/night exposure (the game's own auto-exposure
+steered by the real sun, see Lighting and exposure below); answering no leaves vanilla brightness
+and switches the LightCycle module off to match. It also asks whether you want the dark garage
+look. If dusk or night look wrong, you most likely skipped the Engine.ini step: re-run the
+installer and pick a profile. **Updating from 3.3.x or older: download a fresh `install.bat` +
+`install.ps1` first**: old installer copies write an Engine.ini line that breaks the 3.4+
+exposure.
 
 Updates preserve your saved time-of-day/weather state, headlight settings and
 `Logs/tuning_feedback.log`; `config.lua` intentionally resets to the new release defaults.
 
-The base profile inis live in `engines/` (`photomode_engine.ini`, `optimization_only_engine.ini`).
-The runtime copy excludes that folder; the installer composes the live `Engine.ini` from the chosen
-base.
+The base profile inis ship in the mod's `engines/` folder (`photomode_engine.ini`,
+`optimization_only_engine.ini`); the installer composes the live `Engine.ini` from the chosen base,
+stripping the cvars it manages itself and appending them as one block so it stays the single
+source of truth for them.
 
 ---
 
@@ -114,20 +122,28 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Tunnels and overpasses**: *reworked in 3.5.0* (`tunnels.lua`). Fog is removed under roofs
   (global fog is blind to ceilings; foggy weather used to read as a white wall inside bores),
   detection reading the game's own road data (each road point carries a "roofed" attribute, so
-  boundaries are exact and every real bore is covered). Also fixes the covered-section lighting:
-  the course's covered-road volumes ship with a skylight-leak override that floods interiors with
-  flat sky ambient at the volume edge; the mod clears it so tunnel light stays true to the scene
-  (see Exposure below). Knobs in `Config.Tunnels` (`CoveredFogMult`,
-  `KillVolumeSkylightLeak`; the older particle-hiding rain kill is retired and its knobs idle).
+  boundaries are exact and every real bore is covered). Since 4.0.0 the fog only returns after a
+  few seconds of continuously open road, so the short gaps in covered galleries like Ginza and
+  C1 no longer flash the fog wall back and lag the re-entry (`CoveredFogHold`). Also fixes the
+  covered-section lighting: the course's covered-road volumes ship with a skylight-leak override
+  that floods interiors with flat sky ambient at the volume edge; the mod clears it so tunnel
+  light stays true to the scene (see Exposure below). Knobs in `Config.Tunnels`
+  (`CoveredFogMult`, `CoveredFogHold`, `KillVolumeSkylightLeak`; the older particle-hiding rain
+  kill is retired and its knobs idle).
 - **Native rain occlusion**: *new in 3.8.0* (`rain_collision.lua`). The game ships no overhead
   collision that rain could hit, so rain used to fall straight through tunnel roofs and bridge
   decks. The mod gives the tunnel and bridge meshes invisible collision bodies that only rain
-  traces can see: the AI, the camera and every other game system are unaffected, and nothing in
-  the game files is replaced. Rain now dies inside bores and under overpasses and returns past
-  the portal, all from the game's own particle physics. The pass re-applies as the world streams
-  in, spread across frames so it costs no visible frame time. `Config.RainCollision`
+  traces can see: the AI, the camera and every other game system are unaffected. Rain now dies
+  inside bores and under overpasses and returns past the portal, all from the game's own
+  particle physics. Since 4.0.0 the collision data itself ships pre-baked (see the content paks
+  below); no original game file is modified either way. The pass re-applies as the world streams
+  in, spread across frames so it costs no visible frame time, and going under any cover triggers
+  an immediate pass so a first approach is already dry. `Config.RainCollision`
   (`TargetPatterns` names which meshes get flipped; extend it from `Alt+N` reports if you find a
   covered spot that still rains).
+- **Your car sheds rain**: *new in 3.10.0.* Rain lands on the real body panels (bonnet, bumpers,
+  side skirts, spoiler, windows) with the game's native splashes on the actual roofline, sized
+  per car automatically. `Config.RainCollision.PlayerCarBody`.
 - **Parking Area weather**: *new in 3.4.0.* The PA continues your course weather and time of day
   with the clock running, instead of the canned always-night look. `Config.PA.Mode`:
   `"continue"` (default) / `"freeze"` / `"stock"`.
@@ -166,9 +182,19 @@ a short press turns headlights on, a ~2-second hold turns them off.
 - **Rainbow** (`rainbow.lua`): *new in 3.0.20.* UDW's rainbow, drawn on a world mesh (not a screen
   post-process), so it renders in TXR. UDW decides when it shows from the weather state: rain or fog
   feeding it, the camera in direct sun (not under overcast), and the sun low enough. On by default.
-- **Space Layer** (`space_layer.lua`): *off since 3.6.x.* The separate decal-rendered nebula
-  layer; superseded by the real-star map's own Milky Way band (see Stars), which renders more
-  reliably in TXR. Machinery kept behind `Config.SpaceLayer.Enabled`.
+- **Pre-baked content paks**: *new in 4.0.0.* Two additive patch paks are hosted as their own
+  release asset rather than inside the mod zip: the collision one is large, and they only need
+  re-baking when the GAME updates, not on every mod release. The installer offers to download
+  them and copies them into the game's `Content\Paks`.
+  `TXRWM_RoadShadows_P` bakes two-sided shadow casting into ~1523 road and tunnel mesh
+  components, and `TXRWM_Collision_P` bakes complex-as-simple collision onto 268 mesh assets so
+  rain traces hit the real surface shape. Covered sections are therefore correct from the first
+  frame instead of being fixed a few seconds into each course, and streamed-in areas arrive
+  correct. These are the mod's own files layered over the game's data: **no original game file
+  is modified or replaced**, and deleting the two paks restores stock behaviour exactly.
+  Declining the download is fine: the installer then sets `Config.RainCollision.CtfWrite = true`
+  so the mod does that collision work itself at runtime, exactly as 3.x did, and covered
+  sections settle a few seconds into a course instead of being right on the first frame.
 
 ### Lighting and exposure
 - **Exposure and look** (`light_cycle.lua`): *settled in 3.5.0, shaped in 3.5.1.* The
@@ -200,8 +226,14 @@ a short press turns headlights on, a ~2-second hold turns them off.
   leak low sun through geometry seams: gaps with no faces, which no flag or material can close.
   The mod stands invisible shadow-only blockers on the measured seam lines (hidden engine-cube
   meshes that write shadow depth without rendering; collision off, so nothing can ever hit
-  them). Six sites so far, Ginza first; the site list lives in `Scripts/data/gap_slabs.lua` and
-  the map-wide pass continues release by release. `Config.GapWalls`.
+  them). **112 sites as of 4.0.0**, Ginza first; blockers can follow road grade and banking, the
+  site list lives in `Scripts/data/gap_slabs.lua`, and the map-wide pass continues release by
+  release. `Config.GapWalls`.
+- **City building shadows**: *new in 4.0.0.* TXR's buildings ship with shadow casting switched
+  off (it is a night game) and the game re-applies that on every course load, so the mod
+  re-enables it each time a course loads. A visible city-wide change in daylight: towers and
+  blocks lay shadows across the streets instead of the city reading flatly lit.
+  `Config.RainCollision.ForceCastShadow`.
 
 ### Driving
 - **Dynamic wet grip** (`wet_grip.lua`): *new in 3.1.0, on by default again since 3.8.0.* Tire
@@ -298,8 +330,12 @@ Feature blocks of note:
 - `Config.WetGrip`: `MinGripMult` / `MinSideGripMult` (grip floors at full wet), `PrecipForFullWet`,
   snow handling, and the `WetRiseSeconds` / `DrySeconds` wet/dry timing.
 - `Config.Rainbow`: `MaxStrength` / mask caps (nil = UDW defaults).
-- `Config.SpaceLayer`: `NebulaIntensity`, colors, brightness, `SetDBuffer`.
-- `Config.Vignette`: `Enabled` (default false), `Hide`.
+- `Config.Vignette`: `Enabled` (ON by default), `Hide`.
+- `Config.CloudsFog.PresetLivingScale`: how much the living sky (drift, jitter, dawn/dusk
+  turbulence, day mood, morning profiles) modulates a weather preset. 1.0 = full, 0 = flat
+  preset values.
+- `Config.Tunnels.CoveredFogHold`: seconds of continuously open road before fog returns after
+  cover ends (5.0). Stops the fog wall flashing back in the gaps of covered galleries.
 - `Config.Tuning`: `RangeMultiplier` (slider widening factor), `ReapplyOnLoad`, `SkipLockedRows`.
 - `Config.GapWalls`: the covered-road seam fixes (3.10.0): `Enabled`, `Visible` (debug: render
   the blockers as gray boxes), `Slabs` (an append hook for extra sites; the shipped site list
@@ -323,8 +359,8 @@ sky/atmosphere/stars/moon, and mesh-drawn effects), but does **not** composite e
   `... WB` (weighted blendable) is post-process = dead in TXR.
 - **Material-function effects**, surface wetness, puddles, glass rain drips, DLWE, foliage wind,
   water rain ripples. The game's road/ground materials don't sample UDW's parameters, and material
-  graph nodes can't be added from Lua. (`wetness.lua` exists but is disabled, logic runs, nothing
-  draws.)
+  graph nodes can't be added from Lua. (The `wetness.lua` module that chased this was removed in
+  4.0.0 after years disabled; the grip system is unrelated and unaffected.)
 - ~~Native rain occlusion~~ **solved in 3.8.0**: the game ships no overhead collision rain could
   hit, so rain used to fall straight through roofs. The mod now provides that collision itself
   (`rain_collision.lua`, see Features), so this is no longer a dead-end; the entry stays here as
@@ -380,7 +416,6 @@ UDW["Change Weather"](preset, seconds)
 UDW["Cloud Coverage"], ["Rain"], ["Fog"], ["Thunder/Lightning"], ["Wind Intensity"]  -- 0-10
 -- Visuals
 UDW["Enable Rainbow"]; UDW["Static Properties - Rainbow"]
-UDS["Render Nebula"], ["Space Glow Brightness"]; UDS["Static Properties - Space Layer"]   -- needs r.DBuffer 1
 -- Dynamic wet grip (global tire model)
 DT "/Game/ITSB/Core/Quest/DT_TireDegradationInfo" -> rows' Max/Cliff/Min(Side)GripRate
 -- Photo mode
@@ -392,6 +427,17 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 ## 8. Version history
 
 See `CHANGELOG.md` for the full list. Most recent:
+- **4.0.0**: the city casts shadows in daylight (buildings ship with shadow
+  casting off and the game re-applies that on every load, so the mod re-enables
+  it every course); covered-road shadow and rain-collision data now ships
+  pre-baked as two content paks, so covered sections are correct from the first
+  frame; the seam-fix campaign reaches 112 sites; fog stops flashing back in the
+  gaps of covered galleries; the sky breathes under a weather preset again
+  (drift, jitter, day mood and morning profiles reached the sky only when
+  weather was disabled entirely); photo mode's time freeze actually holds; a
+  session-long fog loss after exiting a course inside a tunnel is fixed; the
+  installer preserves your saved state across updates again and offers the
+  graphics profiles again.
 
 - **3.10.0**: covered roads stop leaking low sun through their seams (six
   sites fixed, map-wide pass ongoing); the mod's game-thread plumbing

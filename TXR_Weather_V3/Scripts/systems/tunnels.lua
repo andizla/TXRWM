@@ -121,6 +121,19 @@ end
 
 -- ============== INTERNAL: state machine ==============
 
+-- Fog-damp release hold: what we last told EnhancedFog (fogDampOn) and the
+-- os.clock deadline for an actual release (nil = none pending). The hold
+-- exists for the covered galleries with short open gaps (ginza/C1): an
+-- edge-triggered release flashed the full fog wall back in every gap and
+-- then lagged the re-entry by a poll. Config.Tunnels.CoveredFogHold.
+local fogDampOn = false
+local fogReleaseAt = nil
+local FOG_HOLD_S = 5.0
+-- Pawn cache for the poll (GT-only, IsValid-revalidated per use, dropped
+-- in tunnelReset per footgun 0): the old per-poll GetPlayerController was
+-- an uncached FindAllOf sweep, at 4Hz under foggy presets.
+local cachedPawn = nil
+
 --- Pure-state reset (refs dropped: unload/teardown/re-arm). NO weather
 --- calls, safe from any thread; the next Weather.Apply clears any lingering
 --- suppression itself (full restore path, see weather.lua).
@@ -130,6 +143,8 @@ local function tunnelReset()
     roofNow, rainClearCount, coverWasRoad = false, 0, false
     lastTunnelAttr = nil
     lastCoverRaw = false
+    fogDampOn, fogReleaseAt = false, nil
+    cachedPawn = nil
 end
 
 --- Apply the covered state computed by the poll (game thread). The rain
@@ -154,12 +169,34 @@ local function tunnelApplyState(carIn, rainAhead)
     if carIn ~= tunnelNow then
         tunnelNow = carIn
         Log.Info(MODULE, tunnelNow and "Tunnel cover ON (road data)" or "Tunnel cover OFF")
-        -- Fog damp rides the road-data cover only (bores; brief overpass
-        -- shadows don't need it). EnhancedFog owns the fog writes.
-        pcall(function()
-            local ok, EF = pcall(require, "systems.enhanced_fog")
-            if ok and EF and EF.SetCoveredDamp then EF.SetCoveredDamp(tunnelNow) end
-        end)
+    end
+    -- Fog damp rides the road-data cover only (bores; brief overpass
+    -- shadows don't need it); EnhancedFog owns the fog writes. ON lands
+    -- at the portal edge; OFF waits FOG_HOLD_S of CONTINUOUSLY open road,
+    -- so the short gaps between covered sections never flash the fog wall
+    -- back mid-gallery. A real exit restores fog a few seconds past the
+    -- portal, where the global fog is the correct look anyway.
+    if carIn then
+        fogReleaseAt = nil
+        if not fogDampOn then
+            fogDampOn = true
+            pcall(function()
+                local ok, EF = pcall(require, "systems.enhanced_fog")
+                if ok and EF and EF.SetCoveredDamp then EF.SetCoveredDamp(true) end
+            end)
+        end
+    elseif fogDampOn then
+        local nowC = os.clock()
+        if not fogReleaseAt then
+            fogReleaseAt = nowC + FOG_HOLD_S
+        elseif nowC >= fogReleaseAt then
+            fogReleaseAt = nil
+            fogDampOn = false
+            pcall(function()
+                local ok, EF = pcall(require, "systems.enhanced_fog")
+                if ok and EF and EF.SetCoveredDamp then EF.SetCoveredDamp(false) end
+            end)
+        end
     end
     -- Kill instantly on cover. Release depends on which signal covered
     -- last: the road-data bit is exact, so its cover releases on the FIRST
@@ -467,14 +504,20 @@ local function ppPollGT()
     local px, py, pz = nil, nil, nil
     local pawnObj = nil
     pcall(function()
-        local UEH = getUEHelpers()
-        local pc = UEH and UEH.GetPlayerController and UEH.GetPlayerController()
-        local pawn = pc and pc.Pawn
+        local pawn = cachedPawn
+        if not (pawn and pawn.IsValid and pawn:IsValid()) then
+            -- Cache miss / stale: pay the controller sweep once, then
+            -- reuse the pawn until it dies (world edges drop the cache).
+            local UEH = getUEHelpers()
+            local pc = UEH and UEH.GetPlayerController and UEH.GetPlayerController()
+            pawn = pc and pc.Pawn
+        end
         if pawn and pawn.IsValid and pawn:IsValid() then
             local loc = pawn:K2_GetActorLocation()
             if loc then
                 px, py, pz = loc.X, loc.Y, loc.Z
                 pawnObj = pawn
+                cachedPawn = pawn
             end
         end
     end)
@@ -582,7 +625,25 @@ local function ppWatchTick(now)
     -- (fog damp, the covered flag for headlights and photomode) ran on the
     -- dry cadence for the whole no-rain build. Re-enabling TunnelRainKill
     -- restores the old behavior.
-    local fast = rainZoneNow or roofNow
+    -- The fog damp also earns the fast cadence while engaged or holding:
+    -- gap edges and re-entries then react within 0.25s instead of 1s.
+    local fast = rainZoneNow or roofNow or fogDampOn or (fogReleaseAt ~= nil)
+    if not fast then
+        -- Foggy-ish weather anywhere = fast poll too, so the FIRST portal
+        -- edge (nothing engaged yet) and a re-entry after a long gap also
+        -- react within POLL_RAIN_S instead of the 1s dry cadence. Pure
+        -- data lookups, async-safe (the rain-kill pattern below).
+        pcall(function()
+            local p = State.GetCurrentPreset()
+            if p then
+                local pr = getPresets()
+                local pd = pr and pr.Get and pr.Get(p)
+                if pd and type(pd.fog) == "number" and pd.fog > 0.5 then
+                    fast = true
+                end
+            end
+        end)
+    end
     if not fast and TUNNEL_RAIN_KILL then
         pcall(function()
             local p = State.GetCurrentPreset()
@@ -622,6 +683,9 @@ function Tunnels.Init()
         if cfg.RainClearPolls then RAIN_CLEAR_POLLS = cfg.RainClearPolls end
         if cfg.PollSecondsRain then POLL_RAIN_S = cfg.PollSecondsRain end
         if cfg.PollSecondsDry then POLL_DRY_S = cfg.PollSecondsDry end
+        if type(cfg.CoveredFogHold) == "number" and cfg.CoveredFogHold >= 0 then
+            FOG_HOLD_S = cfg.CoveredFogHold
+        end
     end
 
     -- The containment poll always earns its keep: the covered flag it

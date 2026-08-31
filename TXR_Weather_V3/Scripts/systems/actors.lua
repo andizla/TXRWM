@@ -63,6 +63,7 @@ local garageEventThisWorld = false
 local courseSettled = false
 local hadActorsThisWorld = false
 local udsInvalidStreak = 0
+local udsInvalidWarnAt = 0.0   -- warn throttle (menu worlds spam 1-2Hz forever)
 local COURSE_SETTLE_STREAK = 5
 
 -- ============== INTERNAL FUNCTIONS ==============
@@ -269,7 +270,15 @@ local function discoverActors()
     
     -- Validate UDS
     if not Utils.IsValidObject(uds) then
-        Log.Warn(MODULE, "UDS found but not valid")
+        -- Throttled: title/menu worlds hold an invalid UDS forever and
+        -- neither settle path arms there (4.5 straight minutes of 1-2Hz
+        -- warns on 08-31). First hit per world still logs immediately
+        -- (crash forensics key on this line's timing).
+        local nowW = os.clock()
+        if nowW >= udsInvalidWarnAt then
+            udsInvalidWarnAt = nowW + 30.0
+            Log.Warn(MODULE, "UDS found but not valid (repeats muted 30s)")
+        end
         -- Course post-race signature: we HAD live actors in this world and
         -- now the found UDS repeatedly fails validation = the sky is torn
         -- down for good (result screens). Settle; a sky BeginPlay or map
@@ -478,8 +487,14 @@ function Actors.SuspendDiscovery()
         hadActorsThisWorld = false
         udwInvalidStreak = 0
         udsInvalidStreak = 0
+        udsInvalidWarnAt = 0.0   -- new world: first invalid hit logs at once
         garageEventThisWorld = false
         Log.Info(MODULE, "Discovery suspended (map teardown, actor cache dropped)")
+    else
+        -- A second teardown during an active suspension (bounced out of a
+        -- no-signal world before any resume fired): restart the failsafe
+        -- clock so it cannot expire mid-teardown of the NEWER world.
+        suspendedAt = os.time()
     end
 end
 

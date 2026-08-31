@@ -115,53 +115,124 @@ local function getMorningBiases()
     return profile.cloudBias, profile.fogBias
 end
 
+-- Maximum deviation the living modulation may add to a PRESET value. Clear
+-- Skies (cloud 0.5) must still read as clear at its cloudiest, and a Foggy
+-- preset must not thin out into haze, so the caps stay well inside one
+-- preset step. Config.CloudsFog.PresetLivingScale scales the whole thing.
+local PRESET_LIVING_CAP_CLOUD = 1.2
+local PRESET_LIVING_CAP_FOG = 0.5
+
 -- ============== TARGET CALCULATIONS ==============
+
+--- The LIVING modulation: slow drift, micro jitter, the dawn/dusk turbulence
+--- boost, the morning profile bias and the day mood. Returned as an OFFSET
+--- (positive or negative) so it can ride either the diurnal auto curve or a
+--- weather preset's own value. Both paths need it: before 2026-08-26 this math
+--- existed only inside the auto curve, and since a preset is applied on every
+--- course load the sky ran on flat preset constants and never breathed.
+--- @param tod number Time of day (0-2400)
+--- @return number offset in cloud units
+local function cloudLivingOffset(tod)
+    local t = os.clock() - internalState.driftT0
+
+    -- Drift: slow oscillation over minutes
+    local drift = Config.CloudsFog.CloudDriftAmplitude *
+        (0.5 * (1.0 - math.cos(2.0 * math.pi * (t / Config.CloudsFog.CloudDriftPeriod))))
+
+    -- Micro jitter: faster oscillation
+    local jitter = Config.CloudsFog.CloudJitterAmplitude *
+        math.sin(2.0 * math.pi * (t / Config.CloudsFog.CloudJitterPeriod + 0.37))
+
+    -- Dawn/Dusk boost: the sky is visibly more restless around the golden hours
+    local ddFactor = Utils.DawnDuskFactor(tod,
+        Config.TimeOfDay.DawnStart, Config.TimeOfDay.DawnEnd,
+        Config.TimeOfDay.DuskStart, Config.TimeOfDay.DuskEnd)
+
+    if ddFactor > 0.0001 then
+        drift = drift + (0.45 * ddFactor) * math.sin(2.0 * math.pi * (t / 12.0))
+        jitter = jitter + (0.20 * ddFactor) * math.sin(2.0 * math.pi * (t / 6.5) + 1.1)
+    end
+
+    local offset = drift + jitter
+
+    -- Morning profile bias
+    local mFactor = getMorningFactor(tod)
+    if mFactor > 0.0001 then
+        local cloudBias, _ = getMorningBiases()
+        offset = offset + (cloudBias * mFactor)
+    end
+
+    -- Day mood influence
+    if Config.CloudsFog.MoodEnabled then
+        offset = offset + (internalState.moodCurrent * Config.CloudsFog.MoodCloudScale)
+    end
+
+    return offset
+end
+
+--- Fog counterpart of cloudLivingOffset.
+--- @param tod number Time of day (0-2400)
+--- @return number offset in fog units
+local function fogLivingOffset(tod)
+    local t = os.clock() - internalState.driftT0
+
+    -- Drift
+    local drift = Config.CloudsFog.FogDriftAmplitude *
+        (0.5 * (1.0 - math.cos(2.0 * math.pi * (t / 105.0))))
+
+    -- Dawn/Dusk boost
+    local ddFactor = Utils.DawnDuskFactor(tod,
+        Config.TimeOfDay.DawnStart, Config.TimeOfDay.DawnEnd,
+        Config.TimeOfDay.DuskStart, Config.TimeOfDay.DuskEnd)
+
+    if ddFactor > 0.0001 then
+        drift = drift + 0.25 * ddFactor
+    end
+
+    local offset = drift
+
+    -- Morning profile bias
+    local mFactor = getMorningFactor(tod)
+    if mFactor > 0.0001 then
+        local _, fogBias = getMorningBiases()
+        offset = offset + (fogBias * mFactor)
+    end
+
+    -- Day mood influence
+    if Config.CloudsFog.MoodEnabled then
+        offset = offset + (internalState.moodCurrent * Config.CloudsFog.MoodFogScale)
+    end
+
+    return offset
+end
+
+--- Scale and cap the living offset for the PRESET path. A preset is a deliberate
+--- pick, so the sky should breathe around it without wandering into a different
+--- weather: the cap is what keeps Clear Skies from turning into a cloudy morning.
+--- Set Config.CloudsFog.PresetLivingScale = 0 for the old flat-preset behaviour.
+--- @param offset number raw living offset
+--- @param cap number maximum absolute deviation allowed
+--- @return number
+local function presetLiving(offset, cap)
+    local scale = Config.CloudsFog.PresetLivingScale
+    if scale == nil then scale = 1.0 end
+    if scale <= 0 then return 0 end
+    return Utils.Clamp(offset * scale, -cap, cap)
+end
 
 --- Calculate target cloud coverage based on time of day
 --- @param tod number Time of day (0-2400)
 --- @return number Target cloud coverage (0-10)
 function CloudsFog.TargetCloudCoverage(tod)
     local frac = (tod % 2400) / 2400
-    local t = os.clock() - internalState.driftT0
-    
+
     -- Base diurnal curve
     local diurnal = 0.5 * (1.0 - math.cos(2.0 * math.pi * (frac + 0.15)))
-    
-    -- Drift: slow oscillation over minutes
-    local drift = Config.CloudsFog.CloudDriftAmplitude * 
-        (0.5 * (1.0 - math.cos(2.0 * math.pi * (t / Config.CloudsFog.CloudDriftPeriod))))
-    
-    -- Micro jitter: faster oscillation
-    local jitter = Config.CloudsFog.CloudJitterAmplitude * 
-        math.sin(2.0 * math.pi * (t / Config.CloudsFog.CloudJitterPeriod + 0.37))
-    
-    -- Dawn/Dusk boost
-    local ddFactor = Utils.DawnDuskFactor(tod,
-        Config.TimeOfDay.DawnStart, Config.TimeOfDay.DawnEnd,
-        Config.TimeOfDay.DuskStart, Config.TimeOfDay.DuskEnd)
-    
-    if ddFactor > 0.0001 then
-        drift = drift + (0.45 * ddFactor) * math.sin(2.0 * math.pi * (t / 12.0))
-        jitter = jitter + (0.20 * ddFactor) * math.sin(2.0 * math.pi * (t / 6.5) + 1.1)
-    end
-    
-    -- Calculate base value
-    local value = Config.CloudsFog.CloudMin + 
-        (Config.CloudsFog.CloudMax - Config.CloudsFog.CloudMin) * diurnal + 
-        drift + jitter
-    
-    -- Morning profile bias
-    local mFactor = getMorningFactor(tod)
-    if mFactor > 0.0001 then
-        local cloudBias, _ = getMorningBiases()
-        value = value + (cloudBias * mFactor)
-    end
-    
-    -- Day mood influence
-    if Config.CloudsFog.MoodEnabled then
-        value = value + (internalState.moodCurrent * Config.CloudsFog.MoodCloudScale)
-    end
-    
+
+    local value = Config.CloudsFog.CloudMin +
+        (Config.CloudsFog.CloudMax - Config.CloudsFog.CloudMin) * diurnal +
+        cloudLivingOffset(tod)
+
     return Utils.Clamp(value, 0, 10)
 end
 
@@ -170,41 +241,14 @@ end
 --- @return number Target fog density (0-10)
 function CloudsFog.TargetFog(tod)
     local frac = (tod % 2400) / 2400
-    local t = os.clock() - internalState.driftT0
-    
+
     -- Base diurnal curve with phase shift
     local diurnal = 0.5 * (1.0 - math.cos(2.0 * math.pi * (frac + Config.CloudsFog.FogPhaseShift)))
-    
-    -- Drift
-    local drift = Config.CloudsFog.FogDriftAmplitude * 
-        (0.5 * (1.0 - math.cos(2.0 * math.pi * (t / 105.0))))
-    
-    -- Dawn/Dusk boost
-    local ddFactor = Utils.DawnDuskFactor(tod,
-        Config.TimeOfDay.DawnStart, Config.TimeOfDay.DawnEnd,
-        Config.TimeOfDay.DuskStart, Config.TimeOfDay.DuskEnd)
-    
-    if ddFactor > 0.0001 then
-        drift = drift + 0.25 * ddFactor
-    end
-    
-    -- Calculate base value
-    local value = Config.CloudsFog.FogMin + 
-        (Config.CloudsFog.FogMax - Config.CloudsFog.FogMin) * diurnal + 
-        drift
-    
-    -- Morning profile bias
-    local mFactor = getMorningFactor(tod)
-    if mFactor > 0.0001 then
-        local _, fogBias = getMorningBiases()
-        value = value + (fogBias * mFactor)
-    end
-    
-    -- Day mood influence
-    if Config.CloudsFog.MoodEnabled then
-        value = value + (internalState.moodCurrent * Config.CloudsFog.MoodFogScale)
-    end
-    
+
+    local value = Config.CloudsFog.FogMin +
+        (Config.CloudsFog.FogMax - Config.CloudsFog.FogMin) * diurnal +
+        fogLivingOffset(tod)
+
     return Utils.Clamp(value, 0, 10)
 end
 
@@ -457,8 +501,12 @@ function CloudsFog.Tick(dt)
         local targetCloud
         
         if presetActive and presetCloud ~= nil then
-            -- Use preset value directly
-            targetCloud = presetCloud
+            -- The preset sets the BASE; the living modulation rides on top so
+            -- the sky still breathes inside a chosen weather (capped, so a
+            -- preset can never wander into a different one).
+            targetCloud = Utils.Clamp(
+                presetCloud + presetLiving(cloudLivingOffset(tod), PRESET_LIVING_CAP_CLOUD),
+                0, 10)
         else
             -- Calculate automatic value
             targetCloud = CloudsFog.TargetCloudCoverage(tod)
@@ -497,8 +545,10 @@ function CloudsFog.Tick(dt)
         local targetFog
         
         if presetActive and presetFog ~= nil then
-            -- Use preset value directly
-            targetFog = presetFog
+            -- Same as cloud: preset base plus the capped living modulation.
+            targetFog = Utils.Clamp(
+                presetFog + presetLiving(fogLivingOffset(tod), PRESET_LIVING_CAP_FOG),
+                0, 10)
         else
             -- Calculate automatic value
             targetFog = CloudsFog.TargetFog(tod)
@@ -565,6 +615,10 @@ end
 --- Called when course loads
 function CloudsFog.OnCourseLoad()
     internalState.manualOverrideSet = false
+    -- Respect the master switch: with the module disabled nothing drives
+    -- cloud/fog values, so latching UDW's manual-override flags here would
+    -- freeze both at spawn values with no replacement driver.
+    if Config.CloudsFog and Config.CloudsFog.Enabled == false then return end
     ensureManualOverride()
 end
 

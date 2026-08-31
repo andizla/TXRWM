@@ -15,17 +15,27 @@ try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::
 
 $Root     = $PSScriptRoot
 $ModName  = 'TXR_Weather_V3'
-# PINNED UE4SS build (since 3.9.0): upstream experimental nightly g1c1a1497
+# PINNED UE4SS build (since 3.9.0, unchanged for 4.0.0): nightly g1c1a1497
 # (2026-08-08) repacked with the TXR signature + tuned settings, hosted as a
 # release asset on this repo so the link can never be overwritten by a newer
-# nightly. Contains the upstream fix for the crash class that plagued the
-# old 2025-09 build.
+# nightly. Every field hour since 3.9.0 is on this exact build. (A planned
+# bump to zDEV a1e7f571 was dropped at release: hash checks showed the
+# local install still runs g1c1a1497, so the newer build has NO verified
+# field time; bump only after it truly runs clean locally.)
 $UE4SSUrl = 'https://github.com/andizla/TXRWM/releases/download/v3.9.0/UE4SS-TXR-g1c1a1497.zip'
 
 # GitHub release asset. Name the release zip 'TXR_Weather_V3.zip' so this resolves.
 # Leave as '' to install from a local TXR_Weather_V3 folder next to this script
 # (pre-release testing) - the repo/release don't exist yet as of writing.
 $ModUrl   = 'https://github.com/andizla/TXRWM/releases/latest/download/TXR_Weather_V3.zip'
+
+# Baked content paks (road/tunnel shadow flags + tunnel collision), hosted as
+# their own release asset because the collision pak is ~291 MB and only needs
+# re-baking when the GAME updates. PINNED to a release tag, not /latest, so a
+# re-bake can be published without silently changing what older installs pull.
+# Hosted on the v4.0.0 release. Leave as '' to skip the download step
+# entirely.
+$PaksUrl  = 'https://github.com/andizla/TXRWM/releases/download/v4.0.0/TXRWM_Paks.zip'
 
 # Minimal required engine.ini (the only cvars the mod needs to function).
 $MinIni = @(
@@ -36,6 +46,90 @@ $MinIni = @(
     'r.Lumen.SampleFog=1',
     'r.NGX.DLSS.AutoExposure=0'
 )
+
+# Installer-OWNED cvars. Stripped from any chosen base profile and re-appended
+# as one managed block, so the installer is the single source of truth for them
+# on every profile. r.EyeAdaptation.MethodOverride stays in $ManagedKeys (never
+# in a write set) so upgrades STRIP it from existing files: a leftover
+# MethodOverride=3 breaks the 3.4+ exposure system.
+$FogCvars    = @('r.fog=1', 'r.Lumen.SampleFog=1')
+$ExpOnCvars  = @(
+    'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=1',
+    'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange=True',
+    'r.NGX.DLSS.AutoExposure=0'
+)
+$ExpOffCvars = @('r.NGX.DLSS.AutoExposure=1')
+$ManagedKeys = @(
+    'r.fog',
+    'r.Lumen.SampleFog',
+    'r.DefaultFeature.AutoExposure.ExtendDefaultLuminanceRange',
+    'r.NGX.DLSS.AutoExposure',
+    'r.EyeAdaptation.MethodOverride'
+)
+
+# Build an Engine.ini from a base profile: drop the managed cvars out of the
+# base, then append one managed block. An empty base yields the minimal profile.
+function Compose-Ini($baseLines, $exposureOn){
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach($l in $baseLines){
+        $key = (($l -split '=', 2)[0]).Trim()
+        if($ManagedKeys -contains $key){ continue }
+        $out.Add($l)
+    }
+    $out.Add('')
+    $out.Add('; === TXR Weather Mod - required cvars (managed by installer) ===')
+    $out.Add('[ConsoleVariables]')
+    foreach($c in $FogCvars){ $out.Add($c) }
+    $expSet = if($exposureOn){ $ExpOnCvars } else { $ExpOffCvars }
+    foreach($c in $expSet){ $out.Add($c) }
+    return [string[]]$out
+}
+
+# Set a boolean inside a Config.<Section> = { ... } block in the installed
+# config.lua. Used for the exposure choice and for the collision-pak fallback.
+# Brace-depth aware: a nested table (e.g. a pattern list) above the key must
+# not end the scan, and only the assignment itself is replaced, never a
+# true/false inside a trailing comment.
+function Set-ConfigBool($modDst, $sectionPattern, $keyPattern, $on){
+    $cfg = Join-Path $modDst 'Scripts\config.lua'
+    if(-not (Test-Path $cfg)){ return $false }
+    $val = if($on){ 'true' } else { 'false' }
+    $lines = @(Get-Content $cfg)
+    $depth = 0
+    for($i = 0; $i -lt $lines.Count; $i++){
+        $code = $lines[$i] -replace '--.*$', ''
+        if($depth -eq 0){
+            if($lines[$i] -match $sectionPattern){
+                $depth = ([regex]::Matches($code, '\{').Count) - ([regex]::Matches($code, '\}').Count)
+                if($depth -le 0){ return $false }
+            }
+            continue
+        }
+        if($depth -eq 1 -and $lines[$i] -match $keyPattern){
+            $lines[$i] = [regex]::new('(=\s*)(true|false)').Replace($lines[$i], ('${1}' + $val), 1)
+            WriteLines $cfg $lines
+            return $true
+        }
+        $depth += ([regex]::Matches($code, '\{').Count) - ([regex]::Matches($code, '\}').Count)
+        if($depth -le 0){ break }
+    }
+    return $false
+}
+
+# Match Config.ModuleToggles.LightCycle to the chosen exposure mode. LightCycle
+# is the sun-elevation exposure module; "no exposure" = module off = vanilla.
+function Set-ExposureFlag($modDst, $on){
+    return (Set-ConfigBool $modDst '^\s*Config\.ModuleToggles\s*=\s*\{' '^\s*LightCycle\s*=' $on)
+}
+
+# The runtime rain-collision pass can either rely on the baked collision pak
+# (CtfWrite = false, the shipping default) or write the collision flags itself
+# (CtfWrite = true). Without the pak the runtime MUST do it, or rain falls
+# through tunnel roofs, so the installer matches this to what actually got
+# installed.
+function Set-CtfWrite($modDst, $on){
+    return (Set-ConfigBool $modDst '^\s*Config\.RainCollision\s*=\s*\{' '^\s*CtfWrite\s*=' $on)
+}
 
 # ----- helpers ---------------------------------------------------------------
 function Say($m, $c='Gray'){ Write-Host $m -ForegroundColor $c }
@@ -104,7 +198,7 @@ function Find-ModRoot($base){
 function Merge-Cvars($path, $minLines){
     $marker    = '; === TXR Weather Mod (required cvars) - managed by installer ==='
     $endMarker = '; === end TXR Weather Mod ==='
-    $existing  = @(Get-Content $path)
+    $existing  = @(); if(Test-Path $path){ $existing = @(Get-Content $path) }
     $out = New-Object System.Collections.Generic.List[string]
     $inBlock = $false
     foreach($l in $existing){
@@ -158,8 +252,9 @@ try {
     $installUE4SS = $true
     if($haveUE4SS){
         Warn 'UE4SS is already installed here.'
-        Say  '    3.9.0 ships a newer pinned UE4SS build that fixes a long-standing'
-        Say  '    intermittent crash. Updating is recommended.'
+        Say  '    The mod ships a pinned, field-proven UE4SS build (the same one'
+        Say  '    3.9.0 and 3.10.0 used). Updating is recommended if your UE4SS'
+        Say  '    is older than that.'
         $installUE4SS = AskYesNo 'Update UE4SS now? (your existing Mods are kept)' $true
     }
     if($installUE4SS){
@@ -220,15 +315,122 @@ try {
     }
 
     $modDst = Join-Path $modsDir $ModName
+    # Files carried across an update: persisted runtime state and the collected
+    # tuning datapoints. config.lua intentionally resets (release defaults move).
+    # (Restored 2026-08-26: the 3.9.0 installer rework dropped this block, so
+    # every update since silently deleted the user's saved state and feedback log.)
+    $keepFiles = @('last_state.txt','last_state.txt.bak','headlight_state.txt','Logs\tuning_feedback.log')
+    $keepDir = $null
     if(Test-Path $modDst){
-        if(AskYesNo 'Mod already installed. Overwrite (update) it?'){ Remove-Item $modDst -Recurse -Force }
+        if(AskYesNo 'Mod already installed. Overwrite (update) it?'){
+            foreach($rel in $keepFiles){
+                $src = Join-Path $modDst $rel
+                if(Test-Path $src){
+                    if(-not $keepDir){
+                        $keepDir = Join-Path $tmp 'keep'
+                        New-Item -ItemType Directory -Force -Path $keepDir | Out-Null
+                    }
+                    $dst = Join-Path $keepDir $rel
+                    New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+                    Copy-Item $src $dst -Force
+                }
+            }
+            Remove-Item $modDst -Recurse -Force
+        }
         else { Warn 'Keeping existing mod files.' }
     }
     if(-not (Test-Path $modDst)){
-        $rc = @($modRoot, $modDst, '/E','/NFL','/NDL','/NJH','/NJS','/NP','/XD','Logs','.backup','/XF','*.bak')
+        $rc = @($modRoot, $modDst, '/E','/NFL','/NDL','/NJH','/NJS','/NP','/XD','Logs','.backup','Paks','/XF','*.bak')
         & robocopy @rc | Out-Null
         if($LASTEXITCODE -ge 8){ throw "robocopy failed copying the mod (code $LASTEXITCODE)" }
         Ok "Installed mod to $modDst"
+        if($keepDir){
+            foreach($rel in $keepFiles){
+                $src = Join-Path $keepDir $rel
+                if(Test-Path $src){
+                    $dst = Join-Path $modDst $rel
+                    New-Item -ItemType Directory -Force -Path (Split-Path $dst) | Out-Null
+                    Copy-Item $src $dst -Force
+                }
+            }
+            Ok 'Restored your saved state (time of day, weather, headlights) and tuning_feedback.log.'
+        }
+    }
+
+    # 3a) Content paks (4.0.0+) ----------------------------------------------
+    # The baked content patches (two-sided road/tunnel shadow flags, tunnel
+    # collision) ship as their OWN release asset, not inside the mod zip: the
+    # collision pak alone is ~291 MB and only needs re-baking when the GAME
+    # updates, while the mod's Lua ships far more often. A local <mod>\Paks
+    # folder still wins when present (pre-release testing).
+    #
+    # If the paks are not installed, the runtime pass must write the collision
+    # flags itself or rain falls through tunnel roofs, so CtfWrite is matched
+    # to what actually landed.
+    Step 'Content paks (baked shadow + rain collision)'
+    $gameRoot = Split-Path (Split-Path $win64 -Parent) -Parent   # ...\TokyoXtremeRacer\TokyoXtremeRacer
+    $paksDst  = Join-Path $gameRoot 'Content\Paks'
+    $pakSrc   = Join-Path $modRoot 'Paks'
+    $paksIn   = $false
+
+    if(-not (Test-Path $pakSrc)){
+        $pakSrc = $null
+        Say '    These make covered roads correct from the first frame of a course'
+        Say '    (shadows and rain occlusion baked into the map data) instead of the'
+        Say '    mod repairing them a few seconds in. Large one-time download; they'
+        Say '    only change when the GAME updates, not on every mod release.'
+        if($PaksUrl -and (AskYesNo '    Download the content paks now? (about 100 MB download, ~300 MB on disk)' $true)){
+            try {
+                $pext = Join-Path $tmp 'paks'
+                New-Item -ItemType Directory -Force -Path $pext | Out-Null
+                $pzip = Join-Path $tmp 'paks.zip'
+                Ok 'Downloading content paks (this one is big)...'
+                Download-Zip $PaksUrl $pzip
+                Ok 'Extracting...'
+                Expand-Archive -Path $pzip -DestinationPath $pext -Force
+                $pakSrc = $pext
+            } catch {
+                Warn "Content pak download failed: $($_.Exception.Message)"
+                $pakSrc = $null
+            }
+        }
+    }
+
+    # Superseded/retired names from earlier TXRWM pak generations: cleaned
+    # whenever they are present, NOT only when new paks land (the retired
+    # building-shadow bake must go even if the user declines the download).
+    if(Test-Path $paksDst){
+        foreach($old in @('zzz_TXRWM_ColPilot_P','zzz_TXRWM_ColTest_c1_P','zzz_TXRWM_ColTest_wni1_P','zzz_TXRWM_ColTest_wnj1_P','zzz_TXRWM_ColTest_wnj2_P','TXRWM_BuildingShadowsC1_P','TXRWM_BuildingShadows_P')){
+            Remove-Item (Join-Path $paksDst "$old.*") -Force -ErrorAction SilentlyContinue
+        }
+    }
+    if($pakSrc -and (Test-Path $paksDst)){
+        $trioFiles = @(Get-ChildItem $pakSrc -File -Include '*.pak','*.ucas','*.utoc' -Recurse)
+        if($trioFiles.Count -gt 0){
+            foreach($f in $trioFiles){ Copy-Item $f.FullName $paksDst -Force }
+            $names = (($trioFiles | Where-Object { $_.Extension -eq '.pak' } | ForEach-Object { $_.BaseName }) | Sort-Object) -join ', '
+            Ok "Installed content paks: $names"
+            $paksIn = $true
+        } else {
+            Warn 'No .pak/.ucas/.utoc files found in the pak source.'
+        }
+    } elseif($pakSrc) {
+        Warn "Content\Paks not found at $paksDst - skipped content paks."
+    }
+
+    if($paksIn){
+        [void](Set-CtfWrite $modDst $false)
+        Ok 'Rain occlusion will use the baked collision data.'
+    } else {
+        if(Set-CtfWrite $modDst $true){
+            Warn 'No content paks installed: the mod will do the collision work at'
+            Warn 'runtime instead (config CtfWrite = true). Everything still works;'
+            Warn 'covered sections just settle a few seconds into each course.'
+        } else {
+            Warn 'No content paks installed AND the config could not be updated.'
+            Warn "Set Config.RainCollision.CtfWrite = true by hand in $modDst\Scripts\config.lua"
+            Warn 'or rain will fall through tunnel roofs.'
+        }
     }
 
     # mods.txt (idempotent)
@@ -273,36 +475,76 @@ try {
         }
     }
 
-    # 5) engine.ini (Replace / Merge / Skip) ---------------------------------
-    Step 'Engine.ini (required CVARs)'
+    # 5) engine.ini (graphics profile selector) ------------------------------
+    # Restored 2026-08-26: the 3.9.0 rework left "Engine.ini profile port" as an
+    # open checklist item, so 3.9/3.10 shipped with no profile selector at all
+    # even though the base profiles still ship in the mod folder. Merge stays as
+    # an option for users running their own tuned Engine.ini.
+    Step 'Engine.ini - graphics profile'
+    Say '    Engine.ini supplies the cvars the mod relies on (exposure + fog) and'
+    Say '    sets the graphics profile. Any existing file is backed up first.'
+    Say ''
+    Say '      1) Photomode           highest fidelity, resource heavy   [recommended]' Green
+    Say '      2) Optimizations only  lighter, good for midrange / non-DLSS rigs' Green
+    Say '      3) Minimal             only the cvars the mod needs'
+    Say '      4) Merge               keep my Engine.ini, just add the required cvars'
+    Say '      5) Skip                leave my Engine.ini completely untouched'
+    Say ''
+    $pick = (Read-Host '    Choice [1-5, Enter = 1]').Trim()
+    if($pick -eq ''){ $pick = '1' }
+
+    $engDir = Join-Path $modDst 'engines'
+    if(-not (Test-Path $engDir)){ $engDir = Join-Path $modRoot 'engines' }
+    $base = $null; $label = ''; $mode = 'compose'
+    switch($pick){
+        '1' { $base = Join-Path $engDir 'photomode_engine.ini';         $label = 'Photomode' }
+        '2' { $base = Join-Path $engDir 'optimization_only_engine.ini'; $label = 'Optimizations only' }
+        '3' { $base = $null;                                            $label = 'Minimal' }
+        '4' { $mode = 'merge' }
+        default { $mode = 'skip' }
+    }
+
+    # The mod's dynamic day/night exposure is the sun-driven look; declining it
+    # leaves vanilla brightness and switches the LightCycle module off to match.
+    $exposureOn = $true
+    if($mode -ne 'skip'){
+        $exposureOn = AskYesNo '    Use the mod dynamic day/night exposure? (no = vanilla brightness)' $true
+    }
+
     $cfgDir = Join-Path $env:LOCALAPPDATA 'TokyoXtremeRacer\Saved\Config\Windows'
     New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
-    $iniDst  = Join-Path $cfgDir 'Engine.ini'
-    $skipped = $false
+    $iniDst = Join-Path $cfgDir 'Engine.ini'
 
-    if(Test-Path $iniDst){
-        $f = Get-Item $iniDst
-        if($f.IsReadOnly){ $f.IsReadOnly = $false }
-        $bak = "$iniDst.bak." + (Get-Date -Format 'yyyyMMdd_HHmmss')
-        Copy-Item $iniDst $bak
-        Ok "Backed up existing Engine.ini -> $(Split-Path $bak -Leaf)"
-        Warn 'An Engine.ini already exists.'
-        Say  '    [R] Replace with the minimal required file'
-        Say  '    [M] Merge - keep yours, add the required cvars at the end (recommended)'
-        Say  '    [S] Skip - leave your Engine.ini untouched'
-        $choice = (Read-Host '    Choice [R/M/S]').Trim()
-        switch -Regex ($choice){
-            '^[Rr]' { WriteLines $iniDst $MinIni; Ok 'Replaced with minimal Engine.ini.' }
-            '^[Mm]' { Merge-Cvars $iniDst $MinIni; Ok 'Merged required cvars at end of Engine.ini.' }
-            default { Warn 'Skipped. Exposure/fog may look wrong until the required cvars are present.'; $skipped = $true }
-        }
+    if($mode -eq 'skip'){
+        Warn 'Skipped. Exposure and fog may look wrong until the required cvars are present.'
     } else {
-        WriteLines $iniDst $MinIni
-        Ok 'Wrote new Engine.ini.'
-    }
-    if(-not $skipped){
+        if(Test-Path $iniDst){
+            $f = Get-Item $iniDst
+            if($f.IsReadOnly){ $f.IsReadOnly = $false }
+            $bak = "$iniDst.bak." + (Get-Date -Format 'yyyyMMdd_HHmmss')
+            Copy-Item $iniDst $bak
+            Ok "Backed up existing Engine.ini -> $(Split-Path $bak -Leaf)"
+        }
+        if($mode -eq 'merge'){
+            $expSet = if($exposureOn){ $ExpOnCvars } else { $ExpOffCvars }
+            Merge-Cvars $iniDst (@('[ConsoleVariables]') + $FogCvars + $expSet)
+            Ok 'Merged the required cvars at the end of your Engine.ini.'
+        } else {
+            $baseLines = @()
+            if($base){
+                if(Test-Path $base){ $baseLines = @(Get-Content $base) }
+                else { Warn "Base profile not found ($([IO.Path]::GetFileName($base))) - using Minimal instead."; $label = 'Minimal (fallback)' }
+            }
+            WriteLines $iniDst (Compose-Ini $baseLines $exposureOn)
+            $expLabel = if($exposureOn){ 'with dynamic exposure' } else { 'vanilla brightness' }
+            Ok "Installed Engine.ini profile: $label, $expLabel."
+        }
         (Get-Item $iniDst).IsReadOnly = $true
         Ok 'Set Engine.ini read-only (stops the game overwriting it).'
+        if(-not (Set-ExposureFlag $modDst $exposureOn)){
+            Warn 'Could not update Config.ModuleToggles.LightCycle to match the'
+            Warn 'exposure choice - set it by hand in Scripts\config.lua if needed.'
+        }
     }
 
 } finally {

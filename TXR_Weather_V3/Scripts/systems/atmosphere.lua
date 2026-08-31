@@ -382,8 +382,11 @@ local function nightFactor01(tod)
         -- Evening side: 1950 to 2400
         nightDepth = ((tod - AURORA_NIGHT_START) / (2400 - AURORA_NIGHT_START)) * 0.5  -- 0 to 0.5
     else
-        -- Morning side: 0 to 550
-        nightDepth = 1.0 - ((tod / AURORA_NIGHT_END) * 0.5)  -- 1.0 down to 0.5
+        -- Morning side: 0 to 550, continuing 0.5 -> 1.0 so sin() carries the
+        -- midnight peak smoothly down to zero at night's end (the old
+        -- "1.0 - ..." form inverted this: a crash to 0 at the midnight wrap,
+        -- then RISING glow toward dawn with a hard cut at the window edge)
+        nightDepth = 0.5 + ((tod / AURORA_NIGHT_END) * 0.5)  -- 0.5 to 1.0
     end
 
     return math.max(0.0, math.sin(nightDepth * math.pi))
@@ -641,7 +644,11 @@ function Atmosphere.Init()
             ENABLE_CITY_GLOW = Config.Atmosphere.EnableCityGlow
         end
         if Config.Atmosphere.LightPollutionMax ~= nil then
-            LIGHT_POLLUTION_MAX = Config.Atmosphere.LightPollutionMax
+            -- HARD CLAMP at 1.0: star intensity carries (1 - pollution) in
+            -- the sky material (decompiled formula), so anything above 1.0
+            -- renders stars as black dots. The config comment warns; this
+            -- enforces it.
+            LIGHT_POLLUTION_MAX = math.max(0.0, math.min(1.0, Config.Atmosphere.LightPollutionMax))
         end
         if Config.Atmosphere.NightSkyGlowMax ~= nil then
             NIGHT_SKY_GLOW_MAX = Config.Atmosphere.NightSkyGlowMax

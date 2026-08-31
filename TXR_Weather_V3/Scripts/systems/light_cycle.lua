@@ -98,6 +98,7 @@ local armed = false                  -- course gate (fresh UDS reads garbage
 
 -- One-shot PP pipeline writes + their delayed readback (per course)
 local ppShotsApplied = false
+local ppShotsProbeWait = 0   -- Updates spent waiting for the profile probe
 local ppShotsWroteClock = nil
 local ppShotsCheckDone = false
 
@@ -621,6 +622,7 @@ end
 local function applyAbsentBrightness(uds)
     if absentApplied then return end
     absentApplied = true
+    local wrote = false
 
     if ABSENT_MULT and math.abs(ABSENT_MULT - 1.0) >= 1e-3 then
         local stock = nil
@@ -632,6 +634,7 @@ local function applyAbsentBrightness(uds)
             local new = stock * ABSENT_MULT
             local ok = pcall(function() uds[PROP_ABSENT_BRIGHTNESS] = new end)
             if ok then
+                wrote = true
                 Log.Info(MODULE, "Night scene floor applied", {
                     stock = string.format("%.4f", stock),
                     new = string.format("%.4f", new),
@@ -648,6 +651,7 @@ local function applyAbsentBrightness(uds)
         pcall(function() stockC = uds[PROP_NIGHT_CLOUDY] end)
         local okC = pcall(function() uds[PROP_NIGHT_CLOUDY] = NIGHT_CLOUDY end)
         if okC then
+            wrote = true
             Log.Info(MODULE, "Cloudy-night floor applied", {
                 stock = tostring(stockC),
                 new = NIGHT_CLOUDY,
@@ -662,6 +666,7 @@ local function applyAbsentBrightness(uds)
         pcall(function() stockO = uds[PROP_OVERCAST_NIGHT] end)
         local okO = pcall(function() uds[PROP_OVERCAST_NIGHT] = OVERCAST_NIGHT end)
         if okO then
+            wrote = true
             Log.Info(MODULE, "Overcast night keep-fraction applied", {
                 stock = tostring(stockO),
                 new = OVERCAST_NIGHT,
@@ -670,6 +675,11 @@ local function applyAbsentBrightness(uds)
             Log.Warn(MODULE, "Overcast night: write failed", {prop = PROP_OVERCAST_NIGHT})
         end
     end
+
+    -- Bake only when a floor actually changed: shipped config writes none
+    -- of them, and an unconditional Hard Reset Cache on PA entry landed a
+    -- no-blend cache refill mid-carry (visible sky snap).
+    if not wrote then return end
 
     -- Hard Reset Cache is a UFUNCTION, and this whole path runs on the 8 Hz
     -- async tick (LightCycle.Tick = LightCycle.Update, ticked from main.lua's
@@ -995,6 +1005,7 @@ function LightCycle.OnCourseLoad()
     lastBias = nil          -- fresh sky spawns with knob defaults; re-write
     scenarioZeroed = false
     ppShotsApplied = false  -- fresh CourseSky/UDS = fresh one-shots
+    ppShotsProbeWait = 0
     ppShotsWroteClock = nil
     ppShotsCheckDone = false
     -- A teardown-close of photomode can leave the manual-metering latch
@@ -1069,7 +1080,17 @@ function LightCycle.Update()
     -- The display profile MUST be settled before these fire (they consume
     -- PP_OVERRIDES); force the fallback if auto-detect never resolved.
     if not ppShotsApplied then
-        if not displayProfile then resolveDisplayProfile(true) end
+        if not displayProfile then
+            -- The auto probe queued at arm time may still be in flight
+            -- (fast UDS discovery): forcing the HDR fallback now would
+            -- first-caller-win over a real SDR result. Give the probe a
+            -- few Updates before forcing.
+            if profileProbeInFlight and ppShotsProbeWait < 5 then
+                ppShotsProbeWait = ppShotsProbeWait + 1
+                return true
+            end
+            resolveDisplayProfile(true)
+        end
         ppShotsApplied = true
         if ExecuteInGameThread then
             pcall(function() GT.Run(applyPPShotsGT) end)
@@ -1264,6 +1285,13 @@ function LightCycle.ToggleHDRDebug()   -- name kept for the keybind wiring
             uds["Exposure Bias Dusty"] = v
         end)
         Log.Info(MODULE, "UDS bias test " .. (on and "ON (+2 EV all scenarios)" or "OFF (0.0)"), {ok = ok})
+        if not on then
+            -- The test zeroed the knobs behind writeBiasKnobs' change gate;
+            -- drop the memo so the next Update re-applies the curve bias
+            -- (otherwise the shipped look stays un-applied until the next
+            -- elevation ramp or course reload).
+            lastBias = nil
+        end
     end
     if ExecuteInGameThread then
         pcall(function() GT.Run(run) end)

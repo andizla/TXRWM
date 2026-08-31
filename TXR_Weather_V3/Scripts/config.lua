@@ -111,12 +111,6 @@ Config.TimeOfDay = {
     ShortCycleNightSkipTo   = 420,   -- ...to 04:20 (pre-dawn ramp starts 04:40)
 }
 
--- ============== WETNESS (WIP) ==============
--- The experimental DLWE/material road-wetness system (visual). NOT the grip system.
-Config.Wetness = {
-    Enabled = false,
-}
-
 -- ============== DYNAMIC WET GRIP (gameplay) ==============
 -- Tire grip drops as the road gets wet (rain/snow) and recovers as it dries. Reads UDW
 -- "Rain" (0-10) and drives it into the GLOBAL tire degradation table
@@ -172,8 +166,6 @@ Config.Stars = {
     -- Advanced star-compositing knobs; leave at defaults unless digging.
     CityGlowBoost = 1.0,       -- star opacity vs the night glow layer
     ColorBoost = 1.0,          -- star density (promotes fainter map stars)
-    MIDStarColor = nil,        -- emergency material-override machinery; nil = off
-    DumpSkyMIDParams = false,  -- diagnostic: dump sky material params once per boot
 }
 
 -- ============== WIND DEBRIS ==============
@@ -361,6 +353,13 @@ Config.CloudsFog = {
     FogSmoothingSeconds = 45.0,
     PresetTransitionSeconds = 10.0,
 
+    -- How much the living sky (drift, jitter, dawn/dusk turbulence, the day
+    -- mood and the morning profile) modulates a weather PRESET. 1.0 = full,
+    -- 0 = flat preset values (the pre-2026-08-26 behaviour, when this
+    -- modulation only ran with weather disabled and the sky sat still).
+    -- The deviation is capped internally so a preset stays recognisable.
+    PresetLivingScale = 1.0,
+
     -- Long-term drift
     CloudDriftAmplitude = 0.4, CloudDriftPeriod = 180.0,
     CloudJitterAmplitude = 0.15, CloudJitterPeriod = 25.0,
@@ -472,29 +471,6 @@ Config.Rainbow = {
     MaskBelowWater = nil,   -- nil = UDW default
 }
 
--- ============== SPACE LAYER (nebula in the night sky) ==============
--- UDS Space Layer: a faint Nebula band rendered INTO the sky material (like the
--- stars/moon), plus a space-glow control. UDS fades it by day/night itself, so it
--- only shows at night. It composites via DBuffer decals (the installer's Engine.ini
--- profile sets r.DBuffer=1; the module also requests it at runtime as a fallback).
--- Stylistic (real Tokyo skies are light-polluted); keep the intensity modest or set
--- Enabled=false if you prefer a plain night sky.
-Config.SpaceLayer = {
-    -- Off by default: superseded by the real-star map's own Milky Way
-    -- band (see Config.Stars), which renders more reliably in TXR.
-    Enabled = false,
-    RenderNebula = true,
-    NebulaIntensity = 1.6,      -- nil = UDS default; modest so it reads as faint depth
-    NebulaNoiseScale = nil,     -- nil = UDS default
-    NebulaColor1 = nil,         -- LinearColor {R,G,B,A}; nil = UDS default
-    NebulaColor2 = nil,
-    NebulaColor3 = nil,
-    BrightnessNight = nil,      -- nil = UDS default (Space Layer Brightness at night)
-    BrightnessDay = nil,        -- nil = UDS default (usually ~0; hidden by day)
-    SpaceGlowBrightness = nil,  -- nil = UDS default
-    SetDBuffer = true,          -- set r.DBuffer 1 at runtime (needed for compositing)
-}
-
 -- ============== CINEMATIC SKY (daytime clouds + atmosphere grade) ==============
 -- Cinematic daytime: richer volumetric-cloud shading, stronger golden hour,
 -- visible cirrus wisps, higher cloud render quality (photo-mode zoom) and a lazier
@@ -550,6 +526,13 @@ Config.CinematicSky = {
 -- sunrise/sunset times and sun path.
 Config.RealSun = {
     Enabled = true,       -- real-sun simulation (see date policy below)
+
+    -- Leave true. false = UDS's classic sun path, which is DEAD in
+    -- TXR's cook (2026-08-24 field test: no sun at all and the sky
+    -- barely reacts to TOD; the game was authored night-only around
+    -- the simulation). Leak-sun reproducibility is handled by Alt+J
+    -- re-asserting the pinned date instead (keybinds leak toggle).
+    SimulateSun = true,
 
     Latitude  = 35.676,    -- Tokyo
     Longitude = 139.650,
@@ -933,9 +916,11 @@ Config.LightCycle = {
 -- skylight-leak override (the boundary lighting flip). Rain occlusion
 -- lives in Config.RainCollision since 3.8.0.
 -- Leak-hunt mode (Alt+J toggle): clear weather + this pinned time of
--- day + a frozen clock, for checking sun leaks (1800 = low gold sun).
+-- day + a frozen clock, for checking sun leaks (0..2400 UDS clock;
+-- 1820 = the campaign's calibrated leak sun ON THE PINNED DATE, which
+-- the toggle re-asserts, so the value cannot drift stale).
 Config.LeakTest = {
-    Time = 1800,
+    Time = 1820,
 }
 
 -- Slab editor (systems/slab_editor.lua): the covered-road leak-fix
@@ -983,6 +968,12 @@ Config.Tunnels = {
     -- multiplied by this while the road data says roofed. 0.0 = no fog at
     -- all under a roof; 1.0 = damp off.
     CoveredFogMult = 0.0,
+    -- Seconds the damp HOLDS after the road data says open. Covered
+    -- galleries have short open gaps (ginza/C1); without the hold the
+    -- fog wall flashed back in every gap and lagged the re-entry. A real
+    -- exit restores fog this many seconds past the portal. 0 = release
+    -- on the next poll (the old instant behavior).
+    CoveredFogHold = 5.0,
 
     -- Clear the authored LumenSkylightLeaking=1.0 override on all course
     -- volumes (it flooded covered sections with flat sky ambient at every
@@ -1016,13 +1007,21 @@ Config.RainCollision = {
     -- Advanced: when false, the pass does enablement + responses only
     -- and relies on pak-baked collision flags.
     CtfWrite = false,
-    PlayerCar = false,       -- legacy envelope flip (superseded by PlayerCarBody)
     PlayerCarProbe = false,  -- diagnostic; leave false
     -- Player-car rain collision: the tight body mesh blocks the rain
     -- channel only, so the car sheds rain with native splashes on the
     -- actual roofline (the game keeps seeing the car normally).
     PlayerCarBody = true,
-    ForceCastShadow = false, -- extra lever for other areas; currently a no-op
+    -- Buildings ship CastShadow=FALSE and the game RE-ASSERTS it at
+    -- load, so pak-baking the flag does nothing (PROVEN by the clean
+    -- 2026-08-25 A/B: pilot pak + every runtime path silenced = still
+    -- shadowless). This runtime force-cast is THE building-shadow
+    -- mechanism, permanently. COUPLINGS: the force block runs inside
+    -- the FixShadowLeak pass (FixShadowLeak=false kills building
+    -- shadows too), and the two-sided flip enables casting BY ITSELF,
+    -- so a real building A/B must ALSO remove "BUIL" from
+    -- ShadowFixPatterns below.
+    ForceCastShadow = true,
     -- ECollisionChannel index for rain particle traces (3 = Visibility).
     Channel = 3,
     -- Lua patterns matched against mesh asset paths; matching meshes
@@ -1046,6 +1045,10 @@ Config.RainCollision = {
         "w_ext",
         -- Aprons, SMsr-prefixed so props (pylons) cannot match.
         "SMsr_[%w_]*_a%.", "SMsr_[%w_]*_a$",
+        -- BUILDINGS: SMsb_*_BUIL_* ship CastShadow=false and the game
+        -- re-asserts it at load (bake route dead, proven 2026-08-25);
+        -- this entry + ForceCastShadow re-enable casting every world.
+        "BUIL",
     },
     ReapplySeconds = 20.0,  -- streamed-cell re-pass cadence while wet
     SettleSeconds = 3.0,    -- course-arm settle before the first pass
@@ -1056,7 +1059,9 @@ Config.RainCollision = {
     -- road inside covered sections. The pass flips matched meshes to
     -- two-sided shadow casting (chunked, no hitch). A lit kerb can
     -- remain where a section has no outer wall at all: that is missing
-    -- geometry, not a flag. A/B by course reload.
+    -- geometry, not a flag. A/B by course reload. NOTE: this pass also
+    -- hosts ForceCastShadow and the "BUIL" building-shadow entry above;
+    -- false disables city building shadows as well.
     FixShadowLeak = true,
 }
 
@@ -1078,7 +1083,6 @@ Config.ModuleToggles = {
     Moon        = true,
     Stars       = true,
     Rainbow     = true,   -- mesh-rendered rainbow (UDW drives visibility)
-    SpaceLayer  = true,   -- night-sky nebula
     CinematicSky= true,   -- daytime cloud/atmosphere grade (see Config.CinematicSky)
     LightCycle  = true,   -- sun-elevation exposure (see Config.LightCycle)
     Tunnels     = true,   -- covered-road rain kill (see Config.Tunnels)
@@ -1104,7 +1108,7 @@ Config.GT = {
 -- ============== VERSION ==============
 -- Bump String only; FullName derives from it.
 Config.Version = {
-    String = "3.10.0",
+    String = "4.0.0",
 }
 Config.Version.FullName = "TXR Weather Mod v" .. Config.Version.String
 

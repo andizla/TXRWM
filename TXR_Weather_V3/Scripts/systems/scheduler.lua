@@ -28,6 +28,7 @@ local MODULE = "Scheduler"
 
 -- ============== STATE ==============
 local nextChangeAt = 0       -- os.time() seconds at which the next auto change is due
+local heldUntil = 0          -- HoldFor deadline; external-change re-arms never land before it
 local lastSetPreset = nil    -- the preset the scheduler last applied (for external-change detection)
 local wasOnCourse = false    -- edge-detect course entry so we arm the timer once
 local changeCount = 0        -- diagnostics
@@ -216,7 +217,13 @@ end
 --- Also adopts the current preset so external-change detection does not
 --- shorten the hold.
 function Scheduler.HoldFor(seconds)
-    nextChangeAt = os.time() + (tonumber(seconds) or 300)
+    -- max(): a hold must never PULL IN a change that was already further out
+    -- (photomode's 30s close-hold vs a pick still minutes away). heldUntil is
+    -- what makes the hold stick: the external-change branch in Tick re-arms a
+    -- normal interval when the hold's OWN apply lands after the HoldFor call
+    -- (leak test: HoldFor then ApplyFast), and clamps back up to this.
+    heldUntil = os.time() + (tonumber(seconds) or 300)
+    if heldUntil > nextChangeAt then nextChangeAt = heldUntil end
     pcall(function()
         local weather = getWeather()
         if weather and weather.GetCurrent then
@@ -249,6 +256,9 @@ function Scheduler.Tick()
         wasOnCourse = true
         lastSetPreset = weather.GetCurrent()
         armTimer()
+        -- A course (re)entry must not truncate an explicit HoldFor either
+        -- (the external-change branch below already clamps).
+        if nextChangeAt < heldUntil then nextChangeAt = heldUntil end
         return
     end
 
@@ -259,6 +269,7 @@ function Scheduler.Tick()
     if current ~= lastSetPreset then
         lastSetPreset = current
         armTimer()
+        if nextChangeAt < heldUntil then nextChangeAt = heldUntil end
         return
     end
 

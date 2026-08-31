@@ -133,6 +133,18 @@ end
 --- ExecuteWithDelay (whose per-call refs are the same hazard).
 function GT.After(seconds, fn)
     if type(fn) ~= "function" then return end
+    if not configRead then readConfig() end
+    if not singleFlight then
+        -- A/B mode has no drain loop, so afterJobs inserts would sit
+        -- forever: restore the raw pre-queue behavior instead.
+        local ms = math.floor((seconds or 0) * 1000 + 0.5)
+        if type(ExecuteWithDelay) == "function" then
+            pcall(function() ExecuteWithDelay(ms, fn) end)
+        else
+            pcall(fn)
+        end
+        return
+    end
     local at = os.clock() + (seconds or 0)
     GT.Run(function()
         afterJobs[#afterJobs + 1] = { at = at, fn = fn }
@@ -147,7 +159,6 @@ function GT.Drive(source)
         return
     end
     inScope = true
-    lastDriveAt = os.clock()
 
     if #queue > 0 then
         local q = queue
@@ -177,6 +188,10 @@ function GT.Drive(source)
     end
 
     inScope = false
+    -- Stamped at drain END, not start: PUMP_ARM_HOLDOFF must clear the
+    -- engine-side unref that trails our RETURN, so a long drain cannot
+    -- consume the holdoff before the edge it protects even happens.
+    lastDriveAt = os.clock()
     -- release the slot LAST: the async side may only arm the next
     -- action once this one's work is done (its trailing engine-side
     -- unref is covered by PUMP_ARM_HOLDOFF)

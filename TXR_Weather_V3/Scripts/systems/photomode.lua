@@ -500,6 +500,7 @@ local function reassert()
     local isOpen = false
     local gotSignal = false
     local openSrc = nil
+    local pokePass = false
     if hooksProven and not _hookPoke then
         if not _hookProvenLogged then
             _hookProvenLogged = true
@@ -524,11 +525,18 @@ local function reassert()
         -- The toggle just fired: consume the poke and resolve the new state
         -- through the scan below (which then resyncs _hookIsOpen).
         _hookPoke = false
+        pokePass = true
     end
 
     local comp = find("BPC_PhotoMode_C")
     local cam  = find("BP_FreeCamera_C")
     if not comp and not cam then
+        -- A poke pass that hits the one-pass "everything gone" scan flap
+        -- must NOT eat the poke: with the session still closed, the idle
+        -- gate above would then block every future scan and the whole
+        -- session's open edge is lost (the open-side mirror of the fixed
+        -- 2026-07-27 stuck-open bug). Re-arm and let the next pass retry.
+        if pokePass then _hookPoke = true end
         if _sessionOpen then
             -- Debounced: a one-pass total absence mid-session is the g1c1a1497
             -- scan flap, not a close (see _closeMisses at the top).

@@ -91,6 +91,7 @@ local appliedThisCourse = false
 local applied = false
 local updateCounter = 0
 local pendingUpdate = false  -- a game-thread sound update is queued
+local pendingSince = 0.0     -- os.clock at queue time, for the wedge self-heal
 
 -- Direct-spawn state (only touched on the game thread after the first spawn)
 local rainAC = nil
@@ -352,8 +353,15 @@ end
 --- @return boolean true when the job was queued (or ran inline), false when
 --- dropped: one-shot callers (the probes) must re-arm on false
 local function scheduleGuarded(fn)
-    if pendingUpdate then return false end
+    if pendingUpdate then
+        -- Self-heal: a queued job evicted by the GT queue cap never runs its
+        -- flag-clear; without this every later schedule is dropped and audio
+        -- wedges silently for the session.
+        if (os.clock() - pendingSince) > 10.0 then pendingUpdate = false end
+        return false
+    end
     pendingUpdate = true
+    pendingSince = os.clock()
     local scheduled = false
     if ExecuteInGameThread then
         scheduled = pcall(function()

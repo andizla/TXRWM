@@ -67,7 +67,9 @@ function Persistence.Save(reason)
     fog = Utils.ToNumber(fog, -1)
     
     -- CRITICAL: Don't save invalid values; they corrupt the file for next session
-    if tod < 0 or tod > 2400 then
+    -- (tod ~= tod rejects NaN, which passes both range checks and would be
+    -- written as "nan", poisoning the file AND its .bak on the next rotation)
+    if tod ~= tod or tod < 0 or tod > 2400 then
         Log.Debug(MODULE, string.format("Skipping save (%s): invalid TOD: %.2f", reason or "auto", tod))
         -- Still update lastSaveTime to prevent spam retries
         lastSaveTime = os.time()
@@ -86,28 +88,15 @@ function Persistence.Save(reason)
     local f = io.open(savePath .. ".tmp", "w")
     if f then
         local preset = State.GetCurrentPreset() or "Clear_Skies"
-        
-        -- Get wetness state if available
-        local wetness, puddle = 0, 0
-        pcall(function()
-            local Wetness = require("systems.wetness")
-            if Wetness and Wetness.GetState then
-                local state = Wetness.GetState()
-                wetness = state.wetness or 0
-                puddle = state.puddleCoverage or 0
-            end
-        end)
-        
+
         f:write(string.format(
-            "tod=%.6f,cloud=%.6f,fog=%.6f,preset=%s,speed=%.6f,paused=%d,wetness=%.6f,puddle=%.6f\n",
+            "tod=%.6f,cloud=%.6f,fog=%.6f,preset=%s,speed=%.6f,paused=%d\n",
             tod,
             cloud,
             fog,
             preset,
             State.GetTimeSpeed() or Config.TimeOfDay.DefaultSpeed,
-            State.IsTimePaused() and 1 or 0,
-            wetness,
-            puddle
+            State.IsTimePaused() and 1 or 0
         ))
         f:close()
         -- Swap the temp file into place, keeping the previous good file as
@@ -136,8 +125,8 @@ function Persistence.Save(reason)
             return false
         end
         lastSaveTime = os.time()
-        Log.Debug(MODULE, string.format("State saved (%s): TOD=%.2f cloud=%.2f fog=%.2f preset=%s wetness=%.2f", 
-            reason or "auto", tod, cloud, fog, preset, wetness))
+        Log.Debug(MODULE, string.format("State saved (%s): TOD=%.2f cloud=%.2f fog=%.2f preset=%s",
+            reason or "auto", tod, cloud, fog, preset))
         return true
     end
     return false
@@ -296,18 +285,9 @@ function Persistence.Restore()
         end
     end
     
-    -- Restore wetness state
-    if data.wetness and data.wetness >= 0 then
-        local Wetness = nil
-        pcall(function() Wetness = require("systems.wetness") end)
-        if Wetness and Wetness.SetLevels then
-            Wetness.SetLevels(data.wetness, data.puddle or 0, 0)
-            Log.Debug(MODULE, string.format("Restored wetness: %.3f puddle: %.3f", 
-                data.wetness, data.puddle or 0))
-            restored = true
-        end
-    end
-    
+    -- (Wetness restore removed with the module; old save files may still
+    -- carry wetness=/puddle= fields, which parse harmlessly and go unread.)
+
     return restored
 end
 

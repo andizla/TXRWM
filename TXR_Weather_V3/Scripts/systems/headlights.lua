@@ -416,10 +416,15 @@ end
 --- Persist the current mode + brightness level so they survive a restart.
 local function saveState()
     local ok, f = pcall(io.open, getStateFilePath(), "w")
-    if ok and f then
+    if not (ok and f) then return end
+    -- pcall the writes and always close: a mid-write io error must neither
+    -- leak the handle nor escape to the caller.
+    local wok = pcall(function()
         f:write("mode=" .. tostring(currentMode) .. "\n")
         f:write("brightness=" .. tostring(currentBrightnessLevel) .. "\n")
-        f:close()
+    end)
+    pcall(function() f:close() end)
+    if wok then
         Log.Debug(MODULE, "Saved headlight state", {mode = currentMode, brightness = currentBrightnessLevel})
     end
 end
@@ -431,19 +436,26 @@ end
 local function loadState(allowModeOverride)
     local ok, f = pcall(io.open, getStateFilePath(), "r")
     if not (ok and f) then return end
-    for line in f:lines() do
-        local k, v = line:match("^(%w+)=(.+)$")
-        if k == "mode" and allowModeOverride and (v == "force_on" or v == "force_off") then
-            currentMode = v
-        elseif k == "brightness" then
-            local n = tonumber(v)
-            if n and n >= 1 and n <= #BRIGHTNESS_MULTIPLIERS then
-                currentBrightnessLevel = n
+    -- pcall the read loop and always close: this runs inside Headlights.Init,
+    -- and an unhandled read error on a corrupt/locked state file would abort
+    -- the whole mod's initialize() (every module after this one included).
+    local rok = pcall(function()
+        for line in f:lines() do
+            local k, v = line:match("^(%w+)=(.+)$")
+            if k == "mode" and allowModeOverride and (v == "force_on" or v == "force_off") then
+                currentMode = v
+            elseif k == "brightness" then
+                local n = tonumber(v)
+                if n and n >= 1 and n <= #BRIGHTNESS_MULTIPLIERS then
+                    currentBrightnessLevel = n
+                end
             end
         end
+    end)
+    pcall(function() f:close() end)
+    if rok then
+        Log.Info(MODULE, "Loaded headlight state", {mode = currentMode, brightness = currentBrightnessLevel})
     end
-    f:close()
-    Log.Info(MODULE, "Loaded headlight state", {mode = currentMode, brightness = currentBrightnessLevel})
 end
 
 -- ============== PUBLIC API ==============
@@ -511,6 +523,11 @@ function Headlights.Init()
     return true
 end
 
+-- Gesture edge-detector state (used by the hold-gesture block below; declared
+-- ABOVE OnCourseLoad so its reset there writes these locals, not globals).
+local gHbPrev = nil           -- last is_hibeam_on
+local gHbRise = nil           -- os.clock() at the button-down edge
+
 --- Called on a fresh course load. The cached on/off state is stale and the game's
 --- native auto may have left a cast-only light enabled, so schedule a one-time
 --- reconcile: re-assert force modes and force the next auto tick to drive the lights
@@ -523,6 +540,9 @@ function Headlights.OnCourseLoad()
     courseTicks = 0
     srcOrig = {}                -- fresh world = fresh light components
     brightnessReassertAt = nil
+    -- Gesture edge state: a button held across the load screen must not read
+    -- as a release whose "held" time spans the load = a phantom hold-OFF.
+    gHbPrev, gHbRise = nil, nil
     Log.Info(MODULE, "Course load: will re-assert headlight state")
 end
 
@@ -531,8 +551,7 @@ end
 -- We read that state (it is set the same for keyboard AND controller, so this is
 -- device-agnostic) and act on RELEASE by how long it was held: a short press turns
 -- headlights ON, a long hold turns them OFF (manual mode only). See thresholds above.
-local gHbPrev = nil           -- last is_hibeam_on
-local gHbRise = nil           -- os.clock() at the button-down edge
+-- (gHbPrev/gHbRise are declared above OnCourseLoad.)
 
 -- Manual on/off from a gesture. ABSOLUTE (short press = ON, hold = OFF), not a toggle,
 -- so it is deterministic regardless of what we think the current state is. No-op in auto.

@@ -164,7 +164,8 @@ function TimeOfDay.Resume()
     local success = writeUDSProperty(PROP_ANIMATE_TOD, true)
     
     if success then
-        -- Restore speed based on what we had before
+        -- Resume always lands in normal mode; the baseline enforcer
+        -- re-asserts the matching speed within ~3s.
         currentSpeedMode = "normal"
         State.SetTimePaused(false)
         Log.Info(MODULE, "Time resumed")
@@ -201,6 +202,8 @@ end
 -- the next course load runs the normal Resume path anyway.
 local photoFrozen = false
 local photoWasPaused = false
+local photoRetryAt = nil      -- next freeze-write retry (os.clock)
+local photoRetryUntil = nil   -- retry give-up deadline
 
 function TimeOfDay.SetPhotoFreeze(on)
     if on == photoFrozen then return end
@@ -210,14 +213,52 @@ function TimeOfDay.SetPhotoFreeze(on)
         if not photoWasPaused then
             local ok = writeUDSProperty(PROP_ANIMATE_TOD, false)
             Log.Info(MODULE, "Photo freeze ON (time)", {ok = ok})
+            if not ok then
+                -- UDS is routinely invalid at the open instant (the game
+                -- re-creates the sky actor on photomode open; 9 of 11
+                -- opens failed on 08-31, sun drifting through the shoot).
+                -- Retry until it returns or the window closes.
+                photoRetryAt = os.clock() + 1.0
+                photoRetryUntil = os.clock() + 8.0
+            end
         end
     else
+        photoRetryAt, photoRetryUntil = nil, nil
         if not photoWasPaused then
             local ok = writeUDSProperty(PROP_ANIMATE_TOD, true)
             Log.Info(MODULE, "Photo freeze OFF (time)", {ok = ok})
         end
         photoWasPaused = false
     end
+end
+
+--- Retry a failed photo-freeze write while the session is still open.
+local function photoFreezeRetryTick()
+    if not (photoFrozen and photoRetryAt) then return end
+    local nowC = os.clock()
+    if nowC < photoRetryAt then return end
+    if photoRetryUntil and nowC > photoRetryUntil then
+        Log.Warn(MODULE, "Photo freeze retry gave up (UDS never returned)")
+        photoRetryAt, photoRetryUntil = nil, nil
+        return
+    end
+    local ok = writeUDSProperty(PROP_ANIMATE_TOD, false)
+    if ok then
+        Log.Info(MODULE, "Photo freeze ON (retry ok)")
+        photoRetryAt, photoRetryUntil = nil, nil
+    else
+        photoRetryAt = nowC + 1.0
+    end
+end
+
+--- Clear the freeze latch WITHOUT touching UDS. For the course-entry
+--- init path: a teardown-close that never delivered SetPhotoFreeze(false)
+--- would otherwise strand the latch and silently disable the next
+--- shoot's freeze (SetPhotoFreeze early-outs on on==photoFrozen).
+function TimeOfDay.ResetPhotoFreeze()
+    photoFrozen = false
+    photoWasPaused = false
+    photoRetryAt, photoRetryUntil = nil, nil
 end
 
 --- Cycle through speed modes: Normal -> Fast -> Paused -> Normal
@@ -355,8 +396,16 @@ function TimeOfDay.ShortCycleEnforce(tod)
         return
     end
 
-    -- Night window wraps midnight: [nightFrom..2400) U [0..nightTo)
-    if tod >= nightFrom or tod < nightTo then
+    -- Night window: wrapping config = [nightFrom..2400) U [0..nightTo);
+    -- plain config = [nightFrom..nightTo). Orientation matters: treating a
+    -- plain window as wrapping would match every TOD and pin the clock.
+    local inNight
+    if nightFrom > nightTo then
+        inNight = (tod >= nightFrom or tod < nightTo)
+    else
+        inNight = (tod >= nightFrom and tod < nightTo)
+    end
+    if inNight then
         Log.Info(MODULE, "Short cycle: skipping night core", {from = tod, to = nightTo})
         TimeOfDay.SetTOD(nightTo)
     end
@@ -401,8 +450,10 @@ function TimeOfDay.BaselineEnforceTick(dt)
         })
     end
     
-    -- Ensure time is animating (unless paused)
-    if currentSpeedMode ~= "paused" then
+    -- Ensure time is animating (unless paused, or a photo session froze it:
+    -- SetPhotoFreeze deliberately leaves currentSpeedMode alone, so without
+    -- this gate the enforcer re-animated the sun ~3s into every shoot)
+    if currentSpeedMode ~= "paused" and not photoFrozen then
         local animate = readUDSProperty(PROP_ANIMATE_TOD)
         if animate == false then
             writeUDSProperty(PROP_ANIMATE_TOD, true)
@@ -425,6 +476,9 @@ function TimeOfDay.Tick(dt)
     TimeOfDay.ShortCycleEnforce(tod)
     TimeOfDay.NightOnlyEnforce(tod)
 
+    -- A photo freeze that failed at the open instant retries here
+    photoFreezeRetryTick()
+
     -- Baseline enforcement
     TimeOfDay.BaselineEnforceTick(dt)
 end
@@ -446,6 +500,12 @@ end
 
 --- Apply starting time of day if configured
 function TimeOfDay.OnCourseLoad()
+    -- Fresh course, fresh photo-freeze latch (mirrors light_cycle's
+    -- metering-latch reset). NOTE: with persistence enabled main only
+    -- calls this when restore FAILS; the restore-success path resets the
+    -- latch via TimeOfDay.ResetPhotoFreeze() in main's setup block.
+    TimeOfDay.ResetPhotoFreeze()
+
     if Config.TimeOfDay.StartingTOD then
         Log.Info(MODULE, "Applying starting TOD", {tod = Config.TimeOfDay.StartingTOD})
         TimeOfDay.SetTOD(Config.TimeOfDay.StartingTOD)

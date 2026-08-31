@@ -112,6 +112,7 @@ local scanCounter = 0
 local courseTicks = 0
 local courseApplied = false
 local pendingScan = false
+local pendingScanAt = 0.0    -- os.clock at queue time, for the wedge self-heal
 local valueHooksRegistered = false
 local garageHooksRegistered = false
 local widened = {}     -- slider address -> {min, max} we last applied
@@ -196,6 +197,11 @@ end
 local function applyStoredToDisplayVehicleDeferred(context)
     local run = function()
         runOnGameThread(function()
+            -- Run-time teardown re-check: the 0.25s defer can land after the
+            -- user left the garage; sweeping a tearing-down world from the
+            -- GT is the July dying-widget crash class.
+            local actors = getActors()
+            if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then return end
             local gm = FindFirstOf(GARAGE_MANAGER_CLASS)
             if not valid(gm) then return end
             local out = {}
@@ -233,6 +239,12 @@ local function registerValueHooksGT()
                 local reapply = function()
                     runOnGameThread(function()
                         pcall(function()
+                            -- Same teardown re-check: `w` is a captured
+                            -- widget ref crossing a 0.1s defer, and IsValid
+                            -- can lie on freed memory mid-swap.
+                            local actors = getActors()
+                            if actors and actors.IsDiscoverySuspended
+                               and actors.IsDiscoverySuspended() then return end
                             if not valid(w) then return end
                             local car = w.car
                             if valid(car) then
@@ -477,8 +489,14 @@ local function scanAndWidenGT()
 end
 
 local function scheduleScan()
-    if pendingScan then return end
+    if pendingScan then
+        -- Self-heal: a queued scan evicted by the GT queue cap never runs
+        -- its flag-clear; without this the scanner wedges for the session.
+        if (os.clock() - pendingScanAt) > 10.0 then pendingScan = false end
+        return
+    end
     pendingScan = true
+    pendingScanAt = os.clock()
     local scheduled = false
     if ExecuteInGameThread then
         scheduled = pcall(function()

@@ -82,7 +82,6 @@ local Persistence = nil
 local CloudsFog = nil
 local Lightning = nil
 local EnhancedFog = nil
-local Wetness = nil
 local Shadows = nil
 local Transitions = nil
 local Atmosphere = nil
@@ -98,7 +97,6 @@ local WindDebris = nil
 local LightRays = nil
 local Moon = nil
 local Rainbow = nil
-local SpaceLayer = nil
 local CinematicSky = nil
 local RealSun = nil
 local Vignette = nil
@@ -320,15 +318,6 @@ local function loadSystemModules()
         Log.Debug("Main", "Rainbow module not loaded")
     end
 
-    -- Space Layer (night-sky nebula rendered into the sky material)
-    SpaceLayer = safeRequire("systems.space_layer", "SpaceLayer")
-    if SpaceLayer then
-        Log.Info("Main", "System module loaded: SpaceLayer")
-        if SpaceLayer.Init then SpaceLayer.Init() end
-    else
-        Log.Debug("Main", "SpaceLayer module not loaded")
-    end
-
     -- Cinematic sky (daytime cloud/atmosphere grade; settle-gated one-shot)
     CinematicSky = safeRequire("systems.cinematic_sky", "CinematicSky")
     if CinematicSky then
@@ -392,18 +381,6 @@ local function loadSystemModules()
         Log.Debug("Main", "Scheduler module not loaded")
     end
 
-    -- Phase 6: Wetness simulation (disabled by default, WIP)
-    if Config.Wetness and Config.Wetness.Enabled then
-        Wetness = safeRequire("systems.wetness", "Wetness")
-        if Wetness then
-            Log.Info("Main", "System module loaded: Wetness")
-            State.SetModuleStatus("wetness", true)
-        else
-            Log.Debug("Main", "Wetness module failed to load")
-        end
-    else
-        Log.Info("Main", "Wetness module disabled in config")
-    end
 end
 
 -- ============== MAIN LOOP ==============
@@ -412,6 +389,9 @@ local lastHeartbeat = os.time()
 local tickCount = 0
 local initialWeatherApplied = false  -- Track if we've applied initial weather this session
 local _pendingRestore = false        -- Flag set when actors become invalid, triggers restore on next valid
+local _actorsLostTicks = 0           -- consecutive ticks with actors missing (blip debounce)
+local _mapTeardownPending = false    -- set ONLY by LoadMapPreHook: cascade instantly
+local ACTORS_LOST_CASCADE_TICKS = 16 -- ~2s at 125ms; photomode/churn blips re-find in ~1s
 
 -- PA freeze watchdog: continuously enforce freeze while in PA
 local function enforcePAFreezeWatchdog()
@@ -466,8 +446,9 @@ local function applyPAState()
     local cap = _CourseStateBeforePA
     if cap then
         if (not tod or tod < 0) and cap.tod then tod = cap.tod end
-        if (not cloud or cloud < 0) and cap.cloud then cloud = cap.cloud end
-        if fog == nil and cap.fog then fog = cap.fog end
+        if (not cloud or cloud < 0) and cap.cloud and cap.cloud >= 0 then cloud = cap.cloud end
+        -- fog < 0 is the save/capture "read failed" sentinel, same as cloud
+        if (fog == nil or fog < 0) and cap.fog ~= nil and cap.fog >= 0 then fog = cap.fog end
         if preset == nil and cap.preset then preset = cap.preset end
         if speed == nil and cap.speed then speed = cap.speed end
     end
@@ -491,7 +472,7 @@ local function applyPAState()
             pcall(function() udw["Cloud Coverage - Manual Override"] = true end)
             pcall(function() udw["Cloud Coverage"] = cloud end)
         end
-        if fog ~= nil then
+        if fog ~= nil and fog >= 0 then
             pcall(function() udw["Fog - Manual Override"] = true end)
             pcall(function() udw["Fog"] = fog end)
         end
@@ -501,7 +482,7 @@ local function applyPAState()
     -- periodic pushes right after an apply can still revert the carried
     -- pair; the re-assert logs what the first write left behind, so the
     -- field says whether the carry holds now.
-    if (cloud and cloud >= 0) or fog ~= nil then
+    if (cloud and cloud >= 0) or (fog ~= nil and fog >= 0) then
         paCarry = { cloud = cloud, fog = fog }
         paReassertAt = os.clock() + 2.0
     end
@@ -781,11 +762,6 @@ local function onTick()
                 -- recorded AV class). Removed 2026-08-04; the hook alone is
                 -- the verified fix (2026-07-31, CCC disabled).
 
-                -- Initialize DLWE system FIRST before any weather operations
-                if Wetness and Wetness.OnActorsReady then
-                    Wetness.OnActorsReady()
-                end
-                
                 -- Try to restore persisted state first
                 local restored = false
                 if Persistence and Persistence.Restore then
@@ -835,6 +811,16 @@ local function onTick()
                 -- Apply HD stars (night sky)
                 if Stars and Stars.Setup then
                     Stars.Setup()
+                end
+
+                -- Fresh course, fresh photo-freeze latch. TimeOfDay's own
+                -- OnCourseLoad reset only runs when restore FAILS (the rare
+                -- path), so a stranded latch would silently disable the next
+                -- shoot's freeze. Never reset mid-photo-session: the blip
+                -- re-init lands with the session still open.
+                if TimeOfDay and TimeOfDay.ResetPhotoFreeze
+                    and not (State.IsPhotoSessionOpen and State.IsPhotoSessionOpen()) then
+                    TimeOfDay.ResetPhotoFreeze()
                 end
 
                 -- Force exposure to re-apply its slot (map load may reset CVARs)
@@ -893,7 +879,7 @@ local function onTick()
                         pcall(function() udw["Cloud Coverage - Manual Override"] = true end)
                         pcall(function() udw["Cloud Coverage"] = c.cloud end)
                     end
-                    if c.fog ~= nil then
+                    if c.fog ~= nil and c.fog >= 0 then
                         pcall(function() udw["Fog - Manual Override"] = true end)
                         pcall(function() udw["Fog"] = c.fog end)
                     end
@@ -911,6 +897,12 @@ local function onTick()
                 end
                 if LightCycle and LightCycle.OnCourseUnload then
                     LightCycle.OnCourseUnload()   -- disarm; the PA actors are gone
+                end
+                -- A covered PA spot engages the fog damp; without this
+                -- reset a stale 0.0 rides into the next course's first
+                -- weather apply (which runs BEFORE OnCourseLoad's resets).
+                if EnhancedFog and EnhancedFog.OnCourseUnload then
+                    EnhancedFog.OnCourseUnload()
                 end
                 if Tunnels and Tunnels.OnCourseUnload then
                     Tunnels.OnCourseUnload()
@@ -932,45 +924,68 @@ local function onTick()
             end
         end
 
-        -- Reset flag when leaving course
+        -- Reset flag when leaving course. BLIP DEBOUNCE (P2, 2026-08-31):
+        -- photomode opens and ClientRestart churn invalidate the sky for
+        -- ~1s and rediscovery lands moments later at a new address.
+        -- Cascading on the first missing tick despawned + respawned every
+        -- gap slab and re-ran the whole weather/light init per blip (19
+        -- blips and 1458 slab spawns on 08-31 alone = the reported lag,
+        -- the editor 0-slab wipes, and spawn-detour crash exposure). A
+        -- real teardown cascades instantly via the LoadMapPreHook flag;
+        -- anything else must stay missing ~2s, never mid-photo-session.
         if initialWeatherApplied and Actors and not Actors.HasActors() then
-            -- Save state before leaving course
-            if Persistence and Persistence.Save then
-                Persistence.Save("course_unload")
+            _actorsLostTicks = _actorsLostTicks + 1
+            local photoOpen = State.IsPhotoSessionOpen and State.IsPhotoSessionOpen()
+            if _mapTeardownPending
+                or (_actorsLostTicks >= ACTORS_LOST_CASCADE_TICKS and not photoOpen) then
+                _mapTeardownPending = false
+                _actorsLostTicks = 0
+                -- Save state before leaving course
+                if Persistence and Persistence.Save then
+                    Persistence.Save("course_unload")
+                end
+                -- Reset CloudsFog state
+                if CloudsFog and CloudsFog.OnCourseUnload then
+                    CloudsFog.OnCourseUnload()
+                end
+                -- Drop per-course refs/flags in the weather-effect helpers (the
+                -- lightning manager ref is a course-world object; keeping it
+                -- across the teardown is the known cross-world-ref crash pattern)
+                if EnhancedFog and EnhancedFog.OnCourseUnload then
+                    EnhancedFog.OnCourseUnload()
+                end
+                if Lightning and Lightning.OnCourseUnload then
+                    Lightning.OnCourseUnload()
+                end
+                -- Disarm exposure's course branch so the re-entry transient (unrestored
+                -- UDS reads Time Of Day = 0) can't flash the midnight slot before restore.
+                if LightCycle and LightCycle.OnCourseUnload then
+                    LightCycle.OnCourseUnload()
+                end
+                if Tunnels and Tunnels.OnCourseUnload then
+                    Tunnels.OnCourseUnload()
+                end
+                if GapWalls and GapWalls.OnCourseUnload then
+                    GapWalls.OnCourseUnload()
+                end
+                if SlabEditor and SlabEditor.OnCourseUnload then
+                    SlabEditor.OnCourseUnload()
+                end
+                if RainCollision and RainCollision.OnCourseUnload then
+                    RainCollision.OnCourseUnload()
+                end
+                initialWeatherApplied = false
+                _pendingRestore = true  -- Signal to restore on next actor detection
+                Log.Info("Main", "Actors lost: pending restore on next detection")
             end
-            -- Reset CloudsFog state
-            if CloudsFog and CloudsFog.OnCourseUnload then
-                CloudsFog.OnCourseUnload()
+        elseif _actorsLostTicks > 0 or _mapTeardownPending then
+            if _actorsLostTicks > 0 and initialWeatherApplied then
+                Log.Info("Main", "Actors blip absorbed (no cascade)", {
+                    ticks = _actorsLostTicks,
+                })
             end
-            -- Drop per-course refs/flags in the weather-effect helpers (the
-            -- lightning manager ref is a course-world object; keeping it
-            -- across the teardown is the known cross-world-ref crash pattern)
-            if EnhancedFog and EnhancedFog.OnCourseUnload then
-                EnhancedFog.OnCourseUnload()
-            end
-            if Lightning and Lightning.OnCourseUnload then
-                Lightning.OnCourseUnload()
-            end
-            -- Disarm exposure's course branch so the re-entry transient (unrestored
-            -- UDS reads Time Of Day = 0) can't flash the midnight slot before restore.
-            if LightCycle and LightCycle.OnCourseUnload then
-                LightCycle.OnCourseUnload()
-            end
-            if Tunnels and Tunnels.OnCourseUnload then
-                Tunnels.OnCourseUnload()
-            end
-            if GapWalls and GapWalls.OnCourseUnload then
-                GapWalls.OnCourseUnload()
-            end
-            if SlabEditor and SlabEditor.OnCourseUnload then
-                SlabEditor.OnCourseUnload()
-            end
-            if RainCollision and RainCollision.OnCourseUnload then
-                RainCollision.OnCourseUnload()
-            end
-            initialWeatherApplied = false
-            _pendingRestore = true  -- Signal to restore on next actor detection
-            Log.Info("Main", "Actors lost: pending restore on next detection")
+            _actorsLostTicks = 0
+            _mapTeardownPending = false
         end
         
         -- Phase 4+: Time updates (skip in PA)
@@ -988,11 +1003,6 @@ local function onTick()
             Persistence.Tick()
         end
         
-        -- Wetness simulation (skip in PA)
-        if Wetness and Wetness.Tick and not State.IsPAFrozen() then
-            Wetness.Tick()
-        end
-
         -- Dynamic wet grip (global tire degradation table vs precipitation; self-throttled,
         -- re-applies only on change). Intentionally NOT PA-frozen-gated: a race initiated
         -- from PA is the case we most need it in, and the global table edit is what makes
@@ -1050,11 +1060,6 @@ local function onTick()
         -- Rainbow (settle-gated one-shot enable; UDW drives visibility)
         if Rainbow and Rainbow.Tick and not State.IsPAFrozen() then
             Rainbow.Tick()
-        end
-
-        -- Space Layer nebula (settle-gated one-shot apply)
-        if SpaceLayer and SpaceLayer.Tick and not State.IsPAFrozen() then
-            SpaceLayer.Tick()
         end
 
         -- Cinematic sky grade (settle-gated one-shot apply)
@@ -1199,7 +1204,6 @@ local function initialize()
         if tg.Moon        == false then Moon = nil end
         if tg.Stars       == false then Stars = nil end
         if tg.Rainbow     == false then Rainbow = nil end
-        if tg.SpaceLayer  == false then SpaceLayer = nil end
         if tg.CinematicSky== false then CinematicSky = nil end
         if tg.LightCycle  == false then LightCycle = nil end
         if tg.Tunnels     == false then Tunnels = nil end
@@ -1344,7 +1348,9 @@ if RegisterLoadMapPreHook then
             leavingPA = Actors and Actors.IsInPAScene and Actors.IsInPAScene() or false
         end)
         if (currentTag == "course" or leavingPA) and Persistence and Persistence.Save then
-            Persistence.Save("map_unload_pre")
+            -- pcall: this hook body has no enclosing pcall, and an io error
+            -- escaping into UE4SS hook machinery is the hook-death vector.
+            pcall(function() Persistence.Save("map_unload_pre") end)
         end
 
         -- LAST: stop the async actor search AND drop every cached actor ref.
@@ -1354,6 +1360,9 @@ if RegisterLoadMapPreHook then
         if Actors and Actors.SuspendDiscovery then
             Actors.SuspendDiscovery()
         end
+        -- Real-teardown signal for the actors-lost debounce: only THIS
+        -- hook may trigger the instant unload cascade (blips never do).
+        _mapTeardownPending = true
         -- Same rule for weather's cached precip-component list: drop the
         -- suppression state (no object touches) so the next Weather.Apply
         -- can't unhide dead old-world components.
@@ -1554,7 +1563,6 @@ return {
     CloudsFog = CloudsFog,
     Lightning = Lightning,
     EnhancedFog = EnhancedFog,
-    Wetness = Wetness,
     Shadows = Shadows,
     Transitions = Transitions,
     Atmosphere = Atmosphere,
@@ -1565,7 +1573,6 @@ return {
     Tunnels = Tunnels,
     RainCollision = RainCollision,
     Rainbow = Rainbow,
-    SpaceLayer = SpaceLayer,
     CinematicSky = CinematicSky,
     RealSun = RealSun,
     Vignette = Vignette,

@@ -128,6 +128,7 @@ local internalState = {
     currentProfile = "none",
     manualOverrideSet = false,
     lastScaleDensity = nil,   -- current profile's scale (for the covered damp)
+    stockHeightFogFalloff = nil,  -- course-stock falloff, captured on first apply
 
     -- Store original values for restoration
     originalValues = {},
@@ -263,10 +264,19 @@ local function applyFogProfile(profile)
         end)
     end
     
-    -- Apply height fog falloff
-    if profile.heightFogFalloff then
+    -- Height fog falloff: heavy/extreme lower it for taller fog; every other
+    -- profile restores the course's stock value (captured before any write),
+    -- so a foggy spell cannot leave its low falloff behind for the course.
+    if internalState.stockHeightFogFalloff == nil then
         pcall(function()
-            uds[UDS_PROPS.FOGGY_HEIGHT_FOG_FALLOFF] = profile.heightFogFalloff
+            local v = uds[UDS_PROPS.FOGGY_HEIGHT_FOG_FALLOFF]
+            if type(v) == "number" then internalState.stockHeightFogFalloff = v end
+        end)
+    end
+    local falloff = profile.heightFogFalloff or internalState.stockHeightFogFalloff
+    if falloff then
+        pcall(function()
+            uds[UDS_PROPS.FOGGY_HEIGHT_FOG_FALLOFF] = falloff
         end)
     end
     
@@ -545,12 +555,23 @@ end
 function EnhancedFog.OnCourseLoad()
     internalState.manualOverrideSet = false
     internalState.valuesStored = false
+    -- Do NOT reset stockHeightFogFalloff here: main dispatches this AFTER
+    -- Persistence.Restore's weather apply, so a load into heavy fog had
+    -- already captured true stock and a reset here discarded it (the next
+    -- mid-course capture then adopted 0.04 as "stock" for the rest of the
+    -- course). OnCourseUnload still resets it for the normal flow.
+    -- The covered-road damp must not leak across worlds: unloading while
+    -- under a roof skips tunnels' exit edge, and a stale 0.0 here would
+    -- zero Scale Fog Density for every preset all session.
+    coveredDamp = 1.0
     -- Fog will be applied via Weather.Apply from persistence
 end
 
 --- Called when course unloads
 function EnhancedFog.OnCourseUnload()
     internalState.manualOverrideSet = false
+    internalState.stockHeightFogFalloff = nil
+    coveredDamp = 1.0
 end
 
 -- Initialize on load

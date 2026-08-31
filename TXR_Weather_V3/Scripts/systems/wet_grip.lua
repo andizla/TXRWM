@@ -99,24 +99,20 @@ local function get_dt()
     return nil
 end
 
--- Scale the table's grip rates to (dry original * factor). On the first successful pass
--- the dry originals are captured (once, for the session) so scaling never compounds.
+-- Scale the table's grip rates to (dry original * factor). The dry originals are
+-- captured once per session by a WRITE-FREE sweep committed before any row is scaled:
+-- a capture pass that dies partway leaves the table untouched, so a retry can never
+-- re-capture already-scaled values as "dry" (which would compound the baseline).
 -- Must run on the game thread. Returns true if the table was found and written.
 local function apply_wet_to_dt(mainF, sideF)
     local dt = get_dt()
     if not dt then return false end
 
-    local building = (origRows == nil)
-    local cache = building and {} or origRows
-
-    local ok = pcall(function()
-        dt:ForEachRow(function(rowName, rowData)
-            local name = tostring(rowName)
-
-            -- Capture dry originals the first time we ever see this row.
-            local orig = cache[name]
-            if building then
-                orig = {}
+    if origRows == nil then
+        local cache = {}
+        local ok = pcall(function()
+            dt:ForEachRow(function(rowName, rowData)
+                local orig = {}
                 for _, f in ipairs(MAIN_FIELDS) do
                     local v = nil; pcall(function() v = rowData[f] end)
                     if type(v) == "number" then orig[f] = v end
@@ -125,9 +121,19 @@ local function apply_wet_to_dt(mainF, sideF)
                     local v = nil; pcall(function() v = rowData[f] end)
                     if type(v) == "number" then orig[f] = v end
                 end
-                cache[name] = orig
-            end
+                cache[tostring(rowName)] = orig
+            end)
+        end)
+        -- A zero-row "success" (table resolved pre-serialization, footgun
+        -- 11 class) must not latch an empty baseline: the scaling pass
+        -- would then no-op forever with the factors marked applied.
+        if not ok or next(cache) == nil then return false end
+        origRows = cache
+    end
 
+    local ok = pcall(function()
+        dt:ForEachRow(function(rowName, rowData)
+            local orig = origRows[tostring(rowName)]
             if orig then
                 for _, f in ipairs(MAIN_FIELDS) do
                     if orig[f] then pcall(function() rowData[f] = orig[f] * mainF end) end
@@ -139,9 +145,7 @@ local function apply_wet_to_dt(mainF, sideF)
         end)
     end)
 
-    if not ok then return false end
-    if building then origRows = cache end
-    return true
+    return ok
 end
 
 -- ============== PUBLIC API ==============
@@ -164,6 +168,9 @@ end
 -- the table back to its cooked dry values. Does NOT touch the cached dry originals.
 function WetGrip.OnCourseLoad()
     lastMainF, lastSideF = nil, nil
+    -- Drop the cached table handle: never trust a UObject ref across a world
+    -- swap (IsValid can read true on freed memory). Re-resolved on next apply.
+    dtHandle = nil
     Log.Debug(MODULE, "Wet grip will re-assert table on course load")
 end
 
@@ -196,8 +203,8 @@ function WetGrip.Tick()
         if wet_current < 0 then wet_current = 0 elseif wet_current > 1 then wet_current = 1 end
     end
 
-    local mainF = 1.0 + (cfg.MinGripMult     - 1.0) * wet_current
-    local sideF = 1.0 + (cfg.MinSideGripMult - 1.0) * wet_current
+    local mainF = 1.0 + ((cfg.MinGripMult     or 0.80) - 1.0) * wet_current
+    local sideF = 1.0 + ((cfg.MinSideGripMult or 0.72) - 1.0) * wet_current
 
     -- Only re-write the table when the factor meaningfully changed (or after a course
     -- load forced a re-assert). The table holds its values otherwise.
