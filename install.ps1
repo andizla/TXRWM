@@ -460,11 +460,11 @@ try {
         }
     }
 
-    # 4) Old standalone VEAO conflict ----------------------------------------
-    foreach($veao in @('VEAOV213B','VEAO')){
+    # 4) Conflicting older mods (standalone VEAO, the old day/night mod) -----
+    foreach($veao in @('VEAOV213B','VEAO','TXR_DayNightCycle')){
         $vp = Join-Path $modsDir $veao
         if(Test-Path $vp){
-            Warn "Found old standalone '$veao' - it double-applies exposure and fights the merged module."
+            Warn "Found old standalone '$veao' - it drives the same sky/exposure systems and fights this mod."
             if(AskYesNo "Disable '$veao' in mods.txt?"){
                 $ml = @(Get-Content $modsTxt)
                 if($ml -match "^\s*$veao\s*:"){ $ml = $ml -replace "^\s*$veao\s*:.*", "$veao : 0" }
