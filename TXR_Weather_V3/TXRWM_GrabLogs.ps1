@@ -8,6 +8,9 @@
 #   - ue4ss\UE4SS-settings.ini + Mods\mods.txt (mod environment)
 #   - %LOCALAPPDATA%\TokyoXtremeRacer\Saved\Crashes (engine crash reports)
 #   - %LOCALAPPDATA%\TokyoXtremeRacer\Saved\Logs (game logs, if any)
+#   - Content\Paks + installed-mods inventories (name/size/date lists only)
+#   - Engine.ini and its .bak backups from Saved\Config\Windows
+#   - game exe size/version + Steam buildid (build-skew evidence)
 param(
     [string]$GamePath = '',
     [string]$OutDir = '',
@@ -76,7 +79,7 @@ $saved   = Join-Path $env:LOCALAPPDATA 'TokyoXtremeRacer\Saved'
 # ---- 2) staging --------------------------------------------------------------
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $stage = Join-Path $env:TEMP ("txrwm_logs_$stamp")
-foreach ($sub in 'ue4ss', 'modlogs', 'config', 'crashes', 'gamelogs') {
+foreach ($sub in 'ue4ss', 'modlogs', 'config', 'crashes', 'gamelogs', 'inventory', 'engineini') {
     New-Item -ItemType Directory -Force -Path (Join-Path $stage $sub) | Out-Null
 }
 $manifest = New-Object System.Collections.Generic.List[string]
@@ -90,6 +93,25 @@ try {
     $cfgRaw = Get-Content (Join-Path $modDir 'Scripts\config.lua') -Raw -ErrorAction Stop
     $vm = [regex]::Match($cfgRaw, 'Config\.Version\s*=\s*\{\s*String\s*=\s*"([^"]+)"')
     if ($vm.Success) { $manifest.Add("Mod version: $($vm.Groups[1].Value)") }
+} catch {}
+try {
+    $exe = Get-Item (Join-Path $win64 $exeName)
+    $manifest.Add(("Game exe: {0:N0} bytes  {1}  filever {2}" -f $exe.Length,
+        $exe.LastWriteTime.ToString('yyyy-MM-dd HH:mm'), $exe.VersionInfo.FileVersion))
+} catch {}
+try {
+    # Steam depot buildid = the build-skew evidence; steamapps sits 5 up
+    # from Win64 on a standard install, skipped quietly elsewhere.
+    $steamapps = $win64; for ($i = 0; $i -lt 5; $i++) { $steamapps = Split-Path $steamapps -Parent }
+    if ($steamapps -and ((Split-Path $steamapps -Leaf) -eq 'steamapps')) {
+        foreach ($acf in (Get-ChildItem $steamapps -Filter 'appmanifest_*.acf' -ErrorAction SilentlyContinue)) {
+            $raw = Get-Content $acf.FullName -Raw
+            if ($raw -match '"installdir"\s+"TokyoXtremeRacer"') {
+                if ($raw -match '"buildid"\s+"(\d+)"') { $manifest.Add("Steam buildid: $($Matches[1])  ($($acf.Name))") }
+                break
+            }
+        }
+    }
 } catch {}
 $manifest.Add('')
 
@@ -142,6 +164,45 @@ Grab (Join-Path $modDir 'last_state.txt') 'modlogs' '' | Out-Null
 Say 'Collecting config...' Cyan
 $manifest.Add('[config]')
 Grab (Join-Path $modDir 'Scripts\config.lua') 'config' 'user settings' | Out-Null
+
+Say 'Collecting inventories...' Cyan
+$manifest.Add('[content paks]')
+try {
+    # The pak layer is where stale third-party content hides (the 08-31
+    # replay-BP serialization case): list EVERYTHING, copy nothing big.
+    $gameRoot = Split-Path (Split-Path $win64 -Parent) -Parent
+    $paksDir = Join-Path $gameRoot 'Content\Paks'
+    if (Test-Path $paksDir) {
+        $rows = @(foreach ($f in (Get-ChildItem $paksDir -Recurse -File -ErrorAction SilentlyContinue)) {
+            '{0,15:N0}  {1}  {2}' -f $f.Length, $f.LastWriteTime.ToString('yyyy-MM-dd HH:mm'),
+                $f.FullName.Substring($paksDir.Length + 1)
+        })
+        Set-Content -Path (Join-Path $stage 'inventory\pakslist.txt') -Value ($rows -join "`r`n") -Encoding utf8
+        $manifest.Add("  $($rows.Count) files listed in inventory\pakslist.txt")
+    } else { $manifest.Add('  (Content\Paks not found)') }
+} catch { $manifest.Add("  FAILED: $($_.Exception.Message)") }
+
+$manifest.Add('[installed ue4ss mods]')
+try {
+    # enabled.txt starts a mod REGARDLESS of mods.txt: record both switches.
+    $rows = @(foreach ($d in (Get-ChildItem (Join-Path $ue4ss 'Mods') -Directory -ErrorAction SilentlyContinue)) {
+        $en = Test-Path (Join-Path $d.FullName 'enabled.txt')
+        '{0,-28} enabled.txt={1}  {2}' -f $d.Name, $(if ($en) { 'YES' } else { 'no ' }),
+            $d.LastWriteTime.ToString('yyyy-MM-dd HH:mm')
+    })
+    Set-Content -Path (Join-Path $stage 'inventory\modsinventory.txt') -Value ($rows -join "`r`n") -Encoding utf8
+    $manifest.Add("  $($rows.Count) mod folders listed in inventory\modsinventory.txt")
+} catch { $manifest.Add("  FAILED: $($_.Exception.Message)") }
+
+$manifest.Add('[engine ini]')
+$iniDir = Join-Path $saved 'Config\Windows'
+$gotIni = $false
+if (Test-Path $iniDir) {
+    foreach ($f in (Get-ChildItem $iniDir -Filter 'Engine.ini*' -ErrorAction SilentlyContinue)) {
+        if (Grab $f.FullName 'engineini' '') { $gotIni = $true }
+    }
+}
+if (-not $gotIni) { $manifest.Add('  (none found)') }
 
 Say 'Collecting engine crash reports...' Cyan
 $manifest.Add('[engine crashes]')
