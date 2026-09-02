@@ -3,9 +3,8 @@
 -- Enhanced fog control that works with both UDW and UDS properties
 -- Phase 7 Implementation
 --
--- The issue: UDW's "Fog" property (0-10) only sets a weather state value.
--- The actual fog density is computed by UDS using multiple multipliers.
--- This module controls the additional UDS properties to make fog visible.
+-- UDW's "Fog" property (0-10) only sets a weather state value; UDS computes
+-- the real density from several multipliers, which this module drives.
 
 local EnhancedFog = {}
 
@@ -53,9 +52,6 @@ local UDS_PROPS = {
 }
 
 -- ============== CONFIGURATION ==============
--- (Unused BASELINE defaults table removed 2026-07-09; the profiles below
--- are the only values ever applied.)
-
 -- Enhanced fog presets for different fog intensities
 -- Values tuned down; volumetric fog required for all presets for weather system
 local FOG_PROFILES = {
@@ -64,7 +60,7 @@ local FOG_PROFILES = {
         scaleFogDensity = 0.25,
         baseFogDensity = 0.006,
         foggyDensityContribution = 0.12,
-        useVolumetric = true,  -- Required for weather system
+        useVolumetric = true,
         volumetricDistance = 9000.0,
         volumetricExtinction = 0.8,
         daytimeMultiplier = 1.0,
@@ -76,7 +72,7 @@ local FOG_PROFILES = {
         scaleFogDensity = 0.5,
         baseFogDensity = 0.008,
         foggyDensityContribution = 0.2,
-        useVolumetric = true,  -- Required for weather system
+        useVolumetric = true,
         volumetricDistance = 8000.0,
         volumetricExtinction = 1.2,
         daytimeMultiplier = 1.0,
@@ -88,7 +84,7 @@ local FOG_PROFILES = {
         scaleFogDensity = 0.8,
         baseFogDensity = 0.01,
         foggyDensityContribution = 0.35,
-        useVolumetric = true,  -- Required for weather system
+        useVolumetric = true,
         volumetricDistance = 7000.0,
         volumetricExtinction = 1.6,
         daytimeMultiplier = 1.0,
@@ -100,7 +96,7 @@ local FOG_PROFILES = {
         scaleFogDensity = 1.5,
         baseFogDensity = 0.016,
         foggyDensityContribution = 0.55,
-        useVolumetric = true,  -- Required for weather system
+        useVolumetric = true,
         volumetricDistance = 5500.0,
         volumetricExtinction = 2.2,
         heightFogFalloff = 0.04,
@@ -113,7 +109,7 @@ local FOG_PROFILES = {
         scaleFogDensity = 2.2,
         baseFogDensity = 0.024,
         foggyDensityContribution = 0.75,
-        useVolumetric = true,  -- Required for weather system
+        useVolumetric = true,
         volumetricDistance = 4500.0,
         volumetricExtinction = 3.0,
         heightFogFalloff = 0.025,
@@ -129,10 +125,6 @@ local internalState = {
     manualOverrideSet = false,
     lastScaleDensity = nil,   -- current profile's scale (for the covered damp)
     stockHeightFogFalloff = nil,  -- course-stock falloff, captured on first apply
-
-    -- Store original values for restoration
-    originalValues = {},
-    valuesStored = false,
 }
 
 -- Covered-road fog damp: multiplier on Scale Fog Density while the tunnels
@@ -141,38 +133,6 @@ local coveredDamp = 1.0
 local COVERED_FOG_MULT = 0.15
 
 -- ============== INTERNAL FUNCTIONS ==============
-
---- Store original UDS fog values for later restoration
-local function storeOriginalValues()
-    if internalState.valuesStored then
-        return
-    end
-    
-    local uds = Actors.GetUDS()
-    if not uds then
-        return
-    end
-    
-    local props = {
-        "Scale Fog Density",
-        "Base Fog Density",
-        "Foggy Density Contribution",
-        "Use Volumetric Fog",
-    }
-    
-    for _, prop in ipairs(props) do
-        local value = nil
-        pcall(function()
-            value = uds[prop]
-        end)
-        if value ~= nil then
-            internalState.originalValues[prop] = value
-        end
-    end
-    
-    internalState.valuesStored = true
-    Log.Debug(MODULE, "Stored original fog values", internalState.originalValues)
-end
 
 --- Ensure UDW manual override is set
 local function ensureManualOverride()
@@ -207,15 +167,13 @@ local function applyFogProfile(profile)
         return false
     end
 
-    storeOriginalValues()
-
     local successCount = 0
     local attemptCount = 0
 
-    -- Apply scale fog density (the key multiplier!). coveredDamp thins the
-    -- fog on covered road (tunnels report in via SetCoveredDamp): global
-    -- fog is blind to ceilings, so a foggy preset otherwise reads as a
-    -- white wall inside every bore.
+    -- Scale fog density is the key multiplier. coveredDamp thins it on
+    -- covered road (tunnels report in via SetCoveredDamp): global fog is
+    -- blind to ceilings, so a foggy preset otherwise reads as a white wall
+    -- inside every bore.
     if profile.scaleFogDensity then
         attemptCount = attemptCount + 1
         internalState.lastScaleDensity = profile.scaleFogDensity
@@ -330,7 +288,6 @@ function EnhancedFog.Init()
     internalState.initialized = true
     internalState.currentProfile = "none"
     internalState.manualOverrideSet = false
-    internalState.valuesStored = false
     pcall(function()
         if Config.Tunnels and Config.Tunnels.CoveredFogMult then
             COVERED_FOG_MULT = Config.Tunnels.CoveredFogMult
@@ -340,9 +297,8 @@ function EnhancedFog.Init()
 end
 
 --- Covered-road fog damp (called by the tunnels module on cover changes;
---- game thread). Rescales the current profile's Scale Fog Density so the
---- global fog doesn't read as a white wall inside bores; the weather state
---- (UDW fog value) stays untouched.
+--- game thread). Rescales the current profile's Scale Fog Density; the
+--- weather state (UDW fog value) stays untouched.
 --- @param on boolean car under a roof
 function EnhancedFog.SetCoveredDamp(on)
     local target = on and COVERED_FOG_MULT or 1.0
@@ -394,11 +350,14 @@ function EnhancedFog.Apply(fogValue)
         })
     end
     
-    -- Also set UDW fog value (handled by CloudsFog, but ensure it's set)
+    -- UDW's Fog value belongs to CloudsFog while that module is enabled (it
+    -- ramps the value; a direct write here fought the ramp on every
+    -- non-immediate apply). With CloudsFog off this is the only fog write.
     local udw = Actors.GetUDW()
     if udw then
+        local cloudsFogOwns = Config.CloudsFog and Config.CloudsFog.Enabled ~= false
         pcall(function()
-            udw[UDW_PROPS.FOG] = fogValue
+            if not cloudsFogOwns then udw[UDW_PROPS.FOG] = fogValue end
             udw[UDW_PROPS.REFRESH_SETTINGS] = true
         end)
     end
@@ -431,138 +390,17 @@ function EnhancedFog.ApplyFromPreset(presetData)
     return EnhancedFog.Apply(fogValue)
 end
 
---- Set a custom fog profile
---- @param profileName string Profile name: "none", "light", "medium", "heavy", "extreme"
---- @return boolean success
-function EnhancedFog.SetProfile(profileName)
-    local profile = FOG_PROFILES[profileName]
-    if not profile then
-        Log.Warn(MODULE, "Unknown profile", {name = profileName})
-        return false
-    end
-    
-    internalState.currentProfile = profileName
-    return applyFogProfile(profile)
-end
-
---- Get current fog profile name
---- @return string
-function EnhancedFog.GetCurrentProfile()
-    return internalState.currentProfile
-end
-
---- Read current Scale Fog Density from UDS
---- @return number|nil
-function EnhancedFog.GetScaleFogDensity()
-    local uds = Actors.GetUDS()
-    if not uds then
-        return nil
-    end
-    
-    local value = nil
-    pcall(function()
-        value = uds[UDS_PROPS.SCALE_FOG_DENSITY]
-    end)
-    return value
-end
-
---- Set Scale Fog Density directly (for testing)
---- @param value number
---- @return boolean success
-function EnhancedFog.SetScaleFogDensity(value)
-    local uds = Actors.GetUDS()
-    if not uds then
-        return false
-    end
-    
-    local success = pcall(function()
-        uds[UDS_PROPS.SCALE_FOG_DENSITY] = value
-    end)
-    
-    if success then
-        Log.Info(MODULE, "Set Scale Fog Density", {value = value})
-    end
-    
-    return success
-end
-
---- Get fog debug info
---- @return table
-function EnhancedFog.GetDebugInfo()
-    local info = {
-        currentProfile = internalState.currentProfile,
-        manualOverrideSet = internalState.manualOverrideSet,
-    }
-    
-    local uds = Actors.GetUDS()
-    if uds then
-        pcall(function()
-            info.scaleFogDensity = uds[UDS_PROPS.SCALE_FOG_DENSITY]
-        end)
-        pcall(function()
-            info.baseFogDensity = uds[UDS_PROPS.BASE_FOG_DENSITY]
-        end)
-        pcall(function()
-            info.foggyDensityContribution = uds[UDS_PROPS.FOGGY_DENSITY_CONTRIBUTION]
-        end)
-        pcall(function()
-            info.useVolumetricFog = uds[UDS_PROPS.USE_VOLUMETRIC_FOG]
-        end)
-    end
-    
-    local udw = Actors.GetUDW()
-    if udw then
-        pcall(function()
-            info.udwFog = udw[UDW_PROPS.FOG]
-        end)
-    end
-    
-    return info
-end
-
---- Get status for debugging
---- @return table
-function EnhancedFog.GetStatus()
-    return {
-        initialized = internalState.initialized,
-        currentProfile = internalState.currentProfile,
-        scaleFogDensity = EnhancedFog.GetScaleFogDensity(),
-        profiles = Utils.Keys(FOG_PROFILES),
-    }
-end
-
---- Reset to baseline fog settings
-function EnhancedFog.Reset()
-    -- Restore original values if we stored them
-    if internalState.valuesStored then
-        local uds = Actors.GetUDS()
-        if uds then
-            for prop, value in pairs(internalState.originalValues) do
-                pcall(function()
-                    uds[prop] = value
-                end)
-            end
-            Log.Debug(MODULE, "Restored original fog values")
-        end
-    end
-    
-    internalState.currentProfile = "none"
-    internalState.manualOverrideSet = false
-    Log.Info(MODULE, "Reset")
-end
-
 --- Called when course loads
 function EnhancedFog.OnCourseLoad()
     internalState.manualOverrideSet = false
-    internalState.valuesStored = false
-    -- Do NOT reset stockHeightFogFalloff here: main dispatches this AFTER
-    -- Persistence.Restore's weather apply, so a load into heavy fog had
-    -- already captured true stock and a reset here discarded it (the next
-    -- mid-course capture then adopted 0.04 as "stock" for the rest of the
-    -- course). OnCourseUnload still resets it for the normal flow.
-    -- The covered-road damp must not leak across worlds: unloading while
-    -- under a roof skips tunnels' exit edge, and a stale 0.0 here would
-    -- zero Scale Fog Density for every preset all session.
+    -- Do not reset stockHeightFogFalloff here: main dispatches this after
+    -- Persistence.Restore's weather apply, so a load into heavy fog has
+    -- already captured true stock and a reset discarded it (the next
+    -- mid-course capture then adopted 0.04 as stock for the rest of the
+    -- course). OnCourseUnload resets it for the normal flow.
+    -- The covered-road damp must not leak across worlds: unloading under a
+    -- roof skips tunnels' exit edge, and a stale 0.0 here would zero Scale
+    -- Fog Density for every preset all session.
     coveredDamp = 1.0
     -- Fog will be applied via Weather.Apply from persistence
 end

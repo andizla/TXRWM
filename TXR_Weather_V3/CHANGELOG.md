@@ -3,6 +3,46 @@
 All notable changes to TXR Weather Mod V3 are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [4.0.1]: 2026-09-02
+
+### Fixed
+- **Rain stops at tunnel walls and overpass decks again.** The mod writes
+  the collision trace flag rain needs itself at every course load, as 3.8
+  did; the content pak no longer has to carry it.
+- **The parking area keeps your clock.** Driving into a PA carries the
+  course time in, the clock keeps running there, and the course picks up
+  where the PA left off. Detection of the PA scene had stopped when the
+  scene took a few seconds longer to load; the PA also autosaves every 10
+  seconds now, so the return is never more than that behind.
+- **Photo mode no longer thickens the clouds with every session**, and
+  rain audio no longer drops out for a few seconds per open.
+- **Headlights react to tunnels at once**, also while time is paused, and
+  no longer blink across a short gap between two bores.
+- **Seam blockers spawn through the intended path** (a missing argument had
+  sent every course load down a fallback that left half-built actors
+  behind), and a race retry in the same world no longer stacks a second
+  set of them.
+- The mood and morning-profile roll at midnight now happens; a manual
+  Alt+T pause survives a photo session; the leak-test key releases the
+  weather scheduler again; a corrupt saved-state file no longer stalls
+  course setup; `Config.CloudsFog.Enabled = false` no longer freezes cloud
+  coverage at its spawn value.
+
+### Changed
+- Fewer object scans per tick: shadow distance, headlights, rain collision
+  and actor validation cache what they used to look up eight times a
+  second; the settle-gated one-shots re-arm on real course changes only;
+  the first collision pass at course entry runs in short chunks.
+- `Config.RainCollision.CtfWrite` defaults to true again;
+  `Config.ActorDiscovery.RetryInterval` is whole seconds.
+- Installer: bracketed game folder names work through the whole install,
+  an existing UE4SS Mods folder is never clobbered, Merge mode strips stale
+  exposure keys, a mistyped Engine.ini choice asks again, and the
+  Photomode profile carries `r.LightMaxDrawDistanceScale=5` and
+  `r.MinScreenRadiusForLights=0.003`. TXRWM_GrabLogs works from bracketed
+  folders too.
+- About a fifth of the scripts removed as dead code; comments trimmed.
+
 ## [4.0.0]: 2026-08-31
 
 ### Hotfix (2026-08-31, rolled into the 4.0.0 download)

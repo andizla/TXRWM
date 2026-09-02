@@ -115,21 +115,20 @@ local function getMorningBiases()
     return profile.cloudBias, profile.fogBias
 end
 
--- Maximum deviation the living modulation may add to a PRESET value. Clear
--- Skies (cloud 0.5) must still read as clear at its cloudiest, and a Foggy
--- preset must not thin out into haze, so the caps stay well inside one
--- preset step. Config.CloudsFog.PresetLivingScale scales the whole thing.
+-- Maximum deviation the living modulation may add to a preset value: Clear
+-- Skies (cloud 0.5) must still read as clear at its cloudiest and Foggy must
+-- not thin into haze, so the caps stay well inside one preset step.
+-- Config.CloudsFog.PresetLivingScale scales the whole thing.
 local PRESET_LIVING_CAP_CLOUD = 1.2
 local PRESET_LIVING_CAP_FOG = 0.5
 
 -- ============== TARGET CALCULATIONS ==============
 
---- The LIVING modulation: slow drift, micro jitter, the dawn/dusk turbulence
---- boost, the morning profile bias and the day mood. Returned as an OFFSET
---- (positive or negative) so it can ride either the diurnal auto curve or a
---- weather preset's own value. Both paths need it: before 2026-08-26 this math
---- existed only inside the auto curve, and since a preset is applied on every
---- course load the sky ran on flat preset constants and never breathed.
+--- The living modulation: slow drift, micro jitter, the dawn/dusk turbulence
+--- boost, the morning profile bias and the day mood, returned as a signed
+--- offset so it can ride either the diurnal auto curve or a preset's value.
+--- Both paths need it: a preset is applied on every course load, and until
+--- 2026-08-26 the preset path ran on flat constants and never breathed.
 --- @param tod number Time of day (0-2400)
 --- @return number offset in cloud units
 local function cloudLivingOffset(tod)
@@ -206,10 +205,9 @@ local function fogLivingOffset(tod)
     return offset
 end
 
---- Scale and cap the living offset for the PRESET path. A preset is a deliberate
---- pick, so the sky should breathe around it without wandering into a different
---- weather: the cap is what keeps Clear Skies from turning into a cloudy morning.
---- Set Config.CloudsFog.PresetLivingScale = 0 for the old flat-preset behaviour.
+--- Scale and cap the living offset for the preset path: the sky breathes
+--- around a deliberate pick without wandering into a different weather.
+--- Config.CloudsFog.PresetLivingScale = 0 restores the flat-preset behaviour.
 --- @param offset number raw living offset
 --- @param cap number maximum absolute deviation allowed
 --- @return number
@@ -220,18 +218,17 @@ local function presetLiving(offset, cap)
     return Utils.Clamp(offset * scale, -cap, cap)
 end
 
--- Living-sky WRITE quantization (2026-08-31 sunset-fps fix). The preset
--- path's continuously wandering writes defeated UDS's cached-MID
--- tolerance check (a CONSTANT value = zero pushes, the star-fix
--- mechanism) and the volumetric clouds' temporal caching; dusk, where
--- the turbulence term peaks, dropped 50-60 fps to ~30 (field A/B:
--- PresetLivingScale=0 restored it). Quantizing the TARGET would not
--- help: ExpSmooth micro-converges forever. So the WRITTEN value is
--- snapped to Config.CloudsFog.LivingStep and identical writes are
--- skipped (2s re-assert floor keeps the self-healing write-through);
--- the internal smoothing state stays continuous. The no-preset auto
--- path is unchanged by construction: its value moves every tick, so
--- the gate never skips it (exact pre-4.0 behaviour there).
+-- Living-sky write quantization (2026-08-31 sunset-fps fix). The preset
+-- path's continuously wandering writes defeated UDS's cached-MID tolerance
+-- check (a constant value means zero pushes, the star-fix mechanism) and
+-- the volumetric clouds' temporal caching: dusk, where the turbulence term
+-- peaks, dropped 50-60 fps to ~30 (field A/B: PresetLivingScale=0 restored
+-- it). Quantizing the target would not help, ExpSmooth micro-converges
+-- forever, so the written value is snapped to Config.CloudsFog.LivingStep
+-- and identical writes are skipped (2 s re-assert floor keeps the
+-- self-healing write-through); the smoothing state stays continuous. The
+-- auto path is unchanged by construction: its value moves every tick, so
+-- the gate never skips it.
 local lastWrittenCloud = nil
 local lastWrittenFog = nil
 local lastCloudWriteAt = 0.0
@@ -346,13 +343,12 @@ function CloudsFog.GetFog()
     return Utils.ToNumber(value, nil)
 end
 
---- Smoothed cloud coverage this module is actually driving (0-10), or nil
---- before Tick has established it this course. Unlike GetCloudCoverage above
---- this is a plain Lua state read with NO UObject touch, so it is safe on the
---- async tick thread; and it already carries the preset ramp (ExpSmooth over
---- Config.CloudsFog.PresetTransitionSeconds), so a consumer riding it inherits
---- the weather transition for free. atmosphere.lua's god-ray weather gate is
---- the first consumer.
+--- Smoothed cloud coverage this module is driving (0-10), or nil before Tick
+--- has established it this course. A plain Lua read with no UObject touch
+--- (safe on the async tick thread, unlike GetCloudCoverage), and it carries
+--- the preset ramp (ExpSmooth over Config.CloudsFog.PresetTransitionSeconds),
+--- so a consumer inherits the weather transition. atmosphere.lua's god-ray
+--- gate is the first consumer.
 --- @return number|nil
 function CloudsFog.GetSmoothedCloud()
     return internalState.cloudCurrent
@@ -435,6 +431,9 @@ end
 --- @param fogValue number|nil Fog density (nil to skip)
 --- @param immediate boolean|nil If true, apply immediately without smoothing
 function CloudsFog.ApplyPreset(cloudValue, fogValue, immediate)
+    -- Same master-switch rule as OnCourseLoad (latching the manual-override
+    -- flags here froze cloud coverage at its spawn value for the session).
+    if Config.CloudsFog and Config.CloudsFog.Enabled == false then return end
     ensureManualOverride()
     
     -- Set state targets so Tick() knows a preset is active
@@ -489,17 +488,20 @@ function CloudsFog.Tick(dt)
         internalState.morningWasActive = true
     elseif internalState.morningWasActive then
         internalState.morningWasActive = false
-        -- Re-randomize mood after morning ends. (Config key is
-        -- ResumeRandomizeAfterMorning; the old code read ReRandomizeAfterMorning,
-        -- which never existed, so this re-roll silently never fired.)
+        -- Re-randomize mood after morning ends. Config key is
+        -- ResumeRandomizeAfterMorning (a misspelt key once made this never fire).
         if Config.CloudsFog.ResumeRandomizeAfterMorning then
             internalState.moodTarget = (math.random() * 2.0 - 1.0)
             Log.Debug(MODULE, "Morning ended, new mood", {mood = internalState.moodTarget})
         end
     end
     
-    -- Check for new day (TOD wrapped)
-    local lastTOD = State.GetLastKnownTOD() or tod
+    -- New-day detection (TOD wrapped) against this module's own previous-tick
+    -- reading: GetCurrentTOD stores its value in State before returning, so
+    -- State.GetLastKnownTOD() always equalled tod here and the wrap never
+    -- registered.
+    local lastTOD = internalState.prevTickTOD or tod
+    internalState.prevTickTOD = tod
     if tod < lastTOD - 100 then  -- Wrapped from ~2400 to ~0
         internalState.moodTarget = (math.random() * 2.0 - 1.0)
         if Config.CloudsFog.MorningProfilesEnabled then
@@ -526,9 +528,8 @@ function CloudsFog.Tick(dt)
         local targetCloud
         
         if presetActive and presetCloud ~= nil then
-            -- The preset sets the BASE; the living modulation rides on top so
-            -- the sky still breathes inside a chosen weather (capped, so a
-            -- preset can never wander into a different one).
+            -- The preset sets the base; the capped living modulation rides on
+            -- top so the sky still breathes inside a chosen weather.
             targetCloud = Utils.Clamp(
                 presetCloud + presetLiving(cloudLivingOffset(tod), PRESET_LIVING_CAP_CLOUD),
                 0, 10)
@@ -542,11 +543,10 @@ function CloudsFog.Tick(dt)
             internalState.cloudCurrent = CloudsFog.GetCloudCoverage() or targetCloud
         end
         
-        -- Ramp toward the target. Preset changes used to SNAP here (the abrupt
-        -- weather jump); now they ease over PresetTransitionSeconds, like TOD
-        -- changes do. Immediate applies (reset/initial load, transition < 1s)
-        -- already pre-set cloudCurrent to target in ApplyPreset, so ExpSmooth is a
-        -- no-op snap for those.
+        -- Ramp toward the target: preset changes ease over
+        -- PresetTransitionSeconds like TOD changes. Immediate applies (reset,
+        -- initial load, transition < 1 s) pre-set cloudCurrent to the target
+        -- in ApplyPreset, so ExpSmooth is a no-op snap for those.
         local cloudSmoothSeconds
         if presetActive then
             cloudSmoothSeconds = Config.CloudsFog.PresetTransitionSeconds
@@ -561,7 +561,7 @@ function CloudsFog.Tick(dt)
             dt
         )
 
-        -- Snap the WRITTEN value (see quantizeLiving); the smoothing
+        -- Snap the written value (see quantizeLiving); the smoothing
         -- state itself stays continuous so ramps are unaffected.
         local outCloud = quantizeLiving(newCloud, presetActive)
         local nowW = os.clock()
@@ -593,8 +593,7 @@ function CloudsFog.Tick(dt)
             internalState.fogCurrent = CloudsFog.GetFog() or targetFog
         end
         
-        -- Ramp toward the target (see cloud note above): preset changes ease over
-        -- PresetTransitionSeconds instead of snapping; immediate applies stay snaps.
+        -- Ramp toward the target (see the cloud note above).
         local fogSmoothSeconds
         if presetActive then
             fogSmoothSeconds = Config.CloudsFog.PresetTransitionSeconds
@@ -631,34 +630,11 @@ function CloudsFog.Tick(dt)
     end
 end
 
---- Get current status for debugging
---- @return table
-function CloudsFog.GetStatus()
-    return {
-        enabled = Config.CloudsFog.Enabled,
-        cloudCurrent = internalState.cloudCurrent,
-        fogCurrent = internalState.fogCurrent,
-        morningProfile = internalState.morningProfile,
-        mood = internalState.moodCurrent,
-        manualOverrideSet = internalState.manualOverrideSet,
-        tickCount = internalState.tickCount,
-    }
-end
-
---- Reset to defaults
-function CloudsFog.Reset()
-    internalState.cloudCurrent = nil
-    internalState.fogCurrent = nil
-    internalState.manualOverrideSet = false
-    Log.Info(MODULE, "Reset")
-end
-
 --- Called when course loads
 function CloudsFog.OnCourseLoad()
     internalState.manualOverrideSet = false
-    -- Respect the master switch: with the module disabled nothing drives
-    -- cloud/fog values, so latching UDW's manual-override flags here would
-    -- freeze both at spawn values with no replacement driver.
+    -- Master switch: with the module disabled nothing drives cloud/fog, so
+    -- latching UDW's manual-override flags here would freeze both at spawn.
     if Config.CloudsFog and Config.CloudsFog.Enabled == false then return end
     ensureManualOverride()
 end
@@ -666,14 +642,14 @@ end
 --- Called when course unloads
 function CloudsFog.OnCourseUnload()
     internalState.manualOverrideSet = false
-    -- Drop the smoothed values with the course. They are re-seeded from the
-    -- live UDW read (or the preset target) on the next course's first Tick.
-    -- Without this, a consumer that reads GetSmoothedCloud during the NEXT
-    -- course's entry burst (atmosphere.lua's god-ray gate does, from Setup)
-    -- gets the previous course's weather and rides it for up to
-    -- PresetTransitionSeconds. Reset() already clears both; this path did not.
+    -- Drop the smoothed values with the course; the next course's first Tick
+    -- re-seeds them from the live UDW read or the preset target. Otherwise a
+    -- consumer reading GetSmoothedCloud during the next entry burst
+    -- (atmosphere.lua's god-ray gate, from Setup) rides the previous course's
+    -- weather for up to PresetTransitionSeconds.
     internalState.cloudCurrent = nil
     internalState.fogCurrent = nil
+    internalState.prevTickTOD = nil
 end
 
 -- Initialize on load

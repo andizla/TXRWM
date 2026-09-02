@@ -3,7 +3,7 @@
 Built from the code, not from the docs. Every entry was read out of the live
 module and its config block, so this is what the mod actually does.
 
-**Current as of 4.0.0 (2026-08-31).**
+**Current as of 4.0.1 (2026-09-02).**
 
 ---
 
@@ -331,7 +331,8 @@ module and its config block, so this is what the mod actually does.
   1523 road and tunnel mesh components, so covered sections are correctly shaded
   from the first frame with nothing running.
 - **TXRWM_Collision_P** (291 MB): pre-bakes complex-as-simple collision onto 268
-  mesh assets so rain traces hit the real surface shape.
+  mesh assets. Since 4.0.1 the mod writes that flag itself at every course
+  load, so rain occlusion no longer depends on this pak; it is optional.
 - Both install into the game's Content\Paks as additive patch paks. No original
   game file is modified or replaced, deleting them restores stock exactly, and
   both need re-baking after a game update. The installer offers them as a

@@ -1,17 +1,13 @@
 -- TXR Weather Mod v3.0
 -- systems/vignette.lua
--- Optional: hide TXR's in-game HUD vignette (the dark corner-darkening frame) for a
--- cleaner, more photographic look, useful for screenshots / photo-mode driving.
---
--- This is a pure UI-widget toggle on TXR's OWN HUD (WBP_InGame_Hud_C ->
--- WBP_Com_Vignette_Frame), NOT a UDS/UDW post-process effect, so it works reliably.
--- It does not add or modify any game files. Default OFF (it removes a vanilla HUD
--- element, so it's opt-in). Ported/rewritten from the 1.34 monolith's uds_vignette.
---
--- The HUD widget tree is rebuilt on player-controller restarts (course load, PA
--- exit, etc.), so we re-assert on the ClientRestart hook AND with a light periodic
--- re-assert from the main tick (throttled). Re-asserting when the HUD isn't present
--- is a cheap no-op.
+-- Optional: hide TXR's in-game HUD vignette (the dark corner frame) for
+-- screenshots / photo-mode driving. A UI-widget toggle on TXR's own HUD
+-- (WBP_InGame_Hud_C, child WBP_Com_Vignette_Frame), not a UDS/UDW post-process
+-- effect, and no game files change. Default off (it removes a vanilla HUD
+-- element). The HUD widget tree is rebuilt on player-controller restarts
+-- (course load, PA exit), so the state is re-asserted on the ClientRestart hook
+-- and by a throttled periodic re-assert from the main tick (a cheap no-op when
+-- the HUD is absent).
 
 local Vignette = {}
 
@@ -26,7 +22,8 @@ local initialized = false
 local enabled = false      -- module active at all
 local hideVignette = true  -- when active, true = hide the vignette
 local lastReassert = 0.0
-local REASSERT_INTERVAL = 1.5  -- seconds between periodic re-asserts
+local REASSERT_INTERVAL = 5.0  -- seconds between periodic re-asserts (the
+                               -- ClientRestart hook covers HUD rebuilds)
 local lastLoggedState = nil
 local hookRegistered = false
 
@@ -71,14 +68,19 @@ local function getFrame()
     return nil
 end
 
---- Apply the current hide/show state to the frame widget. Returns true if applied.
---- (2026-07-27: briefly GT-marshalled after the 12:52 crash; REVERTED same day,
---- object-array walks on the game thread = frame hitches. Runs async as it
---- always did; the teardown gate plus pcall is the historical protection.)
+--- Apply the hide/show state to the frame widget. Returns true if applied.
+--- Runs async (GT-marshalling was tried 2026-07-27 and reverted the same day:
+--- object-array walks on the game thread hitch frames); the teardown gate
+--- plus pcall is the protection.
 local function applyOnce()
     if teardownActive() then return false end
     local v = getFrame()
     if not v then return false end
+
+    -- Already in the wanted state: skip the three UMG calls
+    local vis = nil
+    pcall(function() if v.GetVisibility then vis = v:GetVisibility() end end)
+    if vis == (hideVignette and 2 or 0) then return true end
 
     if hideVignette then
         pcall(function() if v.SetRenderOpacity then v:SetRenderOpacity(0.0) end end)
@@ -138,11 +140,10 @@ end
 --- the ClientRestart hook might miss. No-op when the HUD isn't present.
 function Vignette.Tick()
     if not initialized or not enabled then return end
-    -- Course/PA only: the driving HUD this pokes exists only there. The old
-    -- ungated version ran FindFirstOf widget sweeps from the async tick in
-    -- garage/menu worlds every 1.5s, a guaranteed no-op that was still full
-    -- exposure to the map-open teardown AV (2026-07-21 dump verdict). The
-    -- ClientRestart hook path still covers every controller restart.
+    -- Course/PA only: the driving HUD exists only there. The ungated version
+    -- swept FindFirstOf widgets from the async tick in garage/menu worlds every
+    -- 1.5s, a no-op with full exposure to the map-open teardown AV (2026-07-21
+    -- dump verdict). The ClientRestart hook still covers controller restarts.
     local actors = getActors()
     if not actors then return end
     local tag = actors.GetWorldTag and actors.GetWorldTag()
@@ -151,15 +152,6 @@ function Vignette.Tick()
     if (now - lastReassert) < REASSERT_INTERVAL then return end
     lastReassert = now
     applyOnce()
-end
-
-function Vignette.GetStatus()
-    return {
-        initialized = initialized,
-        enabled = enabled,
-        hide = hideVignette,
-        hudPresent = getHud() ~= nil,
-    }
 end
 
 return Vignette

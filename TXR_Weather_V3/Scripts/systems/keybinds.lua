@@ -51,15 +51,6 @@ local KEY_MAP = {
     NUMPADMUL = "MULTIPLY", NUMPADDIV = "DIVIDE",
 }
 
--- Modifier key bit flags for UE4SS
--- These may vary by UE4SS version, trying common values
-local MODIFIER_FLAGS = {
-    Shift = 1,
-    Ctrl = 2,
-    Control = 2,
-    Alt = 4,
-}
-
 -- ============== INTERNAL FUNCTIONS ==============
 
 --- Get lazy-loaded modules
@@ -117,21 +108,6 @@ local function getExposure()
     return nil
 end
 
---- Convert modifier array to flags
---- @param modifiers table Array of modifier names {"Alt", "Ctrl", "Shift"}
---- @return number Combined modifier flags
-local function getModifierFlags(modifiers)
-    local flags = 0
-    if modifiers then
-        for _, mod in ipairs(modifiers) do
-            if MODIFIER_FLAGS[mod] then
-                flags = flags | MODIFIER_FLAGS[mod]
-            end
-        end
-    end
-    return flags
-end
-
 --- Build key descriptor string for logging
 --- @param keyConfig table Key configuration with Key and Modifiers
 --- @return string Human-readable key combo
@@ -146,17 +122,15 @@ local function getKeyDescriptor(keyConfig)
     return table.concat(parts, "+")
 end
 
--- Per-bind refire guard: the 2026-08-24 UE4SS build delivers EXTRA fire
--- events per physical press (field: every Alt+J landed as ON then a
--- phantom OFF within a second, un-doing leak mode all day; the pinned
--- build fired once). Fires inside the window are dropped. Mode toggles
--- latch long, spawn/clone/delete one-shots latch mid, nudge keys stay
--- fast for sculpting; everything else gets the default.
+-- Per-bind refire guard: the 2026-08-24 UE4SS build delivers extra fire
+-- events per physical press (field: every Alt+J landed as on then a phantom
+-- off within a second; the pinned build fired once). Fires inside the window
+-- are dropped: mode toggles latch long, spawn/clone/delete one-shots mid,
+-- nudge keys stay fast for sculpting, everything else gets the default.
 local DEBOUNCE_DEFAULT_S = 0.25
 local DEBOUNCE_S = {
     LeakTestToggle = 1.0, SlabTunerToggle = 1.0, CycleHeadlights = 1.0,
-    PhotoDarkLook = 1.0, ToggleTimeSpeed = 1.0, ExposureDebugOverlay = 1.0,
-    PrecipSuppressTest = 1.0,
+    PhotoDarkLook = 1.0, ToggleTimeSpeed = 1.0,
     SlabSpawnHere = 0.4, SlabPadSpawn = 0.4, SlabPadJump = 0.4,
     SlabPadClone = 0.4, SlabPadRayClone = 0.4, SlabPadDelete = 0.4,
     SlabPadConfirm = 0.3, SlabPadSelectNearest = 0.2,
@@ -170,7 +144,7 @@ local DEBOUNCE_S = {
     SkylightMultUp = 0.12, SkylightMultDown = 0.12,
     StarIntensityUp = 0.12, StarIntensityDown = 0.12,
 }
-local lastKeyFire = {}   -- bind name -> os.clock of the last accepted fire
+local lastKeyFire = {}   -- per bind name: os.clock of the last accepted fire
 
 --- Register a single keybind
 --- @param name string Keybind name for logging
@@ -240,14 +214,8 @@ local function registerKeybind(name, keyConfig, callback)
             -- Register with modifier table (UE4SS v3.x style)
             RegisterKeyBind(key, modifierTable, runner)
         else
-            -- Try with integer modifiers as fallback
-            local modFlags = getModifierFlags(keyConfig.Modifiers)
-            if modFlags > 0 then
-                RegisterKeyBind(key, modFlags, runner)
-            else
-                -- Register without modifiers
-                RegisterKeyBind(key, runner)
-            end
+            -- Register without modifiers
+            RegisterKeyBind(key, runner)
         end
     end)
     
@@ -263,12 +231,11 @@ end
 
 -- ============== KEYBIND ACTIONS ==============
 
--- WEATHER-KEY DEBOUNCE (2026-08-12): spamming Alt+S crashed the session
--- (symbolized dump: get_userdata AV inside a UObject member call fired
--- from the apply path; a rapid re-apply races the previous apply's
--- teardown of the same objects, and pcall cannot catch the native
--- fault). One apply per 350 ms is imperceptible to a human press and
--- removes the overlap window entirely.
+-- Weather-key debounce (2026-08-12): spamming Alt+S crashed the session
+-- (symbolized dump: get_userdata AV in a UObject member call from the apply
+-- path; a rapid re-apply races the previous apply's teardown of the same
+-- objects, and pcall cannot catch the native fault). One apply per 350 ms
+-- removes the overlap window and is imperceptible to a human press.
 local WEATHER_KEY_DEBOUNCE_S = 0.35
 local lastWeatherKeyAt = 0.0
 local function weatherKeyDebounced()
@@ -333,6 +300,7 @@ local function onRandomPreset()
 end
 
 local function onForceClear()
+    if weatherKeyDebounced() then return end
     local weather = getWeather()
     if not weather then
         Log.Warn(MODULE, "Weather module not available")
@@ -350,7 +318,7 @@ local function onToggleTimeSpeed()
         return
     end
     
-    -- Use the CycleSpeed function which handles Normal -> Fast -> Pause -> Normal
+    -- CycleSpeed steps Normal, Fast, Pause, Normal
     local newMode = tod.CycleSpeed()
     Log.Info(MODULE, "Time speed toggled", {mode = newMode})
 end
@@ -362,8 +330,8 @@ local function onShadowDistanceUp()
         return
     end
 
-    -- Shadow system reverted to the original (no calibration nudge); both keys
-    -- just force a re-apply of the FOV-based shadow distance, as before.
+    -- No calibration nudge since the shadow revert: both keys force a
+    -- re-apply of the FOV-based shadow distance.
     shadows.Apply()
     Log.Info(MODULE, "Shadow distance re-applied")
 end
@@ -375,7 +343,7 @@ local function onShadowDistanceDown()
         return
     end
 
-    -- See onShadowDistanceUp: nudge calibration no longer exists post-revert.
+    -- See onShadowDistanceUp.
     shadows.Apply()
     Log.Info(MODULE, "Shadow distance re-applied")
 end
@@ -416,8 +384,9 @@ local function onBrightnessDown()
 end
 
 --- Photomode exposure trim (Alt+E brighter / Alt+Shift+E darker) and the
---- Alt+G dark-look toggle. Only live during a photo session; a press outside
---- one logs at Debug and does nothing (the provider returns nil).
+--- Alt+G dark-look toggle. Live during a photo session and in the plain
+--- garage (light_cycle's garage branch); elsewhere a press logs at Debug
+--- and does nothing (the provider returns nil).
 local function onPhotoExposureUp()
     local lc = getExposure()
     if not lc or not lc.NudgePhotoExposure then return end
@@ -462,33 +431,6 @@ local function onExposureTooBright()
     exposure.LogFeedback("bright")
 end
 
---- DEV: UDS exposure-bias liveness test (+2 EV on all five Exposure Bias
---- knobs, press again to restore). The handler name and ToggleHDRDebug are
---- historical; the keybind ships unbound (see Config.Keybinds).
-local function onExposureDebugOverlay()
-    local exposure = getExposure()
-    if not exposure or not exposure.ToggleHDRDebug then
-        Log.Warn(MODULE, "Exposure debug overlay not available (legacy module active?)")
-        return
-    end
-    exposure.ToggleHDRDebug()
-end
-
---- Manual test for the tunnel precip suppression mechanism (Alt+J): toggles
---- Weather.SetPrecipSuppressed. Use in rain: particles should vanish
---- immediately and return on the second press. The tunnel containment poll
---- (light_cycle) drives the same mechanism automatically.
-local precipTestOn = false
-local function onPrecipSuppressTest()
-    local ok, Weather = pcall(require, "systems.weather")
-    if not ok or not Weather or not Weather.SetPrecipSuppressed then
-        Log.Warn(MODULE, "Weather module not available")
-        return
-    end
-    precipTestOn = not precipTestOn
-    Weather.SetPrecipSuppressed(precipTestOn)
-end
-
 --- Rain-spot datapoint (Alt+N): logs position, road-data tunnel bits, a
 --- fresh roof-trace result, and the rain-kill state; the line also lands in
 --- Logs/tuning_feedback.log (tag "RainSpot"). Press wherever rain presence
@@ -502,17 +444,18 @@ local function onNoteRainSpot()
     Tunnels.NoteRainSpot()
 end
 
---- LEAK-HUNT MODE (Alt+J, 2026-08-12, the slab-calibration campaign):
---- one press = worst-case sun on demand. ON: remember the current
---- preset and pause state, hold the scheduler off (2h), Clear_Skies
---- fast-applied, TOD pinned at the config low-sun edge, clock frozen.
---- OFF: unfreeze (only if we froze it), release the scheduler, restore
---- the remembered preset. Workflow: Alt+J, drive the leaks, Alt+N at
---- both ends of every lit band, Alt+J off.
+--- Leak-hunt mode (Alt+J, 2026-08-12, the slab-calibration campaign):
+--- worst-case sun on demand. On: remember the current preset and pause
+--- state, hold the scheduler off (2h), fast-apply Clear_Skies, pin TOD at
+--- the config low-sun edge, freeze the clock. Off: unfreeze (only if we
+--- froze it), release the scheduler, restore the remembered preset.
+--- Workflow: Alt+J, drive the leaks, Alt+N at both ends of every lit band,
+--- Alt+J off.
 local leakTestOn = false
 local leakSavedPreset = nil
 local leakWasPaused = false
 local function onLeakTestToggle()
+    if weatherKeyDebounced() then return end   -- both edges fast-apply a preset
     local weather = getWeather()
     local okT, TOD = pcall(require, "systems.time_of_day")
     local okS, Sched = pcall(require, "systems.scheduler")
@@ -529,13 +472,12 @@ local function onLeakTestToggle()
         if okS and Sched and Sched.HoldFor then
             pcall(function() Sched.HoldFor(7200) end)
         end
-        -- Re-land the pinned calendar date before pinning the TOD: with
-        -- Simulate Real Sun the sun position depends on the DATE, which
-        -- drifts every in-game midnight mid-session (course entry resets
-        -- it, long fast-clock sessions walk it forward again), so a
-        -- calibrated leak TOD goes stale. RealSun's entry pass rewrites
-        -- the config date + Hard Reset Cache (queued marshal: it lands
-        -- right after the TOD write below and re-evaluates the sun).
+        -- Re-land the pinned date before pinning the TOD: with Simulate Real
+        -- Sun the sun position depends on the date, which drifts every
+        -- in-game midnight (course entry resets it, long fast-clock sessions
+        -- walk it forward again), so a calibrated leak TOD goes stale.
+        -- RealSun's entry pass rewrites the config date + Hard Reset Cache
+        -- (queued marshal: lands after the TOD write below, re-evaluates the sun).
         pcall(function()
             local okR, RS = pcall(require, "systems.real_sun")
             if okR and RS and RS.OnCourseLoad then RS.OnCourseLoad() end
@@ -551,7 +493,10 @@ local function onLeakTestToggle()
         leakTestOn = false
         if not leakWasPaused then pcall(function() TOD.Resume() end) end
         if okS and Sched and Sched.HoldFor then
-            pcall(function() Sched.HoldFor(1) end)
+            -- Release, not a 1 s hold: HoldFor only ever lengthens a hold
+            pcall(function()
+                if Sched.Release then Sched.Release() else Sched.HoldFor(1) end
+            end)
         end
         if leakSavedPreset then
             pcall(function() weather.ApplyFast(leakSavedPreset) end)
@@ -562,12 +507,11 @@ local function onLeakTestToggle()
     end
 end
 
---- SLAB TUNER (the Y-U-I-J cluster): live leak-fix authoring, see
---- systems/gap_walls.lua (extracted from tunnels 2026-08-12).
--- DEV-ONLY module: release builds omit systems/slab_editor.lua, so
--- this require fails, every editor handler no-ops, and none of the
--- editor keys register at all (the registrations below are gated on
--- the module loading).
+--- Slab tuner (the numpad grid in Config.Keybinds): live leak-fix authoring
+--- in systems/slab_editor.lua (the slabs themselves live in gap_walls.lua,
+--- extracted from tunnels 2026-08-12). Dev-only: release builds omit
+--- slab_editor.lua, so the require fails, every handler no-ops and no editor
+--- key registers (the registrations are gated on the module loading).
 local slabEditorMod = nil
 local slabEditorTried = false
 local function getSlabEditor()
@@ -609,7 +553,7 @@ local function onSlabSpawnHere()
     if E and E.SlabSpawnHere then E.SlabSpawnHere() end
 end
 
--- Numpad-grid handlers are TUNER-GATED (stray presses while driving
+-- Numpad-grid handlers are tuner-gated (stray presses while driving
 -- must never touch slabs; the grid only lives inside the editor).
 local function tunerGated(fnName)
     return function()
@@ -670,8 +614,8 @@ end
 
 --- Star visibility nudge (Alt+K family). The stars' rendered luminance
 --- clamps below a lifted night sky (2026-07-18 field model), so star
---- visibility is dialed by moving the NIGHT SKY GLOW background:
---- Alt+K = glow DOWN (stars cut through more), Alt+Shift+K = glow UP.
+--- visibility is dialed by moving the night sky glow background:
+--- Alt+K = glow down (stars cut through more), Alt+Shift+K = glow up.
 local function nudgeStarIntensity(dir)
     local ok, Atmo = pcall(require, "systems.atmosphere")
     if not ok or not Atmo or not Atmo.NudgeNightGlow then
@@ -744,8 +688,7 @@ function Keybinds.Init(config)
     end
     
     
-    -- Register shadow distance calibration controls
-    -- Alt+L raises the flat shadow distance, Alt+Shift+L lowers it (logs FOV+distance)
+    -- Shadow distance re-apply (Alt+L, Alt+Shift+L)
     if config.ShadowDistanceUp then
         registerKeybind("ShadowDistanceUp", config.ShadowDistanceUp, onShadowDistanceUp)
     end
@@ -784,22 +727,9 @@ function Keybinds.Init(config)
         Log.Debug(MODULE, "BrightnessDown not in config")
     end
 
-    -- (The Alt+I sun-leak toggle handler is deleted 2026-08-04 along with
-    -- RainCollision.ToggleShadowFix: the revert path keyed on an unstable
-    -- component key and falsely exonerated the fix in an A/B.)
-
-    -- Occlusion dig probe (Alt+O; see tunnels.OcclusionProbe)
-    if config.OcclusionProbe then
-        registerKeybind("OcclusionProbe", config.OcclusionProbe, function()
-            local ok, Tunnels = pcall(require, "systems.tunnels")
-            if not ok or not Tunnels or not Tunnels.OcclusionProbe then
-                Log.Warn(MODULE, "Tunnels module not available")
-                return
-            end
-            Tunnels.OcclusionProbe()
-        end)
-    end
-
+    -- No Alt+I sun-leak toggle: RainCollision.ToggleShadowFix was deleted
+    -- 2026-08-04 (its revert path keyed on an unstable component key and
+    -- falsely exonerated the fix in an A/B).
 
     -- Photomode exposure trim + dark look (Alt+E / Alt+Shift+E / Alt+G)
     if config.PhotoExposureUp then
@@ -821,14 +751,6 @@ function Keybinds.Init(config)
         registerKeybind("ExposureTooBright", config.ExposureTooBright, onExposureTooBright)
     end
 
-    if config.ExposureDebugOverlay then
-        registerKeybind("ExposureDebugOverlay", config.ExposureDebugOverlay, onExposureDebugOverlay)
-    end
-
-    if config.PrecipSuppressTest then
-        registerKeybind("PrecipSuppressTest", config.PrecipSuppressTest, onPrecipSuppressTest)
-    end
-
     if config.NoteRainSpot then
         registerKeybind("NoteRainSpot", config.NoteRainSpot, onNoteRainSpot)
     end
@@ -837,9 +759,8 @@ function Keybinds.Init(config)
         registerKeybind("LeakTestToggle", config.LeakTestToggle, onLeakTestToggle)
     end
 
-    -- Slab editor (leak-fix authoring, DEV BUILDS ONLY): the whole
-    -- set registers only if systems/slab_editor.lua exists, so a
-    -- release build (file omitted) has no editor keys at all.
+    -- Slab editor keys (dev builds only): registered only if
+    -- systems/slab_editor.lua loads.
     if getSlabEditor() == nil then
         Log.Debug(MODULE, "Slab editor absent: editor keys not registered")
     else
@@ -928,18 +849,5 @@ function Keybinds.Init(config)
     Log.Info(MODULE, "Keybinds initialized", {count = count})
     return true
 end
-
---- Check if keybinds are initialized
---- @return boolean
-function Keybinds.IsInitialized()
-    return isInitialized
-end
-
---- Get list of registered keybinds
---- @return table
-function Keybinds.GetRegistered()
-    return registeredKeys
-end
-
 
 return Keybinds

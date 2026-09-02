@@ -1,51 +1,44 @@
 -- TXR Weather Mod v3.0
 -- core/gt.lua
--- Single-flight game-thread marshal queue: THE mitigation for the
+-- Single-flight game-thread marshal queue: the mitigation for the
 -- "[Lua::Registry::get_function_ref] Ref was not function" family
 -- (silent engine-tick hook removal = dead pump, or a fatal abort).
 --
--- WHY: UE4SS shares ONE Lua registry across the main/async/hook
--- states. Every raw ExecuteInGameThread call luaL_ref's its callback
--- on the CALLER's thread while the game-thread drain get_function_ref
--- + luaL_unref's it with no lock covering the pair (LuaMod.cpp
--- 3067/2934). An async ref interleaving a game-thread unref can
--- double-hand a registry freelist slot; the next drain then finds a
--- non-function and UE4SS removes its engine-tick hook (or aborts).
--- The mod rolled those dice on every marshal (~38 call sites, worst
--- bursts at photomode entry / ClientRestart / world swaps = exactly
--- where the 2026-08 deaths clustered, here AND on a tester's stock
--- 3.9.0).
+-- Why: UE4SS shares one Lua registry across the main/async/hook states,
+-- and a raw ExecuteInGameThread luaL_ref's its callback on the caller's
+-- thread while the game-thread drain get_function_ref + luaL_unref's it
+-- with no lock covering the pair (LuaMod.cpp 3067/2934). An async ref
+-- interleaving a game-thread unref can double-hand a freelist slot; the
+-- next drain finds a non-function and UE4SS removes its engine-tick hook
+-- (or aborts). Every marshal rolled those dice (~38 call sites, worst at
+-- photomode entry, ClientRestart and world swaps, where the 2026-08
+-- deaths clustered, here and on a tester's stock 3.9.0).
 --
--- THE FIX: modules never call ExecuteInGameThread. GT.Run(fn) pushes
--- fn onto a plain Lua table (single VM op, atomic under UE4SS's
--- global Lua lock, NO registry refs). The async main loop calls
--- GT.PumpTick() at 8 Hz; when work exists and no pump action is in
--- flight it arms ONE ExecuteInGameThread whose body drains the whole
--- queue on the game thread. Idle = zero refs; continuous load = at
--- most ~8 refs/sec (was 5-15+); never two registry transactions in
--- flight.
+-- The fix: modules never call ExecuteInGameThread. GT.Run(fn) pushes fn
+-- onto a plain Lua table (one VM op, atomic under UE4SS's global Lua
+-- lock, no registry refs). The async main loop calls GT.PumpTick() at
+-- 8 Hz; when work exists and no pump action is in flight it arms one
+-- ExecuteInGameThread whose body drains the whole queue. Idle = zero
+-- refs; continuous load = at most ~8 refs/sec (was 5-15+); never two
+-- registry transactions in flight.
 --
--- HISTORY: distilled from the 2026-07-16 cloud experiment's
--- core/gt.lua. That bundle was reverted for MAJOR PERFORMANCE issues
--- (the 5fps discovery): it ran the ENTIRE mod tick on the game
--- thread (30 ms FindAllOf blocks on the frame) driven by a PER-FRAME
--- BP-tick hook (Lua dispatch every frame). BOTH halves are dropped
--- here: module ticks stay async, the pump arms at 8 Hz max and only
--- when work exists, and the game thread runs exactly the closures it
--- already ran (same bodies, same thread, batched submission) =
--- performance-neutral by construction.
+-- Distilled from the 2026-07-16 cloud experiment, minus what got that
+-- bundle reverted (the 5fps discovery): it ran the entire mod tick on
+-- the game thread (30 ms FindAllOf blocks on the frame) from a per-frame
+-- BP-tick hook. Here module ticks stay async, the pump arms at 8 Hz max
+-- and only with work, and the game thread runs exactly the closures it
+-- already ran: performance-neutral by construction.
 --
--- A/B LEVER: Config.GT.SingleFlight = false restores raw per-call
--- ExecuteInGameThread passthrough, so the crash-rate claim stays
--- testable in the field.
+-- A/B lever: Config.GT.SingleFlight = false restores raw per-call
+-- ExecuteInGameThread passthrough, keeping the crash-rate claim testable.
 --
--- THREADING CONTRACT:
---   queue                 : pushed from any thread, swapped+drained on GT
---   afterJobs/nextAfterAt : mutated on GT only (async inserts ride the
---                           queue); async READS nextAfterAt (a plain
---                           number, atomic under the global Lua lock)
+-- Threading contract:
+--   queue                    : pushed from any thread, swapped and drained on GT
+--   afterJobs/nextAfterAt    : mutated on GT only (async inserts ride the
+--                              queue); async reads nextAfterAt (a plain
+--                              number, atomic under the global Lua lock)
 --   pumpInFlight/pumpArmedAt : async arms, the GT action clears
---   inScope / lastDriveAt : GT writes, async reads
+--   inScope/lastDriveAt      : GT writes, async reads
 
 local GT = {}
 
@@ -57,7 +50,7 @@ local MODULE = "GT"
 local singleFlight = true      -- Config.GT.SingleFlight (read at first use)
 local configRead = false
 
-local queue = {}               -- marshalled jobs (any thread -> GT)
+local queue = {}               -- marshalled jobs (any thread to GT)
 local afterJobs = {}           -- {at, fn}: GT-owned delayed jobs
 local nextAfterAt = math.huge  -- soonest afterJobs at (GT writes, async reads)
 
@@ -66,15 +59,14 @@ local lastDriveAt = 0.0
 local pumpInFlight = false
 local pumpArmedAt = 0.0
 
--- A queued action is never dropped by UE4SS (erased only when run), so
--- a long-pending pump means the game thread is stalled OR the engine-
--- tick hook was removed (the failure this module mitigates). Re-arming
--- early risks two live registry transactions: re-arm ONCE per 30s and
--- say so (main's pump watchdog flags the dead pump separately).
+-- UE4SS never drops a queued action (erased only when run), so a
+-- long-pending pump means a stalled game thread or a removed engine-tick
+-- hook. Re-arming early risks two live registry transactions, so re-arm
+-- once per 30s and say so (main's pump watchdog flags the dead pump).
 local PUMP_WEDGE_SEC = 30.0
--- Never arm hot on the heels of a finished Drive: the engine-side
--- drain luaL_unref's the previous action just AFTER our Lua returns;
--- one holdoff keeps our next luaL_ref clear of that tail.
+-- Never arm right after a Drive: the engine-side drain luaL_unref's the
+-- previous action just after our Lua returns; the holdoff keeps the next
+-- luaL_ref clear of that tail.
 local PUMP_ARM_HOLDOFF = 0.1
 
 local QUEUE_CAP = 400          -- runaway backstop; drops oldest, warns
@@ -100,7 +92,6 @@ end
 --- Run fn on the game thread. Inline when already in GT scope (a job
 --- enqueueing from inside the drain; also dodges UE4SS issue #1180's
 --- re-entrant ExecuteInGameThread corruption). Queued otherwise.
---- Replaces every direct ExecuteInGameThread call in the modules.
 function GT.Run(fn)
     if type(fn) ~= "function" then return false end
     if not configRead then readConfig() end
@@ -152,7 +143,7 @@ function GT.After(seconds, fn)
     end)
 end
 
---- Drain everything on the game thread. MUST only run there.
+--- Drain everything on the game thread. Must only run there.
 function GT.Drive(source)
     if inScope then
         if source == "pump" then pumpInFlight = false end
@@ -170,7 +161,7 @@ function GT.Drive(source)
     end
 
     if #afterJobs > 0 and os.clock() >= nextAfterAt then
-        -- swap FIRST: a job scheduling another GT.After appends to the
+        -- swap first: a job scheduling another GT.After appends to the
         -- fresh table and survives the rebuild
         local due = afterJobs
         afterJobs = {}
@@ -188,19 +179,17 @@ function GT.Drive(source)
     end
 
     inScope = false
-    -- Stamped at drain END, not start: PUMP_ARM_HOLDOFF must clear the
-    -- engine-side unref that trails our RETURN, so a long drain cannot
-    -- consume the holdoff before the edge it protects even happens.
+    -- Stamped at drain end, not start: a long drain must not consume the
+    -- holdoff before the trailing engine-side unref it protects against.
     lastDriveAt = os.clock()
-    -- release the slot LAST: the async side may only arm the next
-    -- action once this one's work is done (its trailing engine-side
-    -- unref is covered by PUMP_ARM_HOLDOFF)
+    -- Release the slot last: the async side may only arm the next action
+    -- once this one's work is done.
     if source == "pump" then
         pumpInFlight = false
     end
 end
 
---- Async-side pump: called from the 8 Hz main loop. Arms at most ONE
+--- Async-side pump: called from the 8 Hz main loop. Arms at most one
 --- game-thread action, and only when there is actually work.
 function GT.PumpTick()
     if not configRead then readConfig() end
@@ -228,16 +217,6 @@ function GT.PumpTick()
         end)
     end)
     if not ok then pumpInFlight = false end
-end
-
-function GT.GetStatus()
-    return {
-        singleFlight = singleFlight,
-        queued = #queue,
-        delayed = #afterJobs,
-        pumpInFlight = pumpInFlight,
-        lastDriveAgo = os.clock() - lastDriveAt,
-    }
 end
 
 return GT

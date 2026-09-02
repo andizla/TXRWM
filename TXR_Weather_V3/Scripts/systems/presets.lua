@@ -216,10 +216,9 @@ local PRESET_DATA = {
     },
 }
 
--- Ordered list for cycling (subset most relevant for TXR).
--- RAIN RETURNS (3.8.0): the rain variants are BACK, restored here,
--- in Config.Weather.PresetCycleOrder and in the scheduler pool IN SYNC
--- (the Heavy Overcast lesson: these lists must move together).
+-- Ordered list for cycling (the subset relevant to TXR). This list,
+-- Config.Weather.PresetCycleOrder and the scheduler pool must move together
+-- (the Heavy Overcast lesson); the rain variants returned in 3.8.0.
 local DEFAULT_CYCLE_ORDER = {
     "Clear_Skies",
     "Partly_Cloudy",
@@ -243,12 +242,6 @@ local function buildAssetPath(assetName)
 end
 
 -- ============== PUBLIC API ==============
-
---- Initialize presets module
-function Presets.Init()
-    Log.Info(MODULE, "Initializing presets module", {count = Presets.GetCount()})
-    return true
-end
 
 --- Get preset data by name
 --- @param presetName string Preset name (e.g., "Clear_Skies")
@@ -287,22 +280,6 @@ function Presets.GetDisplayName(presetName)
     return presetName
 end
 
---- Check if preset has rain
---- @param presetName string
---- @return boolean
-function Presets.HasRain(presetName)
-    local data = PRESET_DATA[presetName]
-    return data and data.hasRain or false
-end
-
---- Check if preset has snow
---- @param presetName string
---- @return boolean
-function Presets.HasSnow(presetName)
-    local data = PRESET_DATA[presetName]
-    return data and data.hasSnow or false
-end
-
 --- Check if preset is a "dry" preset (no precipitation)
 --- @param presetName string
 --- @return boolean
@@ -310,17 +287,6 @@ function Presets.IsDry(presetName)
     local data = PRESET_DATA[presetName]
     if not data then return true end
     return not data.hasRain and not data.hasSnow and not data.hasDust
-end
-
---- Get list of all preset names
---- @return table Array of preset names
-function Presets.GetAllNames()
-    local names = {}
-    for name, _ in pairs(PRESET_DATA) do
-        table.insert(names, name)
-    end
-    table.sort(names)
-    return names
 end
 
 --- Get count of available presets
@@ -389,19 +355,6 @@ function Presets.GetPrevInCycle(currentPreset)
     
     -- Current not in cycle, return last
     return order[#order]
-end
-
---- Get presets by category
---- @param category string "clear", "cloudy", "fog", "rain", "snow", "dust"
---- @return table Array of preset names
-function Presets.GetByCategory(category)
-    local results = {}
-    for name, data in pairs(PRESET_DATA) do
-        if data.category == category then
-            table.insert(results, name)
-        end
-    end
-    return results
 end
 
 --- Get default preset name

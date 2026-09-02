@@ -1,21 +1,18 @@
 -- TXR Weather Mod v3.0
 -- systems/stars.lua
--- Phase 12: High-resolution (HD) real-stars night sky
+-- High-resolution real-stars night sky.
 --
--- SAFE REWRITE (2026-06-24). The old version resolved the Real_Stars texture asset
--- and wrote it into the OBJECT-typed "Real Stars Texture" UProperty off-thread
--- during course BeginPlay, corrupting UE4SS reflection -> 0xC0000005 crash. Even a
--- game-thread wrap didn't save it.
---
--- New approach (from the UE4SS_ObjectDump + UDS v9.5 docs): we do NOT touch the
--- texture object at all. "Real Stars Texture" is a SoftObjectProperty already
--- assigned in UDS, and "Static Properties - Stars" is UDS's own function that
--- resolves that soft-ref and applies it (SoftObjectToObject -> Cast Texture2D ->
--- SetScalarParameterValue, all internally). So we only:
---   1. set "Simulate Real Stars" = true (a primitive bool), + optional intensity/tiling,
---   2. call "Static Properties - Stars" on the GAME THREAD (UDS loads its own texture),
---   3. defer past the BeginPlay window with a settle gate (the shadow-module lesson).
--- No asset load, no object-typed write, nothing during construction.
+-- Safe rewrite (2026-06-24): the old version resolved the Real_Stars texture
+-- and wrote it into the object-typed "Real Stars Texture" UProperty off-thread
+-- during course BeginPlay, corrupting UE4SS reflection (0xC0000005); a
+-- game-thread wrap did not save it. Now nothing touches the texture object:
+-- "Real Stars Texture" is a SoftObjectProperty already assigned in UDS, and
+-- UDS's stars Static Properties bake resolves and applies it itself
+-- (SoftObjectToObject, Cast Texture2D, SetScalarParameterValue). This module
+-- sets "Simulate Real Stars" (a primitive bool) plus optional intensity/tiling,
+-- calls that bake on the game thread, and defers past the BeginPlay window
+-- with a settle gate (the shadow-module lesson). No asset load, no
+-- object-typed write, nothing during construction.
 
 local Stars = {}
 
@@ -43,10 +40,9 @@ local SETTLE_TICKS = 32
 -- ============== CONFIG (filled in Init) ==============
 local enabled = true
 local intensity = nil  -- nil = keep UDS default
--- Real-star 360 map vs the simple tiling texture. The real map carries a
--- baked Milky Way band that reads as a "nebula" in the sky; false swaps
--- to the tiling texture (2026-07-23 test: eliminate the nebula variable
--- from the stars-vs-glow puzzle).
+-- Real-star 360 map vs the simple tiling texture: the real map carries a
+-- baked Milky Way band that reads as a nebula; false swaps to the tiling
+-- texture (2026-07-23 test, removing the nebula variable from stars-vs-glow).
 local simulateRealStars = true
 local tiling = nil     -- nil = keep UDS default
 -- City glow washes the night-sky background brighter than the stars, so
@@ -62,18 +58,16 @@ local appliedThisCourse = false
 local effectiveIntensity = nil  -- glow-boosted value; wins over `intensity`
 local lastBoostApplied = nil    -- change gate for the boost writes
 local lastBoostClock = 0.0      -- throttle (each step re-bakes)
--- Star COLOR boost: field-observed 2026-07-17, "Stars Intensity" acts as
--- the layer's OPACITY in this compositing, so against a glow-lifted sky
--- more intensity = darker star specks, never brighter. Luminance lives
--- in the Stars Color FLinearColor: RGB scaled >1 (HDR) is what actually
--- brightens the points. Stock color is captured once per course and the
--- multiplier always applies to STOCK (never compounds).
+-- Star color boost (field 2026-07-17): "Stars Intensity" acts as the layer's
+-- opacity in this compositing, so against a glow-lifted sky more intensity
+-- means darker specks. Luminance lives in the Stars Color FLinearColor (RGB
+-- > 1 = HDR brighter). Stock color captured once per course; the multiplier
+-- always applies to stock (never compounds).
 local starColorStock = nil
 local starColorMult = 1.0
--- (The MIDStarColor emergency belt/stomp/burst machinery was removed in
--- the pre-4.0.0 dead-code pass: its gate shipped nil since 3.x and the
--- final star architecture never needed it. History lives in HANDOFF.md
--- and the reference library.)
+-- (The MIDStarColor belt/stomp/burst machinery was removed before 4.0.0: its
+-- gate shipped nil since 3.x and the final star architecture never needed it.
+-- History in HANDOFF.md and the reference library.)
 local starsSpeed = nil           -- Config.Stars.TilingStarSpeed; nil = keep UDS default
 
 -- ============== INTERNAL ==============
@@ -101,8 +95,8 @@ local function getUDS()
     return actors.GetUDS()
 end
 
---- The actual UDS work. MUST run on the game thread. NO asset load, NO object
---- write; only a primitive bool/doubles plus UDS's own apply function.
+--- The UDS work. Must run on the game thread. No asset load, no object write;
+--- only a primitive bool/doubles plus UDS's own apply function.
 local function enableStarsOnGameThread()
     local uds = getUDS()
     if not uds then return end
@@ -166,7 +160,7 @@ local function applyStarColorGT()
             B = starColorStock.B * m, A = starColorStock.A,
         }
     end)
-    if okW then applyStars() end   -- bake via Static Properties - Stars
+    if okW then applyStars() end   -- re-bake through the stars Static Properties call
 end
 
 --- Marshal wrapper: the read+write pair must run on the game thread (the
@@ -206,26 +200,30 @@ function Stars.Init()
 end
 
 --- Called per course load. Just re-arms the settle gate; the actual apply happens
---- in Tick, well after BeginPlay (NOT during the construction window).
+--- in Tick, well after BeginPlay (not during the construction window).
 function Stars.Setup()
     settleTicks = 0
     appliedThisCourse = false
     lastBoostApplied = nil   -- fresh sky = re-apply the glow boost
-    effectiveIntensity = nil -- a boosted value from the LAST course must not
+    effectiveIntensity = nil -- a boosted value from the last course must not
                              -- become this course's one-shot base apply
     starColorStock = nil     -- fresh sky = fresh stock color capture
+end
+
+--- Course edge (main.lua's debounced lifecycle): re-arm the one-shot.
+function Stars.OnCourseUnload()
+    settleTicks = 0
+    appliedThisCourse = false
 end
 
 --- Per-tick: apply once per course, after the settle gate, if enabled.
 function Stars.Tick()
     if not isInitialized or not enabled then return end
 
+    -- Actors missing = a blip or a real exit: no re-arm here (a photomode
+    -- open used to re-run the bake); OnCourseUnload and Setup do it
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then
-        settleTicks = 0
-        appliedThisCourse = false
-        return
-    end
+    if not actors or not actors.IsOnCourse() then return end
 
     settleTicks = settleTicks + 1
     if not appliedThisCourse and settleTicks >= SETTLE_TICKS then
@@ -241,11 +239,9 @@ function Stars.Tick()
         end
     end
 
-    -- CITY GLOW COMPENSATION (see CITY_GLOW_BOOST): follow the live glow
-    -- factor so stars stay brighter than the lifted sky background.
-    -- Throttled + change-gated: every applied step re-bakes via Static
-    -- Properties (the SetIntensity precedent; a dusk ramp = a handful of
-    -- bakes, steady night = none).
+    -- City glow compensation (see CITY_GLOW_BOOST): follow the live glow factor
+    -- so stars stay brighter than the lifted sky. Throttled + change-gated:
+    -- every applied step re-bakes (a dusk ramp = a handful, steady night = none).
     if appliedThisCourse and CITY_GLOW_BOOST > 1.0 and intensity ~= nil then
         local now = os.clock()
         if now - lastBoostClock >= 2.0 then
@@ -258,9 +254,8 @@ function Stars.Tick()
                 end
             end)
             local eff = intensity * (1.0 + (CITY_GLOW_BOOST - 1.0) * glow)
-            -- Baseline = the configured intensity (the one-shot apply
-            -- already wrote it): at zero glow this stays silent instead
-            -- of re-baking a no-op on every course entry
+            -- Baseline = the configured intensity (already written by the
+            -- one-shot apply), so zero glow does not re-bake on every course entry
             if math.abs(eff - (lastBoostApplied or intensity)) >= 0.25 then
                 lastBoostApplied = eff
                 effectiveIntensity = eff

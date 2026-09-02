@@ -5,6 +5,9 @@
 local Utils = {}
 
 local GT = require("core.gt")
+local Log = require("core.logging")
+
+local MODULE = "Utils"
 
 -- ============== ACTOR/UOBJECT VALIDATION ==============
 
@@ -16,25 +19,22 @@ function Utils.IsValidObject(obj)
         return false
     end
     
-    -- Check for UE4SS UObject validity
+    -- Userdata: IsValid when the object has it, else assume valid; a failing
+    -- IsValid call counts as invalid. Tables and other types: non-nil.
     if type(obj) == "userdata" then
-        -- Try calling IsValid if available
         local success, isValid = pcall(function()
             if obj.IsValid then
                 return obj:IsValid()
             end
-            -- If no IsValid method, assume valid if non-nil userdata
             return true
         end)
         
         if success then
             return isValid
         end
-        -- If IsValid call failed, object is likely invalid
         return false
     end
     
-    -- Tables and other types: just check non-nil
     return obj ~= nil
 end
 
@@ -93,15 +93,14 @@ function Utils.SafeGetFunction(obj, functionName)
         return nil, false
     end
     
-    -- In UE4SS, functions are often userdata that's callable, not Lua functions
+    -- UE4SS UFunctions arrive as callable userdata, not Lua functions; any
+    -- other non-nil value (a __call table, say) is assumed callable too.
     local fnType = type(fn)
     if fnType == "function" then
         return fn, true
     elseif fnType == "userdata" then
-        -- UE4SS UFunctions are userdata; assume callable
         return fn, true
     elseif fn ~= nil then
-        -- Could be a table with __call metamethod or other callable
         return fn, true
     end
     
@@ -134,26 +133,6 @@ function Utils.Clamp(value, min, max)
     return value
 end
 
---- Linear interpolation between two values
---- @param a number Start value
---- @param b number End value
---- @param t number Interpolation factor (0-1)
---- @return number
-function Utils.Lerp(a, b, t)
-    t = Utils.Clamp(t, 0, 1)
-    return a + (b - a) * t
-end
-
---- Check if a number is approximately equal to another
---- @param a number First value
---- @param b number Second value
---- @param epsilon number Tolerance (default 0.0001)
---- @return boolean
-function Utils.ApproxEqual(a, b, epsilon)
-    epsilon = epsilon or 0.0001
-    return math.abs(a - b) < epsilon
-end
-
 -- ============== STRING UTILITIES ==============
 
 --- Safe tostring that handles nil
@@ -168,20 +147,6 @@ function Utils.SafeToString(value)
         return str
     end
     return "<tostring failed>"
-end
-
---- Truncate a string to max length with ellipsis
---- @param str string The string to truncate
---- @param maxLen number Maximum length
---- @return string
-function Utils.Truncate(str, maxLen)
-    if type(str) ~= "string" then
-        str = Utils.SafeToString(str)
-    end
-    if #str <= maxLen then
-        return str
-    end
-    return string.sub(str, 1, maxLen - 3) .. "..."
 end
 
 --- Format a memory address for logging
@@ -218,17 +183,8 @@ end
 --- @return number
 function Utils.GetTime()
     -- os.clock() has subsecond precision (os.time() is whole seconds); every
-    -- caller uses this for DELTAS, where process time works fine.
+    -- caller uses this for deltas, where process time works fine.
     return os.clock()
-end
-
---- Calculate delta time between two timestamps
---- @param startTime number Start time from GetTime()
---- @param endTime number|nil End time (default: current time)
---- @return number Delta in seconds
-function Utils.DeltaTime(startTime, endTime)
-    endTime = endTime or Utils.GetTime()
-    return endTime - startTime
 end
 
 -- ============== ANIMATION/SMOOTHING ==============
@@ -288,9 +244,8 @@ end
 
 -- ============== CONSOLE COMMANDS (game-thread safe) ==============
 
--- Cached console singletons (Engine + KismetSystemLibrary). Resolved once and
--- reused so each console push doesn't re-scan the UObject array. Re-resolved if
--- they ever go invalid.
+-- Cached console singletons (Engine + KismetSystemLibrary): resolved once so a
+-- console push does not re-scan the UObject array, re-resolved if they go invalid.
 local _cachedEngine = nil
 local _cachedKsl = nil
 local _UEH = nil
@@ -319,11 +274,16 @@ local function _getKsl()
     return nil
 end
 
---- Run one or more console commands on the GAME THREAD. Module ticks run on
---- UE4SS's async LoopAsync thread; issuing r.* render CVAR commands off the game
---- thread races the render thread and can crash on course load, so this marshals
---- onto the game thread (the same mechanism the exposure module uses for its
---- exposure cvars). Safe to call from any module tick.
+-- Closure diagnostics: a throttled warning when the singletons cannot be
+-- resolved at run time (first drop, then every 50th) and one Info line for
+-- the first batch that executed.
+local _dropBatches = 0
+local _execLogged = false
+
+--- Run one or more console commands on the game thread. Module ticks run on
+--- UE4SS's async LoopAsync thread; issuing r.* render cvar commands off the
+--- game thread races the render thread and can crash on course load, so this
+--- marshals onto the game thread. Safe to call from any module tick.
 --- @param cmds string[] array of console command strings
 --- @return boolean scheduled
 function Utils.ExecConsoleCommands(cmds)
@@ -331,9 +291,20 @@ function Utils.ExecConsoleCommands(cmds)
     local run = function()
         local ksl = _getKsl()
         local eng = _getEngine()
-        if not ksl or not eng then return end
+        if not ksl or not eng then
+            _dropBatches = _dropBatches + 1
+            if _dropBatches == 1 or _dropBatches % 50 == 0 then
+                Log.Warn(MODULE, "Cvar batch dropped: Engine/KSL unavailable",
+                    {drops = _dropBatches, ksl = ksl ~= nil, eng = eng ~= nil})
+            end
+            return
+        end
         for _, cmd in ipairs(cmds) do
             pcall(function() ksl:ExecuteConsoleCommand(eng, cmd, nil) end)
+        end
+        if not _execLogged then
+            _execLogged = true
+            Log.Info(MODULE, "First cvar batch executed on game thread", {cmds = #cmds})
         end
     end
     -- Rides the single-flight marshal queue (core/gt.lua); GT.Run
@@ -351,7 +322,6 @@ function Utils.WeightedPick(pool)
         return nil
     end
     
-    -- Calculate total weight
     local total = 0
     for _, item in ipairs(pool) do
         total = total + (item.weight or 1)
@@ -362,7 +332,6 @@ function Utils.WeightedPick(pool)
         return pool[math.random(#pool)].name
     end
     
-    -- Pick random point
     local r = math.random() * total
     local cumulative = 0
     

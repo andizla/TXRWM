@@ -2,15 +2,13 @@
 -- systems/scheduler.lua
 -- Phase 11: Random weather preset scheduler.
 --
--- Drives weather changes on a randomized interval using a weighted preset pool.
--- All changes route through Weather.Apply(), so the stable rain/dry/clouds/fog/
--- lightning/audio pipeline stays in the loop (we intentionally do NOT use UDW's
--- native Random Weather Variation, which would bypass that pipeline and fight the
--- manual-override suppression in weather.lua).
---
--- The scheduler watches the current preset: if it changes to something the
--- scheduler did not set (manual Alt+S cycle, Alt+R reset, or a persistence
--- restore), it re-arms its timer so it never instantly stomps a deliberate pick.
+-- Drives weather changes on a randomized interval from a weighted preset pool.
+-- All changes route through Weather.Apply() so the rain/dry/clouds/fog/
+-- lightning/audio pipeline stays in the loop; UDW's native Random Weather
+-- Variation would bypass it and fight the manual-override suppression.
+-- If the current preset changes to something the scheduler did not set
+-- (Alt+S cycle, Alt+R reset, a persistence restore) the timer re-arms so a
+-- deliberate pick is never instantly stomped.
 
 local Scheduler = {}
 
@@ -211,17 +209,17 @@ function Scheduler.PickNow()
     return Scheduler.PickAndApply()
 end
 
---- Hold automatic changes for the given seconds. Test-rain support
---- (2026-07-28): a forced experiment preset must not be scheduler-swapped
---- mid-test (the 01:21 log: Rain -> Overcast landed mid-occlusion-run).
+--- Hold automatic changes for the given seconds (2026-07-28, test-rain
+--- support: a forced experiment preset must not be scheduler-swapped
+--- mid-test; the 01:21 log had Rain -> Overcast land mid-occlusion-run).
 --- Also adopts the current preset so external-change detection does not
 --- shorten the hold.
 function Scheduler.HoldFor(seconds)
-    -- max(): a hold must never PULL IN a change that was already further out
-    -- (photomode's 30s close-hold vs a pick still minutes away). heldUntil is
-    -- what makes the hold stick: the external-change branch in Tick re-arms a
-    -- normal interval when the hold's OWN apply lands after the HoldFor call
-    -- (leak test: HoldFor then ApplyFast), and clamps back up to this.
+    -- max(): a hold must never pull in a change already further out
+    -- (photomode's 30 s close-hold vs a pick still minutes away). heldUntil
+    -- makes the hold stick: the external-change branch in Tick re-arms a
+    -- normal interval when the hold's own apply lands after the HoldFor call
+    -- (leak test: HoldFor then ApplyFast) and clamps back up to this.
     heldUntil = os.time() + (tonumber(seconds) or 300)
     if heldUntil > nextChangeAt then nextChangeAt = heldUntil end
     pcall(function()
@@ -231,6 +229,21 @@ function Scheduler.HoldFor(seconds)
         end
     end)
     Log.Info(MODULE, "Auto changes held", {seconds = tonumber(seconds) or 300})
+end
+
+--- Drop an active hold and arm a fresh interval. HoldFor can only push the
+--- next change further out (its max() keeps a longer hold intact), so a
+--- one-second HoldFor never released the leak test's two-hour hold.
+function Scheduler.Release()
+    heldUntil = 0
+    armTimer()
+    pcall(function()
+        local weather = getWeather()
+        if weather and weather.GetCurrent then
+            lastSetPreset = weather.GetCurrent()
+        end
+    end)
+    Log.Info(MODULE, "Auto changes released")
 end
 
 --- Per-tick update. Gated in main.lua by PA-freeze; we add the on-course /
@@ -281,22 +294,6 @@ function Scheduler.Tick()
     if os.time() >= nextChangeAt then
         Scheduler.PickAndApply()
     end
-end
-
---- Reset scheduler timing (e.g. on course load). Safe to call anytime.
-function Scheduler.OnCourseLoad()
-    wasOnCourse = false  -- next Tick re-arms and re-adopts the active preset
-end
-
---- Status for debugging / future HUD.
---- @return table
-function Scheduler.GetStatus()
-    return {
-        enabled = (Config.Scheduler and Config.Scheduler.Enabled) == true,
-        lastSetPreset = lastSetPreset,
-        secondsUntilNext = math.max(0, math.floor(nextChangeAt - os.time())),
-        changeCount = changeCount,
-    }
 end
 
 return Scheduler

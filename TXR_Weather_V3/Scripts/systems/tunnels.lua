@@ -12,10 +12,10 @@
 -- in bores, and the photomode covered metering. This module also clears
 -- the course volumes' authored LumenSkylightLeaking override once per
 -- course (it flooded covered sections with flat sky ambient at every
--- volume edge). NO exposure writes here: per-volume exposure is a closed
+-- volume edge). No exposure writes here: per-volume exposure is a closed
 -- dead end (blend-edge snapping), and stock exposure handles bores
 -- correctly with the leak dead.
--- RAIN: no longer this module's job. Rain occludes on real geometry via
+-- Rain is no longer this module's job: it occludes on real geometry via
 -- systems/rain_collision.lua (3.8.0); the old particle-hiding kill
 -- (TunnelRainKill / OverpassRainKill, Weather.SetPrecipSuppressed) is
 -- config-off and dormant, kept as the fallback mechanism.
@@ -134,7 +134,7 @@ local FOG_HOLD_S = 5.0
 -- an uncached FindAllOf sweep, at 4Hz under foggy presets.
 local cachedPawn = nil
 
---- Pure-state reset (refs dropped: unload/teardown/re-arm). NO weather
+--- Pure-state reset (refs dropped: unload/teardown/re-arm). No weather
 --- calls, safe from any thread; the next Weather.Apply clears any lingering
 --- suppression itself (full restore path, see weather.lua).
 local function tunnelReset()
@@ -152,12 +152,11 @@ end
 --- which includes the lookahead point) so the kill lands at the portal or
 --- bridge edge.
 local function tunnelApplyState(carIn, rainAhead)
-    -- COVER-ENTER PASS TRIGGER (2026-08-11, from the five Alt+N reports:
-    -- all were rain under covers the collision pass had not reached).
-    -- The RAW cover signal (road data or roof trace), deliberately
-    -- outside the TUNNEL_RAIN_KILL gate: enablement must not depend on
-    -- whether the bore rain kill is configured on. Rising edge only;
-    -- rain_collision rate-limits itself.
+    -- Cover-enter pass trigger (2026-08-11, the five Alt+N reports: all
+    -- rain under covers the collision pass had not reached). The raw
+    -- cover signal, outside the TUNNEL_RAIN_KILL gate on purpose: it must
+    -- not depend on the bore rain kill being configured on. Rising edge
+    -- only; rain_collision rate-limits itself.
     local coverRaw = (carIn or rainAhead) or false
     if coverRaw and not lastCoverRaw then
         pcall(function()
@@ -171,11 +170,11 @@ local function tunnelApplyState(carIn, rainAhead)
         Log.Info(MODULE, tunnelNow and "Tunnel cover ON (road data)" or "Tunnel cover OFF")
     end
     -- Fog damp rides the road-data cover only (bores; brief overpass
-    -- shadows don't need it); EnhancedFog owns the fog writes. ON lands
-    -- at the portal edge; OFF waits FOG_HOLD_S of CONTINUOUSLY open road,
-    -- so the short gaps between covered sections never flash the fog wall
-    -- back mid-gallery. A real exit restores fog a few seconds past the
-    -- portal, where the global fog is the correct look anyway.
+    -- shadows do not need it); EnhancedFog owns the fog writes. On lands
+    -- at the portal edge; off waits FOG_HOLD_S of continuously open road,
+    -- so short gaps between covered sections never flash the fog wall
+    -- back mid-gallery, and a real exit restores fog a few seconds past
+    -- the portal, where the global fog is the correct look anyway.
     if carIn then
         fogReleaseAt = nil
         if not fogDampOn then
@@ -199,8 +198,8 @@ local function tunnelApplyState(carIn, rainAhead)
         end
     end
     -- Kill instantly on cover. Release depends on which signal covered
-    -- last: the road-data bit is exact, so its cover releases on the FIRST
-    -- uncovered poll (rain returns right at the portal); the roof TRACE
+    -- last: the road-data bit is exact, so its cover releases on the first
+    -- uncovered poll (rain returns right at the portal); the roof trace
     -- flaps through girder/lattice gaps, so its cover holds for
     -- RAIN_CLEAR_POLLS uncovered polls before releasing.
     local covered = (TUNNEL_RAIN_KILL and (carIn or rainAhead)) or false
@@ -317,57 +316,17 @@ local function traceChanSegGT(ksl, pawn, s, e, channel, complex)
     return hit, (ok and callOk), dist, hitName, compRef
 end
 
---- Full collision profile of a hit component (game thread): enabled mode,
---- object type, response row for channels 0..15 (0=Ignore 1=Overlap
---- 2=Block), and the static-mesh asset name. This is the "what makes this
---- mesh different" readout (2026-07-28 field question: some geometry
---- carries wheels/rain, some does not).
-local function describeCollisionGT(ref)
-    local comp = nil
-    pcall(function()
-        if ref and ref.Get then comp = ref:Get() else comp = ref end
-    end)
-    if not comp then return "unresolvable" end
-    local parts = {}
-    pcall(function() parts[#parts + 1] = "en=" .. tostring(comp:GetCollisionEnabled()) end)
-    pcall(function() parts[#parts + 1] = "obj=" .. tostring(comp:GetCollisionObjectType()) end)
-    local resp = {}
-    for ch = 0, 31 do
-        local r = "?"
-        pcall(function() r = tostring(comp:GetCollisionResponseToChannel(ch)) end)
-        resp[#resp + 1] = r
-    end
-    parts[#parts + 1] = "resp0-31=" .. table.concat(resp, "")
-    pcall(function()
-        local sm = comp.StaticMesh
-        if sm then
-            local fn = sm:GetFullName()
-            if type(fn) == "string" then
-                parts[#parts + 1] = "mesh=" .. (fn:match("([^%.%s/]+)$") or fn:sub(-40))
-            end
-            -- Live BodySetup trace flag: 2 = ComplexAsSimple = our pak's
-            -- patch LOADED; 0 = UseDefault = the base asset won (pak not
-            -- mounting or not overriding). The decisive pak diagnostic.
-            pcall(function()
-                local bs = sm.BodySetup
-                if bs then parts[#parts + 1] = "ctf=" .. tostring(bs.CollisionTraceFlag) end
-            end)
-        end
-    end)
-    return table.concat(parts, " ")
-end
-
---- Roof signal v4 (2026-07-12). Two Visibility legs, both consequences of
---- TXR's one-sided query meshes (established over the 07-11 diagnosis
---- drives: no object channel carries the decks, g8 = a section-envelope
---- volume, roads block Visibility only on their front faces):
---- 1. DOWNWARD from OVERPASS_TRACE_LEN above the car to just above it:
----    overpass deck TOPS are front faces; the car's own road is below the
+--- Roof signal (2026-07-12). Two Visibility legs, both consequences of
+--- TXR's one-sided query meshes (07-11 diagnosis drives: no object
+--- channel carries the decks, g8 is a section-envelope volume, roads
+--- block Visibility only on their front faces):
+--- 1. Downward from OVERPASS_TRACE_LEN above the car to just above it:
+---    overpass deck tops are front faces; the car's own road is below the
 ---    segment and cannot false-positive.
---- 2. UPWARD fallback for tunnel interiors: inside a bore the downward
----    start sits inside the hill/structure and exits the lining's BACKface
----    (no hit), while the lining's interior surface front-faces an upward
----    ray. Overpass undersides are backfaces for it, so the legs don't
+--- 2. Upward fallback for tunnel interiors: inside a bore the downward
+---    start sits inside the hill and exits the lining's backface (no
+---    hit), while the lining's interior front-faces an upward ray.
+---    Overpass undersides are backfaces for it, so the legs do not
 ---    overlap ("short tunnels still rain" field report, 2026-07-12).
 --- @return boolean hit, boolean callOk, number|nil dist, string|nil hitName, string|nil leg, userdata|nil compRef
 local function roofProbeGT(ksl, pawn, x, y, z)
@@ -380,22 +339,19 @@ local function roofProbeGT(ksl, pawn, x, y, z)
     return false, (ok or ok2), nil, nil, nil, nil
 end
 
---- SHADOW/SIDEDNESS READOUT for the mesh overhead (2026-07-29). The
---- tunnel sun-pool artifact is present in VANILLA (field-verified with no
---- engine.ini), which rules out the mod AND the forced-VSM config, so the
---- remaining candidates are content-side: the lining not casting shadows
---- at all, or casting them one-sided (the sun enters through backfaces),
---- or simply absent geometry. This is READ-ONLY and decides which:
----   CastShadow=false      -> reachable: SetCastShadow(true) is a real
----                            UFunction on this cook (it dirties render
----                            state itself, unlike a raw flag write).
----   CastShadow=true + two-sided flags/material false -> winding case.
----                            bCastShadowAsTwoSided has NO setter and no
----                            exposed MarkRenderStateDirty, so a live
----                            write is a silent no-op = NOT fixable here.
---- Property names verified in UE4SS_ObjectDump (PrimitiveComponent
---- CastShadow, bCastShadowAsTwoSided, bCastHiddenShadow, bCastStaticShadow,
---- bCastDynamicShadow). Unreadable entries print "?" rather than guessing.
+--- Shadow/sidedness readout for the mesh overhead (2026-07-29). The
+--- tunnel sun-pool artifact is present in vanilla (field-verified with no
+--- engine.ini), which rules out the mod and the forced-VSM config, so the
+--- candidates are content-side: the lining not casting shadows, casting
+--- them one-sided (the sun enters through backfaces), or absent geometry.
+--- Read-only; decides which: CastShadow=false is reachable
+--- (SetCastShadow(true) is a real UFunction on this cook and dirties
+--- render state itself, unlike a raw flag write); CastShadow=true with
+--- two-sided flags/material false is the winding case, and
+--- bCastShadowAsTwoSided has no setter and no exposed
+--- MarkRenderStateDirty, so a live write is a silent no-op (the
+--- rain_collision SetCastShadow toggle is the workaround). Property names
+--- verified in UE4SS_ObjectDump; unreadable entries print "?".
 local function describeShadowGT(ref)
     local comp = nil
     pcall(function()
@@ -403,9 +359,8 @@ local function describeShadowGT(ref)
     end)
     if not comp then return "unresolvable" end
     local parts = {}
-    -- The MESH ASSET name first: Config.RainCollision.TargetPatterns match
-    -- against this path, so it is the field that says which pattern to add
-    -- when a surface is leaking and was never flipped.
+    -- Mesh asset name first: Config.RainCollision.TargetPatterns match
+    -- against this path, so it names the pattern to add for a leaking surface.
     pcall(function()
         local sm = comp.StaticMesh
         if sm then
@@ -435,10 +390,9 @@ local function describeShadowGT(ref)
                 if type(fn) == "string" then nm = fn:match("([^%.%s/]+)$") or fn end
             end)
             parts[#parts + 1] = "mat=" .. nm
-            -- MaterialInstances do not carry TwoSided; the BASE material
+            -- MaterialInstances do not carry TwoSided; the base material
             -- does, so try that first. Type-check the result: reading a
-            -- missing property on this build yields a UObject rather than
-            -- nil, which the first version of this probe printed verbatim.
+            -- missing property on this build yields a UObject, not nil.
             local ts = nil
             pcall(function()
                 local base = mat.GetBaseMaterial and mat:GetBaseMaterial()
@@ -472,10 +426,9 @@ local function ppPollGT()
     if not ppArmed then
         ppArmed = true
         tunnelReset()
-        -- SKYLIGHT LEAK KILL (see header): clear the authored
-        -- LumenSkylightLeaking override on EVERY course volume (all 33
-        -- carry it), so no volume boundary changes the world's GI anymore.
-        -- Idempotent; volumes spawn fresh per course.
+        -- Skylight leak kill (see header): clear the authored
+        -- LumenSkylightLeaking override on every course volume (all 33
+        -- carry it). Idempotent; volumes spawn fresh per course.
         local volumes, leakCleared = 0, 0
         pcall(function()
             local vols = FindAllOf("PostProcessVolume")
@@ -523,15 +476,12 @@ local function ppPollGT()
     end)
     if px == nil then return end
 
-    -- COVERED SIGNAL #1 (primary since 2026-07-12): the game's own road
-    -- data. Every BP_GameVehicle carries tunnel_attribute (native
-    -- ERPDTunnelBitAttribute: TunnelLeft=1, TunnelRight=2, TunnelUp=4),
-    -- maintained per road point by the game itself. The Up bit = roof over
-    -- this exact stretch of road, with dev-authored boundaries. Field
-    -- verdict (20:09 log): fires for real bores AND short covered segments
-    -- (more precise than the volume AABBs, catches the weird-mesh bores the
-    -- traces are blind to), but NOT for lone overpasses above open road,
-    -- which is what the roof trace below remains for.
+    -- Covered signal 1 (primary since 2026-07-12): the pawn's
+    -- tunnel_attribute (see header), maintained per road point by the
+    -- game. Field verdict (20:09 log): fires for real bores and short
+    -- covered segments (more precise than the volume AABBs, catches the
+    -- weird-mesh bores the traces are blind to), but not for lone
+    -- overpasses above open road, which the roof trace below covers.
     local attrCovered = false
     pcall(function()
         local attr = pawnObj.tunnel_attribute
@@ -548,11 +498,10 @@ local function ppPollGT()
     end)
 
     -- Roof-trace lookahead point: project the car ~TUNNEL_LOOKAHEAD_S ahead
-    -- using the position delta between polls (no reflection dependency),
-    -- clamped to 120 m so a course-restart teleport can't produce a wild
-    -- point. Only needed while still uncovered (attrCovered already
-    -- suppresses; the attribute itself has no lookahead, the trace at the
-    -- projected point is what pre-arms the kill before portals and decks).
+    -- from the position delta between polls (no reflection dependency),
+    -- clamped to 120 m so a course-restart teleport cannot produce a wild
+    -- point. Only needed while uncovered: the attribute has no lookahead,
+    -- so the trace at the projected point pre-arms the kill before portals.
     local nowC = os.clock()
     local lx, ly = nil, nil
     if TUNNEL_RAIN_KILL and not attrCovered then
@@ -570,10 +519,9 @@ local function ppPollGT()
     end
     lastPX, lastPY, lastPZ, lastPollClock = px, py, pz, nowC
 
-    -- COVERED SIGNAL #2, the roof trace: lone overpasses above open road are
-    -- NOT marked in the road data, so a Visibility trace at the car (and at
-    -- the lookahead point) supplies the second signal. Skipped while the
-    -- road data already says covered; the rain-kill release hysteresis in
+    -- Covered signal 2, the roof trace at the car and at the lookahead
+    -- point (lone overpasses are not in the road data). Skipped while the
+    -- road data already says covered; the release hysteresis in
     -- tunnelApplyState smooths girder gaps.
     if OVERPASS_KILL and TUNNEL_RAIN_KILL and not attrCovered then
         local ksl = getKslRef()
@@ -581,10 +529,10 @@ local function ppPollGT()
         if ksl and pawnObj then
             roofSeen, callOk = roofProbeGT(ksl, pawnObj, px, py, pz)
             if not roofSeen and lx then
-                -- Lookahead trace uses the CAR's Z, not the projected lz:
-                -- over a crest / downhill the projection can dip below the
-                -- road ahead, and an up-trace starting under the road hits
-                -- it from below = false cover.
+                -- Lookahead trace uses the car's Z, not a projected one:
+                -- over a crest the projection can dip below the road ahead,
+                -- and an up-trace starting under the road hits it from
+                -- below (false cover).
                 local h, ok2 = roofProbeGT(ksl, pawnObj, lx, ly, pz)
                 roofSeen = h
                 callOk = callOk or ok2
@@ -612,27 +560,23 @@ end
 
 --- Async-side watcher trigger, entered at the full 8 Hz tick rate and
 --- self-paced here: POLL_RAIN_S while precipitation can fall (or a kill is
---- currently held, so restores react just as fast), POLL_DRY_S otherwise.
---- Steady-state cost is pawn loc + one attribute read + 1-2 roof traces.
---- MUST be defined AFTER ppPollGT (local-ordering footgun: defined before
---- it, the name resolves to a nil global inside pcall and the watcher dies
+--- held, so restores react as fast), POLL_DRY_S otherwise. Steady-state
+--- cost is pawn loc + one attribute read + 1-2 roof traces. Must be
+--- defined after ppPollGT (local-ordering footgun: defined before it, the
+--- name resolves to a nil global inside pcall and the watcher dies
 --- silently).
 local function ppWatchTick(now)
     if now < ppNextPoll then return end
-    -- The fast cadence exists for the rain KILL's portal reaction. Native
+    -- The fast cadence exists for the rain kill's portal reaction. Native
     -- occlusion (Config.RainCollision) superseded that kill, so a wet
-    -- preset alone no longer re-arms the 4 Hz poll: the live consumers
-    -- (fog damp, the covered flag for headlights and photomode) ran on the
-    -- dry cadence for the whole no-rain build. Re-enabling TunnelRainKill
-    -- restores the old behavior.
-    -- The fog damp also earns the fast cadence while engaged or holding:
-    -- gap edges and re-entries then react within 0.25s instead of 1s.
+    -- preset alone re-arms the 4 Hz poll only with TunnelRainKill on. The
+    -- fog damp also earns the fast cadence while engaged or holding, so
+    -- gap edges and re-entries react within 0.25s instead of 1s.
     local fast = rainZoneNow or roofNow or fogDampOn or (fogReleaseAt ~= nil)
     if not fast then
-        -- Foggy-ish weather anywhere = fast poll too, so the FIRST portal
-        -- edge (nothing engaged yet) and a re-entry after a long gap also
-        -- react within POLL_RAIN_S instead of the 1s dry cadence. Pure
-        -- data lookups, async-safe (the rain-kill pattern below).
+        -- Foggy weather = fast poll too, so the first portal edge (nothing
+        -- engaged yet) and a re-entry after a long gap also react within
+        -- POLL_RAIN_S. Pure data lookups, async-safe.
         pcall(function()
             local p = State.GetCurrentPreset()
             if p then
@@ -688,10 +632,10 @@ function Tunnels.Init()
         end
     end
 
-    -- The containment poll always earns its keep: the covered flag it
-    -- maintains feeds the fog damp, headlights AutoOnInTunnel and the
-    -- photomode CoveredLens. (It used to hang on the rain kill / leak kill
-    -- flags, so turning those off silently killed covered detection too.)
+    -- The containment poll always runs: the covered flag feeds the fog
+    -- damp, headlights AutoOnInTunnel and the photomode CoveredLens
+    -- (gating it on the rain/leak kill flags once silently killed covered
+    -- detection when those were off).
     featuresActive = true
 
     isInitialized = true
@@ -735,38 +679,28 @@ function Tunnels.IsCovered()
     return tunnelNow
 end
 
---- Poll-cached car position (cm, world; nil until the first poll).
---- The ONLY coupling gap_walls.lua keeps to this module: the
---- containment poll already pays for the pawn read, so consumers get
---- plain numbers instead of a second GT round-trip.
+--- Poll-cached car position (cm, world; nil until the first poll): the
+--- containment poll already pays for the pawn read, so gap_walls,
+--- rain_collision and the slab editor get plain numbers instead of a
+--- second GT round-trip.
 function Tunnels.GetCarPos()
     return lastPX, lastPY, lastPZ
 end
 
---- Rain currently suppressed by the covered-zone state.
-function Tunnels.IsRainSuppressed()
-    return rainZoneNow
-end
-
---- NEARBY MESH CENSUS (2026-07-30). The sun trace names what SHADES you;
---- this names what is AROUND you, which is what you need when a specific
---- surface is lit and you do not know its asset. Field case: the wall
---- (_wr) and deck (_br) at a spot were both confirmed flipped, yet the
---- KERB strip stayed lit, so the kerb is a separate asset that
---- TargetPatterns never matches. One press next to the lit surface names
---- it, and the name becomes the pattern.
---- Runs only on the Alt+N keypress, so the sweep cost (one FindAllOf plus
---- a location read per component, ~100 ms) is a deliberate one-off: this
---- is exactly the work that was retired from the automatic bore-entry
---- census for being a hitch.
---- Is this hit one of TXR's INVISIBLE collision shells? Identify them by
---- what they ARE (the Colli asset family / Ma_Colli* materials), NOT by
---- CastShadow=false. Using the flag was a real bug (caught 2026-07-30):
---- it also matches a VISIBLE mesh that merely does not cast
---- shadows, so the fan skipped straight past such a surface and reported
---- whatever stood behind it. In a shadow investigation a visible
---- non-casting mesh is the single most interesting thing we could find, so
---- it must be reported, not stepped over.
+--- Alt+N mesh census tools (2026-07-30). The sun trace names what shades
+--- the car; these name what is around it, for the case where a surface
+--- is lit and its asset is unknown (field: the wall (_wr) and deck (_br)
+--- at a spot were both flipped, yet the kerb strip stayed lit: a separate
+--- asset TargetPatterns never matched). Keypress-only, so the sweep cost
+--- (one FindAllOf plus a location read per component, ~100 ms) is a
+--- deliberate one-off: this work was retired from the automatic
+--- bore-entry census for being a hitch.
+--- Is this hit one of TXR's invisible collision shells? Identify them by
+--- asset family (Colli assets, Ma_Colli* materials), not by
+--- CastShadow=false: the flag also matches a visible mesh that merely does
+--- not cast shadows (bug caught 2026-07-30: the fan skipped such a surface
+--- and reported whatever stood behind it), and in a shadow investigation a
+--- visible non-casting mesh is the prime suspect, so it must be reported.
 local function isCollisionShellGT(ref)
     local comp = nil
     pcall(function()
@@ -820,43 +754,31 @@ local function traceSkippingShellsGT(ksl, pawn, px, py, pz, ux, uy, uz, reach)
     return nil, nil, nil, skipped
 end
 
---- SURFACE FAN (2026-07-30). Replaces distance-from-origin censusing, which
---- cannot see large geometry: K2_GetComponentLocation returns a mesh's PIVOT,
---- and a tunnel/wall/kerb section is anchored hundreds of metres away, so the
---- surfaces wrapped around the car never register as "nearby" (field: 112
---- components in range were 109 car parts plus a sign, a collision shell and
---- a bush). Rays find surfaces where they actually ARE. Fires 12 directions:
---- a horizontal ring at kerb height plus four angled down, each skipping
---- invisible shells, reporting the mesh name and its shadow flags. Park next
---- to the lit surface and the ray that reaches it names the asset.
---- SECTION ROSTER (2026-07-30). The decisive tool, and the one the ray
---- probes could never be: TXR's art meshes ship with collision DISABLED,
---- so they answer NO trace at all (the founding finding of the whole
---- occlusion arc). Rays can therefore only ever see collision shells, stock
---- collision-bearing meshes, and meshes WE already flipped, which is why
---- every sweep kept returning the one wall we had fixed and never the kerb.
---- Enumerating by NAME does not care about collision: take the section
---- token from a mesh we did identify (e.g. SMsr_c1_067A_wr -> "c1_067") and
---- list every distinct asset in that section with its shadow flags. The
---- kerb is necessarily in that list.
---- ASSET CENSUS rev 2 (2026-07-30, after the sun-direction screenshot).
---- The residual lit kerb turned out NOT to be a one-sided face at all: the
---- covered sections have GAPS in their outer wall, and where a wall segment
---- is absent the low sun reaches the kerb directly. Flipping cannot fix a
---- hole, which is why five rounds of pattern targeting changed nothing even
---- though the roster confirmed every wall/kerb/deck asset had twoSided=true.
---- So this census answers the only question left that Lua can act on:
----   (a) rosters for the section AND its neighbours, carrying the visibility
----       flags. If a leaking section HAS the wall component but it is
----       invisible or culled, bCastHiddenShadow makes a hidden primitive cast
----       shadows anyway, which is a real fix. If the wall simply is not in the
----       list, the geometry is missing and no flag reaches it.
----   (b) a map-wide suffix-family tally, so "did we miss a wall family?" stops
----       being guesswork. TXR names assets <SMxx>_<route>_<section><variant>_
----       <suffix>, so the suffix is the family: _wc/_wl/_wr walls, _s
----       sidewalk, _br barrier, _r roadway, _a apron, w_ext exterior wall.
---- Both come out of ONE component sweep with the asset name cached per mesh,
---- so a press costs about what the collision pass costs.
+--- Asset census (2026-07-30): section rosters plus a map-wide family
+--- tally, from one component sweep with the asset name cached per mesh (a
+--- press costs about what the collision pass costs). Why enumerate by
+--- name: TXR's art meshes ship with collision disabled, so they answer no
+--- trace at all (the founding finding of the occlusion arc); rays only
+--- ever see collision shells, stock collision-bearing meshes and meshes
+--- already flipped, which is why every sweep returned the one fixed wall
+--- and never the kerb. The section token comes from a mesh the probes did
+--- identify (SMsr_c1_067A_wr gives "c1_067").
+--- Rev 2 (after the sun-direction screenshot): the residual lit kerb was
+--- not a one-sided face; the covered sections have gaps in their outer
+--- wall, and where a segment is absent the low sun reaches the kerb
+--- directly. Flipping cannot fix a hole, which is why five rounds of
+--- pattern targeting changed nothing while the roster showed every
+--- wall/kerb/deck asset twoSided=true. So the census answers the one
+--- question Lua can act on:
+---   (a) rosters for the section and its neighbours with visibility
+---       flags: a wall component that exists but is invisible or culled
+---       can still cast via bCastHiddenShadow (a real fix); a wall absent
+---       from the list is missing geometry no flag reaches.
+---   (b) a map-wide suffix-family tally, so "did we miss a wall family?"
+---       stops being guesswork. TXR names assets
+---       <SMxx>_<route>_<section><variant>_<suffix>: _wc/_wl/_wr walls,
+---       _s sidewalk, _br barrier, _r roadway, _a apron, w_ext exterior
+---       wall.
 local function assetCensusGT(keys)
     keys = (type(keys) == "table") and keys or {}
     local rows, seen = {}, {}
@@ -967,23 +889,22 @@ local function assetCensusGT(keys)
     end
 end
 
---- LOCAL INVENTORY (2026-08-12, the kerb-hunt reopening): enumerate, do
---- not trace. The 07-30 "missing geometry" verdict rested on instruments
---- with two blind spots: traces need collision (uncollidable art reads
---- as "nothing rendering"), and the census sweeps StaticMeshComponent
---- only, with SMsr-shaped family parsing. This dump closes both: every
---- SMC AND every instanced component (ISM/HISM), any name family, listed
---- with world transform + shadow flags, distance-sorted. Serialization
---- placed it = it appears here; nothing about collision can hide it.
---- Transforms are logged at full precision on purpose: they feed the
---- gap-filler (spawned hidden shadow wall or pak bake) directly.
+--- Local inventory (2026-08-12, the kerb-hunt reopening): enumerate, do
+--- not trace. The 07-30 "missing geometry" verdict rested on two blind
+--- spots: traces need collision (uncollidable art reads as "nothing
+--- rendering"), and the census sweeps StaticMeshComponent only, with
+--- SMsr-shaped family parsing. This dump lists every SMC and every
+--- instanced component (ISM/HISM), any name family, with world transform
+--- and shadow flags, distance-sorted; nothing about collision can hide
+--- it. Transforms are logged at full precision: they feed the gap-filler
+--- (spawned hidden shadow wall or pak bake) directly.
 local INV_RANGE = 20000.0     -- 200 m sphere for SMCs
 local INV_CAP = 200           -- log-line ceiling per press
--- Section meshes are MODELED IN PLACE: their component pivots sit at the
+-- Section meshes are modeled in place: their component pivots sit at the
 -- world origin (first field run 2026-08-12: the roof probe hit the 067A
 -- deck while the distance gate dropped every SMsr_* piece as "7.8km
--- away"). In-place comps are admitted by SECTION TOKEN match instead:
--- keys come from the caller (the same c1_0NN +-2 window the census uses).
+-- away"), so in-place comps are admitted by name instead (see below;
+-- keys are the caller's c1_0NN +-2 window, the same the census uses).
 local function localInventoryGT(px, py, pz, keys)
     local rows = {}
     local instTotal, instListed = 0, 0
@@ -1032,12 +953,11 @@ local function localInventoryGT(px, py, pz, keys)
                                 mesh = fn:match("([^%.%s/]+)$") or fn
                             end
                         end)
-                        -- In-place admission WIDENED (2026-08-12, the
-                        -- ramp/entry realization): section tokens missed
-                        -- pieces that carry no section number (entry
-                        -- ramps, toll structures). Any in-place course
-                        -- mesh is admitted; the cap and the inplc-first
-                        -- sort keep the listing readable.
+                        -- In-place admission widened 2026-08-12: section
+                        -- tokens missed pieces with no section number
+                        -- (entry ramps, toll structures), so any in-place
+                        -- course mesh is admitted; the cap and the
+                        -- inplc-first sort keep the listing readable.
                         if not admit and inPlace then
                             if mesh:find("SMsr_", 1, true)
                                or mesh:find("SMsb_", 1, true)
@@ -1076,13 +996,12 @@ local function localInventoryGT(px, py, pz, keys)
                             pcall(function() vis = tostring(c.bVisible) end)
                             pcall(function() hid = tostring(c.bHiddenInGame) end)
                             pcall(function() hs = tostring(c.bCastHiddenShadow) end)
-                            -- Rotation via the plain RelativeRotation
-                            -- property. The K2_GetComponentRotation
-                            -- UFunction failed through the bridge on every
-                            -- component here (rot=? across the 01:24 run)
-                            -- and the session died in that bridge path
-                            -- with string bytes in a pointer register:
-                            -- 2026-08-12 crash. Property reads only.
+                            -- Rotation via the RelativeRotation property:
+                            -- K2_GetComponentRotation failed through the
+                            -- bridge on every component (rot=? across the
+                            -- 01:24 run) and the session died in that path
+                            -- with string bytes in a pointer register
+                            -- (2026-08-12 crash). Property reads only.
                             local ry, rp, rr, sx = nil, nil, nil, nil
                             pcall(function()
                                 local r = c.RelativeRotation
@@ -1098,7 +1017,7 @@ local function localInventoryGT(px, py, pz, keys)
                             end)
                             rows[addr or (#rows + 1)] = {
                                 -- in-place section pieces sort to the top:
-                                -- they ARE the local structure; origin
+                                -- they are the local structure; origin
                                 -- distance would banish them to the tail
                                 d = inPlace and -1 or (d or 9e9),
                                 inPlace = inPlace or false,
@@ -1125,15 +1044,12 @@ local function localInventoryGT(px, py, pz, keys)
         if a.inPlace then return a.mesh < b.mesh end   -- cluster families
         return a.d < b.d
     end)
-    -- FULL dump to Logs/inventory_dump.txt, uncapped (2026-08-12: the
+    -- Full dump to Logs/inventory_dump.txt, uncapped (2026-08-12: the
     -- widened admission collected 1600+ comps and the capped log spent
-    -- itself on SMef_* before any structure). Overwritten per press:
-    -- the file is always the LATEST press. Same directory idiom as
-    -- core/logging's ensureLogDirectory.
+    -- itself on SMef_* before any structure). Overwritten per press.
     pcall(function()
-        -- Footgun 2026-08-12 (documented and stepped in anyway): getinfo
-        -- source paths carry MIXED slashes; normalize before matching or
-        -- the dir match silently fails and the file lands nowhere.
+        -- getinfo source paths carry mixed slashes (2026-08-12 footgun):
+        -- normalize before matching or the file lands nowhere.
         local src = debug.getinfo(1, "S").source:gsub("\\", "/")
         local baseDir = src:match("@?(.*/)") or "./"
         local logsDir = baseDir .. "../../Logs/"
@@ -1178,19 +1094,20 @@ local function localInventoryGT(px, py, pz, keys)
     end
 end
 
---- DENSE SWEEP: 16 directions x 5 heights = 80 shell-skipping rays inside a
---- 15 m sphere, deduped by mesh asset, printed as an UNCAPPED list sorted
---- by nearest hit. This is the "just show me everything around the car"
---- tool. Ray-based on purpose: origin distance cannot see large sections
---- (their pivots are hundreds of metres away), and the Bounds property is
+--- Surface fan: 16 directions x 5 heights = 80 shell-skipping rays inside
+--- a 15 m sphere, deduped by mesh asset, printed uncapped sorted by
+--- nearest hit. Ray-based on purpose: K2_GetComponentLocation returns the
+--- pivot, and a tunnel/wall/kerb section is anchored hundreds of metres
+--- away (field 2026-07-30: of 112 components in range, 109 were car parts
+--- plus a sign, a shell and a bush), and the Bounds property is
 --- unreadable on this build, so rays are the only way to locate surfaces
 --- where they physically are. Heights step from just above the road (a
---- kerb top) to roof level, measured from the pawn origin.
+--- kerb top) to roof level, from the pawn origin.
 local function surfaceFanGT(ksl, pawn, px, py, pz)
     local REACH = 1500.0    -- 15 m
     local HEIGHTS = { 5.0, 25.0, 60.0, 150.0, 300.0 }
     local DIRS = 16
-    local found = {}        -- mesh name -> {dist, info}
+    local found = {}        -- mesh name to {dist, info}
     for _, h in ipairs(HEIGHTS) do
         for i = 0, DIRS - 1 do
             local a = (math.pi * 2.0) * (i / DIRS)
@@ -1232,11 +1149,9 @@ local function surfaceFanGT(ksl, pawn, px, py, pz)
     end
 end
 
---- UNCAPPED origin-distance list (2026-07-30 ask: "list all meshes
---- within 15 m, no cap, as a list I can look at"). Complements the ray
---- sweep: this one catches small props whose pivot really is nearby, while
---- the sweep catches big sections whose pivot is far away. Deduped by mesh
---- asset so the output stays readable.
+--- Uncapped origin-distance list (2026-07-30 ask: "list all meshes within
+--- 15 m, no cap"). Complements the fan: this catches small props whose
+--- pivot really is nearby. Deduped by mesh asset.
 local function nearbyMeshCensusGT(px, py, pz)
     local RADIUS = 1500.0   -- 15 m, as asked
     local MIN_DIST = 50.0   -- skip anything on top of the camera/car
@@ -1257,10 +1172,9 @@ local function nearbyMeshCensusGT(px, py, pz)
                 if cx and cy and cz then
                     local dx, dy, dz = cx - px, cy - py, cz - pz
                     local d = math.sqrt(dx * dx + dy * dy + dz * dz)
-                    -- VEHICLES OUT (field 2026-07-30: the first run listed 12
-                    -- of the player car's own body parts, all at d=0, because
-                    -- they are attached to the pawn). Same name filter the
-                    -- rain pass uses, and it drops AI cars too.
+                    -- Vehicles out (field 2026-07-30: the first run listed
+                    -- 12 of the player car's own body parts at d=0, attached
+                    -- to the pawn); the filter drops AI cars too.
                     local nm = nil
                     if d >= MIN_DIST and d <= RADIUS then
                         pcall(function() nm = c:GetFullName() end)
@@ -1346,9 +1260,7 @@ function Tunnels.NoteRainSpot()
         if h then
             probe = string.format("HIT(%s)@%scm:%s", leg or "?",
                 dist and string.format("%.0f", dist) or "?", hitName or "?")
-            -- Shadow/sidedness of whatever is overhead: the read that
-            -- decides the vanilla tunnel sun-pool question (see
-            -- describeShadowGT). Also useful under a deck.
+            -- Shadow/sidedness of whatever is overhead (see describeShadowGT)
             if ref ~= nil then shadowInfo = describeShadowGT(ref) end
         elseif okc then
             probe = "miss"
@@ -1357,14 +1269,13 @@ function Tunnels.NoteRainSpot()
         end
     end
 
-    -- SUN TRACE (2026-07-30): the roof probe only looks straight up and
-    -- down, so a section leaking through a WALL never gets identified by
-    -- it. Trace from the car TOWARD THE SUN instead: whatever that ray
-    -- hits is exactly the surface that should be casting the shadow, and
-    -- its flags say why it is not. UDS "Cached Sun Vector" is the LIGHT
-    -- direction (sun -> scene), so the sun lies along its negation.
-    -- Struct members are read inside pcall and reduced to plain numbers
-    -- immediately (the standing struct-userdata rule).
+    -- Sun trace (2026-07-30): the roof probe only looks up and down, so a
+    -- section leaking through a wall never gets identified by it. A trace
+    -- from the car toward the sun hits exactly the surface that should be
+    -- casting the shadow, and its flags say why it is not. UDS "Cached Sun
+    -- Vector" is the light direction (sun to scene), so the sun lies along
+    -- its negation. Struct members are read inside pcall and reduced to
+    -- plain numbers at once (the standing struct-userdata rule).
     local sunProbe = "no-uds"
     local sunShadow = nil
     if ksl then
@@ -1383,18 +1294,17 @@ function Tunnels.NoteRainSpot()
             local len = math.sqrt(sx * sx + sy * sy + sz * sz)
             if len > 0.001 then
                 -- Unit direction toward the sun (negate: the cached vector
-                -- points sun -> scene)
+                -- points from sun to scene)
                 local ux, uy, uz = -sx / len, -sy / len, -sz / len
                 local REACH = 15000.0        -- 150 m
-                -- WALK PAST THE INVISIBLE COLLISION SHELLS. TXR's collision
-                -- world is ~21 invisible shell meshes (Ma_ColliRoad /
-                -- Ma_ColliWall) that block Visibility, so a single trace from
-                -- the car always stops on one of them a few metres out and
-                -- never reaches the visible structure (field 2026-07-30: all
-                -- three probes returned Ma_ColliWall at 190-595 cm). Shells do
-                -- not render, so CastShadow=false identifies them: step the
-                -- start point past each such hit and keep going until we find
-                -- something that actually casts.
+                -- Walk past the invisible collision shells: TXR's collision
+                -- world is ~21 shell meshes (Ma_ColliRoad / Ma_ColliWall)
+                -- that block Visibility, so a single trace from the car
+                -- stops on one a few metres out and never reaches the
+                -- visible structure (field 2026-07-30: all three probes
+                -- returned Ma_ColliWall at 190-595 cm). Step the start
+                -- point past each shell hit (identified by asset family,
+                -- see isCollisionShellGT) until something rendering is hit.
                 local skipped = 0
                 local from = 0.0
                 for _ = 1, 8 do
@@ -1410,9 +1320,6 @@ function Tunnels.NoteRainSpot()
                             or "ERR"
                         break
                     end
-                    -- shells identified by asset family, not by CastShadow
-                    -- (see isCollisionShellGT): a visible non-casting mesh
-                    -- must be reported, it is the prime suspect
                     if isCollisionShellGT(ref) then
                         -- invisible collision shell: step past it and retry
                         skipped = skipped + 1
@@ -1450,30 +1357,27 @@ function Tunnels.NoteRainSpot()
         sun_shadow = sunShadow or "n/a",
     })
 
-    -- Names the surfaces physically around you. The FAN is the reliable one
-    -- (rays hit geometry where it is); the origin-distance census only ever
-    -- finds small props, since large sections are anchored far away, so it
-    -- is kept purely as a secondary listing.
+    -- Surfaces physically around the car: the fan is the reliable one; the
+    -- origin-distance census only finds small props (secondary listing).
     if ksl then surfaceFanGT(ksl, pawnObj, px, py, pz) end
     nearbyMeshCensusGT(px, py, pz)
 
-    -- SECTION ROSTER: the one enumeration that does not depend on collision,
-    -- so it is the only way to see art meshes we have not flipped. Derive
-    -- the section token from whichever mesh the probes DID identify.
+    -- Section roster (see assetCensusGT): derive the section token from
+    -- whichever mesh the probes did identify.
     local sectionKey = nil
     for _, src in ipairs({ shadowInfo, sunShadow }) do
         if type(src) == "string" then
             local mesh = src:match("mesh=([^%s]+)")
-            -- SMsr_c1_067A_wr -> c1_067 (drop the A/B variant letter so the
-            -- whole section is listed, not just one sub-piece)
+            -- SMsr_c1_067A_wr gives c1_067 (drop the A/B variant letter so
+            -- the whole section is listed, not just one sub-piece)
             local key = mesh and mesh:match("(c%d+_%d+)")
             if key then sectionKey = key; break end
         end
     end
-    -- Neighbour sections matter as much as the current one: the leak is a GAP
-    -- in the outer wall, so the useful comparison is a leaking section against
-    -- an adjacent intact one. c1_067 -> c1_065 .. c1_069. With no section
-    -- token we still run the map-wide family tally, which needs no key.
+    -- Neighbour sections matter as much as the current one: the leak is a
+    -- gap in the outer wall, so the useful comparison is a leaking section
+    -- against an adjacent intact one (c1_067 lists c1_065 .. c1_069). With
+    -- no section token the map-wide family tally still runs (needs no key).
     local keys = {}
     if sectionKey then
         local route, num = sectionKey:match("^(c%d+)_(%d+)$")
@@ -1493,198 +1397,8 @@ function Tunnels.NoteRainSpot()
             "SECTION: no section token in the probe hits; family census only")
     end
     assetCensusGT(keys)
-    -- Kerb-hunt reopening (2026-08-12): the enumeration dump rides the
-    -- same press. keys admit the in-place section pieces (see
-    -- localInventoryGT).
+    -- The enumeration dump rides the same press (see localInventoryGT).
     localInventoryGT(px, py, pz, keys)
-end
-
-
---- Alt+O diagnostic (2026-07-27, UDW occlusion dig fix ladder, steps 0+1;
---- full context: reference\udwdig\OCCLUSION_FINDINGS.md). One press logs:
---- (a) the LIVE UDW particle-collision properties (the placed course
----     instance may override the CDO; Mode 2 = collision off entirely),
---- (b) an upward 8000 uu trace sweep over ETraceTypeQuery bytes 0..15
----     from the car, stamped with the road-data covered state.
---- Run once on OPEN road and once INSIDE a tunnel; the pair identifies
---- which channel carries tunnel linings (tunnel HIT + open MISS) and
---- guards against the g8 section envelopes blocking everywhere. Keybind
---- handlers run on the game thread, so all reads/traces are direct.
-function Tunnels.OcclusionProbe()
-    -- (a) live UDW property reads (step 0 of the fix ladder)
-    local udwVals = {}
-    pcall(function()
-        local actors = getActors()
-        local udw = actors and actors.GetUDW and actors.GetUDW()
-        if not (udw and udw.IsValid and udw:IsValid()) then
-            udwVals.udw = "UNREADABLE"
-            return
-        end
-        for _, p in ipairs({
-            "Particle Collision Mode",
-            "Weather Particle Collision Channel",
-            "Ceiling Check Height",
-            "Enable Rain Particles",
-            "Spawn Box Height",
-            "Max Spawn Distance",
-        }) do
-            local v = nil
-            pcall(function() v = udw[p] end)
-            udwVals[p:gsub("%s", "_")] = tostring(v)
-        end
-    end)
-    Log.Info(MODULE, "OcclusionProbe UDW props", udwVals)
-
-    -- (b) upward channel sweep from the car (step 1 probe)
-    local ksl = getKslRef()
-    local pawnObj, px, py, pz = nil, nil, nil, nil
-    pcall(function()
-        local UEH = getUEHelpers()
-        local pc = UEH and UEH.GetPlayerController and UEH.GetPlayerController()
-        local pawn = pc and pc.Pawn
-        if pawn and pawn.IsValid and pawn:IsValid() then
-            local loc = pawn:K2_GetActorLocation()
-            if loc then px, py, pz = loc.X, loc.Y, loc.Z; pawnObj = pawn end
-        end
-    end)
-    if not (ksl and pawnObj) then
-        Log.Warn(MODULE, "OcclusionProbe: no ksl/pawn (run on a course)")
-        return
-    end
-    local s = { X = px, Y = py, Z = pz + 250.0 }
-    local e = { X = px, Y = py, Z = pz + 250.0 + 8000.0 }
-    -- Both collision flavors per channel (2026-07-28): SIMPLE = what UDW
-    -- particle traces query (docs 1369); COMPLEX = per-triangle, the flavor
-    -- car physics/camera sweeps commonly use. The field contradiction
-    -- (camera/car collide with linings, rain and the simple sweep pass
-    -- through) is resolved if linings carry complex-only collision:
-    -- expect chNc=HIT with chNs still MISS inside a bore if so.
-    -- 0..23 (2026-07-28 challenge: "the camera DOES collide with the
-    -- ceiling": the earlier 0..15 sweep missed trace-type indices 16-23,
-    -- and TXR provably uses high custom channels: GTC4/5 object types on
-    -- the collision shells. A ceiling body responding only above 15 would
-    -- have been invisible to every previous sweep.)
-    local parts = {}
-    local firstUpRef = nil
-    for ch = 0, 23 do
-        local hitS, okS, distS, nameS, refS = traceChanSegGT(ksl, pawnObj, s, e, ch, false)
-        local hitC, okC, distC, nameC, refC = traceChanSegGT(ksl, pawnObj, s, e, ch, true)
-        if not (okS and okC) then
-            parts[#parts + 1] = string.format("ch%d=ERR", ch)
-        else
-            if hitS then
-                parts[#parts + 1] = string.format("ch%ds=HIT(%s,%s)",
-                    ch, distS and string.format("%.0f", distS) or "?", nameS or "?")
-                firstUpRef = firstUpRef or refS
-            end
-            if hitC then
-                parts[#parts + 1] = string.format("ch%dc=HIT(%s,%s)",
-                    ch, distC and string.format("%.0f", distC) or "?", nameC or "?")
-                firstUpRef = firstUpRef or refC
-            end
-        end
-    end
-    Log.Info(MODULE, "OcclusionProbe sweep", {
-        covered = tostring(Tunnels.IsCovered()),
-        z = string.format("%.0f", pz),
-        hits = (#parts > 0) and table.concat(parts, " ")
-            or "none (all 16 channels MISS, simple AND complex)",
-    })
-    if firstUpRef then
-        Log.Info(MODULE, "OcclusionProbe ceiling profile",
-            {info = describeCollisionGT(firstUpRef)})
-    end
-
-    -- ROAD REFERENCE: the mesh under the car is the one guaranteed
-    -- collision-bearing surface (wheels ride it). Its full profile is the
-    -- baseline to compare every other mesh against. Simple first, complex
-    -- fallback (which one hits also discriminates the collision model).
-    local sDown = { X = px, Y = py, Z = pz + 100.0 }
-    local eDown = { X = px, Y = py, Z = pz - 500.0 }
-    local hitD, okD, distD, nameD, refD = traceChanSegGT(ksl, pawnObj, sDown, eDown, 0, false)
-    local flavor = "simple"
-    if not hitD then
-        hitD, okD, distD, nameD, refD = traceChanSegGT(ksl, pawnObj, sDown, eDown, 0, true)
-        flavor = "complex"
-    end
-    Log.Info(MODULE, "OcclusionProbe road profile", {
-        hit = tostring(hitD), flavor = flavor, name = nameD or "?",
-        info = hitD and describeCollisionGT(refD) or "no road hit (!?)",
-    })
-
-    -- CAR profile (2026-07-28 question: "can we find the car's channel?"):
-    -- the pawn root's object type + response row is the other half of the
-    -- car-vs-world channel matrix (cross-reference with the road/wall rows)
-    pcall(function()
-        local root = pawnObj:K2_GetRootComponent()
-        if root then
-            Log.Info(MODULE, "OcclusionProbe car profile",
-                {info = describeCollisionGT(root)})
-        end
-    end)
-
-    -- Third leg (2026-07-28): OBJECT-space queries. Channel traces ask
-    -- "does the body BLOCK trace channel N"; object queries ask "is the
-    -- body's object TYPE in my list" and hit regardless of channel
-    -- responses. Car physics and (possibly) the game camera live in this
-    -- space: if linings answer here while every channel trace misses,
-    -- the lining collision is real but channel-deaf (model B), and the
-    -- lookahead portal detector can query by object type.
-    local oparts = {}
-    local objHits = {}
-    for ot = 0, 20 do
-        local hit, dist, name, oref = false, nil, nil, nil
-        local okCall = pcall(function()
-            local outHit = {}
-            local r = ksl:LineTraceSingleForObjects(pawnObj, s, e, {ot},
-                false, {}, 0, outHit, true, TRACE_COLOR, TRACE_COLOR, 0.0)
-            hit = traceResult(r, outHit)
-            if hit then
-                local h = outHit
-                pcall(function() if h.OutHit then h = h.OutHit end end)
-                pcall(function() dist = tonumber(h.Distance) end)
-                pcall(function() name = nameFromRef(h.Component) end)
-                pcall(function() oref = h.Component end)
-            end
-        end)
-        if not okCall then
-            oparts[#oparts + 1] = string.format("ot%d=ERR", ot)
-        elseif hit then
-            oparts[#oparts + 1] = string.format("ot%d=HIT(%s,%s)",
-                ot, dist and string.format("%.0f", dist) or "?", name or "?")
-            if oref ~= nil and #objHits < 6 then
-                objHits[#objHits + 1] = { ot = ot, ref = oref }
-            end
-        end
-    end
-    Log.Info(MODULE, "OcclusionProbe objects", {
-        hits = (#oparts > 0) and table.concat(oparts, " ")
-            or "none (object types 0..20 MISS)",
-    })
-    -- Full profiles for the object hits (2026-07-28 v8 no-rain triage:
-    -- resp0-31 on containing bodies names whoever Blocks the private rain
-    -- channel; dist-0 hits are the suspects)
-    for _, oh in ipairs(objHits) do
-        Log.Info(MODULE, "OcclusionProbe object profile", {
-            ot = oh.ot, info = describeCollisionGT(oh.ref),
-        })
-    end
-end
-
-function Tunnels.GetStatus()
-    return {
-        initialized = isInitialized,
-        enabled = enabled,
-        armed = armed,
-        covered = tunnelNow,
-        rainSuppressed = rainZoneNow,
-        roof = roofNow,
-        lastAttr = lastTunnelAttr,
-    }
-end
-
-function Tunnels.IsInitialized()
-    return isInitialized
 end
 
 --- Alias so the module can be ticked as either Tick() or Update().

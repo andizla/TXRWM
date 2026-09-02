@@ -49,9 +49,11 @@ if not Utils then
 end
 
 -- Load state (depends on nothing)
+-- State is required: the tick loop calls it unguarded (the PA-frozen and
+-- photo-session gates), so a missing module would error on every tick.
 local State = safeRequire("core.state", "State")
 if not State then
-    Log.Error("Main", "Failed to load State module: continuing with limited functionality")
+    error("Cannot continue without State module")
 end
 
 -- Mark core modules as loaded
@@ -70,7 +72,6 @@ if State then
 end
 
 -- ============== LOAD SYSTEM MODULES ==============
--- These will be loaded in Phase 2+
 
 local Actors = nil
 local Weather = nil
@@ -255,7 +256,7 @@ local function loadSystemModules()
         Log.Debug("Main", "GapWalls module not loaded")
     end
 
-    -- DEV-ONLY: release builds omit systems/slab_editor.lua entirely,
+    -- Dev-only: release builds omit systems/slab_editor.lua entirely,
     -- so this stays nil and no editor keys or ticks exist.
     SlabEditor = safeRequire("systems.slab_editor", "SlabEditor")
     if SlabEditor then
@@ -390,7 +391,7 @@ local tickCount = 0
 local initialWeatherApplied = false  -- Track if we've applied initial weather this session
 local _pendingRestore = false        -- Flag set when actors become invalid, triggers restore on next valid
 local _actorsLostTicks = 0           -- consecutive ticks with actors missing (blip debounce)
-local _mapTeardownPending = false    -- set ONLY by LoadMapPreHook: cascade instantly
+local _mapTeardownPending = false    -- set only by LoadMapPreHook: cascade instantly
 local ACTORS_LOST_CASCADE_TICKS = 16 -- ~2s at 125ms; photomode/churn blips re-find in ~1s
 
 -- PA freeze watchdog: continuously enforce freeze while in PA
@@ -404,18 +405,17 @@ local function enforcePAFreezeWatchdog()
 end
 
 -- Captured course state (runtime fallback for the persistence file), written
--- on map unload. Declared HERE so applyPAState below captures it as an
--- upvalue (declared further down it would silently split into a global).
+-- on map unload. Declared here so applyPAState captures it as an upvalue
+-- (declared further down it would silently become a global).
 local _CourseStateBeforePA = nil
 
 -- PA weather (Config.PA.Mode, canon 2026-07-09): the PA scene lives in the
--- SAME outgame world as the garage but has its OWN working UDS/UDW (canned
--- state: always night, TOD 1950 / cloud 7.5 / fog 3.0). Discovery succeeding
--- in an outgame world = PA; the garage's UDS never validates.
---   "continue": carry the captured course weather/time into the PA and keep
---               the clock running at the captured course speed.
---   "freeze":   same carry, then freeze time (the original V1.32 behavior).
---   "stock":    leave the canned PA night alone.
+-- same outgame world as the garage but has its own working UDS/UDW (canned:
+-- always night, TOD 1950 / cloud 7.5 / fog 3.0). Discovery succeeding in an
+-- outgame world = PA; the garage's UDS never validates. "continue" carries
+-- the captured course weather/time in and keeps the clock at the captured
+-- course speed, "freeze" carries then freezes time (the V1.32 behavior),
+-- "stock" leaves the canned night alone.
 local paStateApplied = false
 local paCarry = nil        -- carried cloud/fog for the delayed re-assert
 local paReassertAt = nil   -- os.clock() deadline for it (nil = none due)
@@ -453,12 +453,10 @@ local function applyPAState()
         if speed == nil and cap.speed then speed = cap.speed end
     end
 
-    -- PRESET FIRST (order matters, field-confirmed 2026-07-15 23:35 log):
-    -- Weather.Apply re-applies the preset's OWN cloud/fog baselines through
-    -- the pipeline (immediate), so writing the carried values before it
-    -- meant the carry lost to its own preset re-apply every time = the
-    -- "PA state applied but nothing visibly takes" bug. Preset for
-    -- rain/effects, THEN the carried sky state on top.
+    -- Preset first (field 2026-07-15 23:35): Weather.Apply re-applies the
+    -- preset's own cloud/fog baselines immediately, so a carry written before
+    -- it lost every time ("PA state applied but nothing visibly takes").
+    -- Preset for rain/effects, then the carried sky state on top.
     if preset and Weather and Weather.Apply then
         pcall(function() Weather.Apply(preset, 0) end)
     end
@@ -478,10 +476,9 @@ local function applyPAState()
         end
     end
 
-    -- One-shot delayed re-assert (~2s, PA lifecycle block): UDW's own
-    -- periodic pushes right after an apply can still revert the carried
-    -- pair; the re-assert logs what the first write left behind, so the
-    -- field says whether the carry holds now.
+    -- One-shot delayed re-assert (~2s, see the PA lifecycle block): UDW's own
+    -- pushes right after an apply can revert the carried pair; the re-assert
+    -- logs what the first write left behind.
     if (cloud and cloud >= 0) or (fog ~= nil and fog >= 0) then
         paCarry = { cloud = cloud, fog = fog }
         paReassertAt = os.clock() + 2.0
@@ -498,9 +495,8 @@ local function applyPAState()
         pcall(function() uds["Animate Time of Day"] = true end)
         local spd = speed
         if not spd and State and State.GetTimeSpeed then spd = State.GetTimeSpeed() end
-        -- Optional cap (Config.PA.ForceNormalSpeed): an Alt+T fast-forward
-        -- carried into the PA keeps racing the clock while you sit in a
-        -- menu; cap it back to normal speed when set.
+        -- Config.PA.ForceNormalSpeed caps a carried Alt+T fast-forward back to
+        -- normal speed (it would race the clock while you sit in a menu).
         if Config.PA and Config.PA.ForceNormalSpeed then
             local normal = (Config.TimeOfDay and Config.TimeOfDay.DefaultSpeed) or 53.333
             if spd and spd > normal then spd = normal end
@@ -539,16 +535,14 @@ local function applyPAState()
     })
 end
 
---- PA continue-mode clock watch (~1s poll): the PA scene re-cans its own
---- clock AFTER we carry the course time in (field log 2026-07-16 00:18:
---- TOD teleported to the canned 1950 about a minute after the bind), so a
---- write-once carry cannot hold it. Each poll predicts where the carried
---- clock should be (last agreed reading + elapsed at the LIVE simulation
---- speed; 53.333 speed = 2400 units per 30 min = speed/40 units per
---- second) and snaps back + re-asserts the speed when the actual clock
---- has teleported (>100 units off the prediction). Manual speed changes
---- (Alt+T) stay under the threshold because the prediction reads the
---- live speed every poll.
+--- PA continue-mode clock watch (~1s poll): the PA scene re-cans its clock
+--- after the carry (field 2026-07-16 00:18: TOD teleported to the canned
+--- 1950 about a minute after the bind), so a write-once carry cannot hold.
+--- Each poll predicts the carried clock (last agreed reading + elapsed at
+--- the live simulation speed; speed/40 units per second, 53.333 = 2400 per
+--- 30 min) and snaps back + re-asserts the speed when the clock has
+--- teleported (>100 units off the prediction). Alt+T speed changes stay
+--- under the threshold because the prediction reads the live speed every poll.
 local function paClockWatchTick()
     local now = os.clock()
     if now < paClockNext then return end
@@ -571,13 +565,12 @@ local function paClockWatchTick()
     local diff = math.abs(tod - predicted)
     if diff > 1200 then diff = 2400 - diff end  -- shortest way around midnight
 
-    -- Re-can signature (field 2026-08-07: dusk carry ~1800-1900 vs the
-    -- canned 1950 sits INSIDE the 100-unit window, so the re-can was
-    -- accepted as truth and the watch "synced" to the canned night): a
-    -- jump away from the prediction that LANDS on the canned TOD is a
-    -- re-can regardless of size. The 15-unit floor keeps prediction
-    -- drift and the legitimate nightly pass through 1950 (the clock
-    -- ARRIVES there, prediction in tow, diff ~1-2) from misfiring.
+    -- Re-can signature (field 2026-08-07: a dusk carry ~1800-1900 sits
+    -- inside the 100-unit window of the canned 1950, so the re-can passed as
+    -- truth and the watch synced to the canned night): a jump off the
+    -- prediction that lands on the canned TOD is a re-can regardless of
+    -- size. The 15-unit floor keeps prediction drift and the legitimate
+    -- nightly pass through 1950 (prediction in tow, diff ~1-2) from misfiring.
     local canned = math.abs(tod - PA_CANNED_TOD)
     if canned > 1200 then canned = 2400 - canned end
     local recanned = (canned <= PA_CANNED_TOL) and (diff > 15)
@@ -603,13 +596,12 @@ local function paClockWatchTick()
         })
         paClockLast = { tod = predicted, clock = now }
     else
-        -- SPEED-ONLY REVERT (2026-08-04, field: "PA runs at a different
+        -- Speed-only revert (field 2026-08-04, "PA runs at a different
         -- timescale"): the canned push can reset Simulation Speed to the
-        -- spawn default (~1.0 = real-time crawl) WITHOUT teleporting the
-        -- clock. The prediction reads the LIVE speed, so it tracks the
-        -- crawl and the position check above never trips: the PA then
-        -- runs ~53x slower than the course forever. Enforce the carried
-        -- speed independently of clock position.
+        -- spawn default (~1.0, a real-time crawl) without teleporting the
+        -- clock, and the prediction reads the live speed, so the position
+        -- check above never trips (the PA then runs ~53x slower forever).
+        -- Enforce the carried speed independently of clock position.
         local want = State and State.GetTimeSpeed and State.GetTimeSpeed() or nil
         if Config.PA and Config.PA.ForceNormalSpeed then
             local normal = (Config.TimeOfDay and Config.TimeOfDay.DefaultSpeed) or 53.333
@@ -628,16 +620,14 @@ local function paClockWatchTick()
     end
 end
 
--- GT pump watchdog (2026-08-21): UE4SS can silently remove its own
--- engine-tick Lua hook after a "[Lua::Registry::get_function_ref] Ref
--- was not function" error (upstream #346, multi-mod hook collision).
--- That kills EVERY ExecuteInGameThread marshal for the rest of the
--- session (photomode edge toggles, pulse reverts, cvar batches, dark
--- garage) while the async side keeps running = silent feature death
--- (field 2026-08-20 23:50:31). Beat a trivial GT closure every 10s;
--- no beat landing for 60s = pump dead: flag State + warn loudly.
--- Beats pause while dead (nothing to revive, no point queueing); a
--- late beat landing flips it back automatically.
+-- GT pump watchdog (2026-08-21): UE4SS can silently remove its engine-tick
+-- Lua hook after a "[Lua::Registry::get_function_ref] Ref was not function"
+-- error (upstream #346, multi-mod hook collision), killing every
+-- ExecuteInGameThread marshal for the session (photomode edge toggles,
+-- pulse reverts, cvar batches, dark garage) while the async side keeps
+-- running (field 2026-08-20 23:50:31). Beat a trivial GT closure every
+-- 10s; no beat for 60s = pump dead: flag State and warn. Beats pause while
+-- dead; a late beat landing flips it back.
 local gtPumpLastBeat = nil
 local gtPumpNextSend = 0.0
 local gtPumpWarnedAt = nil
@@ -647,8 +637,8 @@ local function gtPumpWatch()
     local dead = (now - gtPumpLastBeat) > 60.0
     if not dead and now >= gtPumpNextSend and ExecuteInGameThread then
         gtPumpNextSend = now + 10.0
-        -- the beat rides the single-flight queue: it verifies the WHOLE
-        -- marshal path (queue -> pump -> drain), not just raw EIGT
+        -- the beat rides the single-flight queue, verifying the whole
+        -- marshal path (queue, pump, drain), not just raw EIGT
         if GT and GT.Run then
             GT.Run(function() gtPumpLastBeat = os.clock() end)
         end
@@ -732,35 +722,31 @@ local function onTick()
             Scheduler.Tick()
         end
         
-        -- Apply initial settings once actors are discovered (but not in PA)
-        -- (The old restoredFromPA skip-branch is deleted 2026-08-04: the
-        -- flag was never set anywhere, so every course entry, PA returns
-        -- included, has always taken this path. Persistence.Restore reads
-        -- the PA-exit save, which is what keeps the clock continuous.)
+        -- Apply initial settings once actors are discovered (not in PA). Every
+        -- course entry, PA returns included, takes this path; Persistence.Restore
+        -- reads the PA-exit save, which keeps the clock continuous.
         if not initialWeatherApplied and Actors and Actors.IsOnCourse() and not State.IsPAFrozen() then
             do
                 Log.Info("Main", "Actors ready: triggering initial setup")
 
-                -- Sun simulation FIRST, before anything writes Time Of Day.
-                -- TXR's sky runs Simulate Real Sun, so the sun's position is a
-                -- function of the DATE as well as the clock, and real_sun's own
-                -- settle gate landed the pinned date 4-5 s later. That made the
-                -- first rendered sky use the game's drifting calendar and snap
-                -- across the horizon at a dusk TOD. Marshalled inside, so the
-                -- date write and Hard Reset Cache land on the game thread after
-                -- the async TOD restore below has already run.
+                -- Sun simulation first, before anything writes Time Of Day: with
+                -- Simulate Real Sun the sun position depends on the date, and
+                -- landing the pinned date 4-5 s later (real_sun's own settle
+                -- gate) made the first rendered sky use the drifting calendar
+                -- and snap across the horizon at a dusk TOD. Marshalled inside,
+                -- so the date write and Hard Reset Cache land on the game thread
+                -- after the async TOD restore below has run.
                 if RealSun and RealSun.OnCourseLoad then
                     RealSun.OnCourseLoad()
                 end
 
-                -- UDW warmup is the CCC ClientRestart hook's job (weather.lua):
-                -- it fires at course entry BEFORE this actors-ready block runs.
-                -- The Weather.WarmUpUDW call that used to sit here only QUEUED
-                -- a GT closure, so it actually landed AFTER the synchronous
-                -- restore/apply below: re-asserting Enable*Particles after a
-                -- dry apply and warming mid-transition on a wet one (the
-                -- recorded AV class). Removed 2026-08-04; the hook alone is
-                -- the verified fix (2026-07-31, CCC disabled).
+                -- No UDW warmup here: the ClientRestart hook (weather.lua) does
+                -- it at course entry, before this block. A warmup queued from
+                -- here as a GT closure landed after the synchronous
+                -- restore/apply below (re-asserting Enable*Particles after a
+                -- dry apply, warming mid-transition on a wet one: the recorded
+                -- AV class). Removed 2026-08-04; the hook alone is the verified
+                -- fix (2026-07-31, CCC disabled).
 
                 -- Try to restore persisted state first
                 local restored = false
@@ -813,11 +799,10 @@ local function onTick()
                     Stars.Setup()
                 end
 
-                -- Fresh course, fresh photo-freeze latch. TimeOfDay's own
-                -- OnCourseLoad reset only runs when restore FAILS (the rare
-                -- path), so a stranded latch would silently disable the next
-                -- shoot's freeze. Never reset mid-photo-session: the blip
-                -- re-init lands with the session still open.
+                -- Fresh course, fresh photo-freeze latch: TimeOfDay's own reset
+                -- runs only when restore fails (the rare path), so a stranded
+                -- latch would silently disable the next shoot's freeze. Never
+                -- mid-photo-session: the blip re-init lands with the session open.
                 if TimeOfDay and TimeOfDay.ResetPhotoFreeze
                     and not (State.IsPhotoSessionOpen and State.IsPhotoSessionOpen()) then
                     TimeOfDay.ResetPhotoFreeze()
@@ -862,11 +847,10 @@ local function onTick()
                 paStateApplied = true
                 applyPAState()
             elseif paStateApplied and paReassertAt and os.clock() >= paReassertAt then
-                -- Delayed carry re-assert: log what the apply-time write
-                -- left (was_*), then write the carried pair again. was_*
-                -- at the preset's values = something reverted the first
-                -- write after Weather.Apply; at the carried values = the
-                -- carry held and this re-write is a no-op.
+                -- Delayed carry re-assert: log what the first write left (was_*
+                -- at the preset's values = something reverted it after
+                -- Weather.Apply; at the carried values = it held and this
+                -- re-write is a no-op), then write the carried pair again.
                 paReassertAt = nil
                 local c = paCarry
                 paCarry = nil
@@ -898,9 +882,9 @@ local function onTick()
                 if LightCycle and LightCycle.OnCourseUnload then
                     LightCycle.OnCourseUnload()   -- disarm; the PA actors are gone
                 end
-                -- A covered PA spot engages the fog damp; without this
-                -- reset a stale 0.0 rides into the next course's first
-                -- weather apply (which runs BEFORE OnCourseLoad's resets).
+                -- A covered PA spot engages the fog damp; without this reset a
+                -- stale 0.0 rides into the next course's first weather apply
+                -- (which runs before OnCourseLoad's resets).
                 if EnhancedFog and EnhancedFog.OnCourseUnload then
                     EnhancedFog.OnCourseUnload()
                 end
@@ -916,6 +900,18 @@ local function onTick()
                 if RainCollision and RainCollision.OnCourseUnload then
                     RainCollision.OnCourseUnload()
                 end
+                if CinematicSky and CinematicSky.OnCourseUnload then
+                    CinematicSky.OnCourseUnload()
+                end
+                if Audio and Audio.OnCourseUnload then
+                    Audio.OnCourseUnload()
+                end
+                if Stars and Stars.OnCourseUnload then Stars.OnCourseUnload() end
+                if Moon and Moon.OnCourseUnload then Moon.OnCourseUnload() end
+                if Rainbow and Rainbow.OnCourseUnload then Rainbow.OnCourseUnload() end
+                if WindDebris and WindDebris.OnCourseUnload then WindDebris.OnCourseUnload() end
+                if LightRays and LightRays.OnCourseUnload then LightRays.OnCourseUnload() end
+                if RealSun and RealSun.OnCourseUnload then RealSun.OnCourseUnload() end
                 Log.Info("Main", "PA state cleared (actors lost)")
             end
             -- Continue-mode clock watch (freeze mode has its own watchdog)
@@ -924,14 +920,13 @@ local function onTick()
             end
         end
 
-        -- Reset flag when leaving course. BLIP DEBOUNCE (P2, 2026-08-31):
-        -- photomode opens and ClientRestart churn invalidate the sky for
-        -- ~1s and rediscovery lands moments later at a new address.
-        -- Cascading on the first missing tick despawned + respawned every
-        -- gap slab and re-ran the whole weather/light init per blip (19
-        -- blips and 1458 slab spawns on 08-31 alone = the reported lag,
-        -- the editor 0-slab wipes, and spawn-detour crash exposure). A
-        -- real teardown cascades instantly via the LoadMapPreHook flag;
+        -- Course-exit cascade with blip debounce (2026-08-31): photomode opens
+        -- and ClientRestart churn invalidate the sky for ~1s and rediscovery
+        -- lands moments later at a new address. Cascading on the first missing
+        -- tick respawned every gap slab and re-ran the whole weather/light
+        -- init per blip (19 blips and 1458 slab spawns on 08-31 alone: the
+        -- reported lag, the editor 0-slab wipes, spawn-detour crash exposure).
+        -- A real teardown cascades instantly via the LoadMapPreHook flag;
         -- anything else must stay missing ~2s, never mid-photo-session.
         if initialWeatherApplied and Actors and not Actors.HasActors() then
             _actorsLostTicks = _actorsLostTicks + 1
@@ -974,6 +969,24 @@ local function onTick()
                 if RainCollision and RainCollision.OnCourseUnload then
                     RainCollision.OnCourseUnload()
                 end
+                -- Drop the per-course stock cache behind the cinematic
+                -- multipliers (a blip re-apply must not scale twice)
+                if CinematicSky and CinematicSky.OnCourseUnload then
+                    CinematicSky.OnCourseUnload()
+                end
+                -- Re-arm the audio settle sequence and drop its loop refs
+                -- (no object touches: the components die with the world)
+                if Audio and Audio.OnCourseUnload then
+                    Audio.OnCourseUnload()
+                end
+                -- The settle-gated one-shots re-arm here, not on the raw
+                -- actor flicker: a photomode open used to re-run their bakes
+                if Stars and Stars.OnCourseUnload then Stars.OnCourseUnload() end
+                if Moon and Moon.OnCourseUnload then Moon.OnCourseUnload() end
+                if Rainbow and Rainbow.OnCourseUnload then Rainbow.OnCourseUnload() end
+                if WindDebris and WindDebris.OnCourseUnload then WindDebris.OnCourseUnload() end
+                if LightRays and LightRays.OnCourseUnload then LightRays.OnCourseUnload() end
+                if RealSun and RealSun.OnCourseUnload then RealSun.OnCourseUnload() end
                 initialWeatherApplied = false
                 _pendingRestore = true  -- Signal to restore on next actor detection
                 Log.Info("Main", "Actors lost: pending restore on next detection")
@@ -1003,11 +1016,10 @@ local function onTick()
             Persistence.Tick()
         end
         
-        -- Dynamic wet grip (global tire degradation table vs precipitation; self-throttled,
-        -- re-applies only on change). Intentionally NOT PA-frozen-gated: a race initiated
-        -- from PA is the case we most need it in, and the global table edit is what makes
-        -- PA + AI work. It only scales tire grip rates (never the PA-persisted weather
-        -- state), so running through the PA transition is safe.
+        -- Dynamic wet grip (self-throttled, re-applies only on change). Not
+        -- PA-frozen-gated on purpose: a race started from PA is the case it is
+        -- for, and it only scales tire grip rates, never the PA-persisted
+        -- weather state, so running through the PA transition is safe.
         if WetGrip and WetGrip.Tick then
             WetGrip.Tick()
         end
@@ -1027,7 +1039,7 @@ local function onTick()
             Atmosphere.Tick()
         end
         
-        -- Headlights (auto on/off; auto mode follows the exposure brightness)
+        -- Headlights (auto on/off keyed on sun elevation, see Config.Headlights)
         if Headlights and Headlights.Tick and not State.IsPAFrozen() then
             Headlights.Tick()
         end
@@ -1079,7 +1091,7 @@ local function onTick()
         end
 
         -- Light cycle (exposure/look; also runs in garage/menu, so it is
-        -- intentionally NOT gated by the PA-frozen check)
+        -- intentionally not gated by the PA-frozen check)
         if LightCycle and LightCycle.Tick then
             LightCycle.Tick()
         end
@@ -1106,14 +1118,13 @@ local function onTick()
         end
 
         -- Tuning slider widening (the alignment menu lives in the garage, so
-        -- like Exposure/Vignette it is NOT course- or PA-gated)
+        -- like Exposure/Vignette it is not course- or PA-gated)
         if Tuning and Tuning.Tick then
             Tuning.Tick()
         end
 
-        -- NOTE: PhotoMode is intentionally NOT ticked here. It runs its own dedicated
-        -- LoopAsync (started in PhotoMode.Init) so its re-assert can't be stalled or
-        -- skipped by anything else in this shared tick.
+        -- PhotoMode is not ticked here: it runs its own LoopAsync (started in
+        -- PhotoMode.Init) so this shared tick cannot stall its re-assert.
     end)
     
     if not success then
@@ -1138,16 +1149,13 @@ local function setupHooks()
     -- Note: LoadMapPreHook and BeginPlayPreHook are registered at global scope
     -- (end of file) to match V1.34's pattern.
 
-    -- The ReceiveBeginPlay/ReceiveEndPlay FALLBACK hooks are GONE
-    -- (2026-08-10). Each was a Lua dispatch + GetFullName for EVERY actor
-    -- spawn/death in every world, and neither ever detected anything:
-    -- zero fallback detections in every August session log while
-    -- BeginPlayPreHook did all the detection. Their unique side effects
-    -- (Actors.OnMapLoad, the EndPlay ClearCache/OnCourseUnload calls)
-    -- therefore never ran either; Weather.ClearCache now rides
-    -- Weather.OnMapTeardown. Pure crash-surface removal: the 08-09 dumps
-    -- fault inside exactly this kind of per-actor GT hook dispatch.
-    
+    -- No ReceiveBeginPlay/ReceiveEndPlay fallback hooks (removed 2026-08-10):
+    -- each was a Lua dispatch + GetFullName for every actor spawn/death and
+    -- never detected anything (BeginPlayPreHook did all of it), and the 08-09
+    -- dumps fault inside exactly that per-actor GT hook dispatch. The weather
+    -- module's cached component list is dropped by Weather.OnMapTeardown
+    -- (called from LoadMapPreHook) instead.
+
     return true
 end
 
@@ -1185,10 +1193,9 @@ local function initialize()
     loadSystemModules()
 
     -- ===== PER-MODULE TOGGLES =====
-    -- Setting a Config.ModuleToggles.X to false nil-s that module's handle, so every
-    -- `if X and X.Tick`/`X.Setup` guard in the loop skips it entirely, disabling the
-    -- module's runtime without touching call sites. All true = normal operation.
-    -- Actors/Presets/Keybinds are core and intentionally not toggleable here.
+    -- Config.ModuleToggles.X = false nils that module's handle, so every
+    -- `if X and X.Tick`/`X.Setup` guard skips it. Actors/Presets/Keybinds are
+    -- core and not toggleable.
     local tg = Config.ModuleToggles
     if tg then
         if tg.Weather     == false then Weather = nil end
@@ -1232,13 +1239,11 @@ local function initialize()
         Keybinds.Init(Config.Keybinds)
     end
     
-    -- Load persisted state
+    -- Read the saved state file so the boot log shows what the next course
+    -- entry will restore; Persistence.Restore applies it once the sky
+    -- actors exist.
     if Persistence and Persistence.Load then
-        local savedState = Persistence.Load()
-        if savedState and State then
-            State.Import(savedState)
-            Log.Info("Main", "Restored saved state")
-        end
+        Persistence.Load()
     end
     
     -- Start main loop
@@ -1275,18 +1280,18 @@ local _LastWorldTag = "unknown"
 -- captures it as an upvalue)
 local _WorldLogPending = true       -- one-shot "World identify" log per map load (PA-name hunt)
 
--- Sky class caching like V1.34. The DECLARATIONS live above LoadMapPreHook
--- (2026-08-10): the teardown block below nils them, and with the locals
--- declared after the hook those assignments would silently write globals
--- instead (the local-ordering trap). The TryGet* definitions stay below,
--- next to the BeginPlayPreHook that uses them.
+-- Sky class cache (V1.34 pattern). Declared above LoadMapPreHook
+-- (2026-08-10): the teardown block nils them, and with the locals declared
+-- after the hook those assignments would silently write globals (the
+-- local-ordering trap). The TryGet* definitions stay below, next to the
+-- BeginPlayPreHook that uses them.
 local SkyClass = nil
 local CourseSkyClass = nil
 
--- LoadMapPreHook: fires BEFORE map unload while actors still valid
+-- LoadMapPreHook: fires before map unload while actors are still valid
 if RegisterLoadMapPreHook then
     RegisterLoadMapPreHook(function()
-        -- Get world tag from Actors module (or State), NOT a local variable
+        -- Get world tag from Actors module (or State), not a local variable
         local currentTag = "unknown"
         if Actors and Actors.GetWorldTag then
             currentTag = Actors.GetWorldTag()
@@ -1296,10 +1301,9 @@ if RegisterLoadMapPreHook then
 
         if Log then Log.Info("Main", "LoadMapPreHook: Map unloading, tag=" .. tostring(currentTag)) end
 
-        -- Capture course state FIRST: the PreHook runs on the game thread
-        -- while the old world is still fully alive, so this is the last safe
-        -- moment to read the dying world's UDS/UDW. The suspend + cache drop
-        -- at the END of this hook must come after these reads.
+        -- Capture course state first: the PreHook runs on the game thread with
+        -- the old world still alive, the last safe moment to read its UDS/UDW.
+        -- The suspend + cache drop at the end of this hook must follow these reads.
         local uds = Actors and Actors.GetUDS()
         local udw = Actors and Actors.GetUDW()
         
@@ -1338,11 +1342,10 @@ if RegisterLoadMapPreHook then
             if Log then Log.Debug("Main", "No valid actors on unload: cannot capture state") end
         end
         
-        -- Save persistence if on course OR leaving the PA scene (still
-        -- before the cache drop, so the save reads live values). The PA
-        -- leg matters for clock sync: in continue mode time keeps running
-        -- there, and without this save the next course restores from an
-        -- up-to-30s-stale autosave instead of the exact PA-exit time.
+        -- Save persistence on course or when leaving the PA (still before the
+        -- cache drop, so the save reads live values). The PA leg keeps the
+        -- clock in sync: time runs there in continue mode, and without this
+        -- save the next course restores from an up-to-30s-stale autosave.
         local leavingPA = false
         pcall(function()
             leavingPA = Actors and Actors.IsInPAScene and Actors.IsInPAScene() or false
@@ -1353,14 +1356,14 @@ if RegisterLoadMapPreHook then
             pcall(function() Persistence.Save("map_unload_pre") end)
         end
 
-        -- LAST: stop the async actor search AND drop every cached actor ref.
-        -- A ref that survives the swap can falsely validate against freed
-        -- memory and crash the next property read (2026-07-14 beta crash on
-        -- the course->PA return; dump held the previous course's UDS).
+        -- Last: stop the async actor search and drop every cached actor ref.
+        -- A ref surviving the swap can falsely validate against freed memory
+        -- and crash the next property read (2026-07-14 beta crash on the
+        -- course to PA return; the dump held the previous course's UDS).
         if Actors and Actors.SuspendDiscovery then
             Actors.SuspendDiscovery()
         end
-        -- Real-teardown signal for the actors-lost debounce: only THIS
+        -- Real-teardown signal for the actors-lost debounce: only this
         -- hook may trigger the instant unload cascade (blips never do).
         _mapTeardownPending = true
         -- Same rule for weather's cached precip-component list: drop the
@@ -1369,11 +1372,15 @@ if RegisterLoadMapPreHook then
         if Weather and Weather.OnMapTeardown then
             Weather.OnMapTeardown()
         end
-        -- Sky-class cache: the BP class objects die with their owner
-        -- world's GC, and the cross-world IsValid() revalidation in
-        -- TryGet* is the +0x0C freed-object validity read every 08-09
-        -- dump faults on (2026-08-10 disasm). Pure Lua nils, GT-safe;
-        -- TryGet* re-finds on demand in the new world.
+        -- Gap walls take the real-teardown signal from here: the cascade
+        -- alone can be a living-world sky loss, where the slabs must stay
+        if GapWalls and GapWalls.OnMapTeardown then
+            GapWalls.OnMapTeardown()
+        end
+        -- Sky-class cache: the BP class objects die with their world's GC, and
+        -- TryGet*'s cross-world IsValid() revalidation is the +0x0C
+        -- freed-object read every 08-09 dump faults on (2026-08-10 disasm).
+        -- Pure Lua nils, GT-safe; TryGet* re-finds in the new world.
         SkyClass = nil
         CourseSkyClass = nil
 
@@ -1419,29 +1426,24 @@ if RegisterBeginPlayPreHook then
         pcall(function() isValid = Actor.IsValid and Actor:IsValid() end)
         if not isValid then return end
         
-        -- Cheap NAME check first: one GetFullName per actor. The old order ran
-        -- TryGetSkyClass() for EVERY actor beginning play, which revalidates a
-        -- CACHED CLASS OBJECT with IsValid(); during a world swap the previous
-        -- world's GC can have freed that class, making the revalidation a
-        -- freed-memory read, matching the intermittent transition-crash
-        -- signature (read AV in a game-thread hook, transitions only). The
-        -- class-cache route now runs only as a fallback when the name read gives
-        -- nothing usable, instead of hundreds of times per map load.
-        -- NOT tostring(Actor): UE4SS's __tostring returns the userdata address
-        -- ("...Userdata: 0x..."), never the object name; the 3.3.0 tostring
-        -- version made isSky never match, so discovery only ever resumed via
-        -- the 15s failsafe (the "TOD takes ~15s to snap in after a load"
-        -- symptom). GetFullName on the live hook param is safe: this actor is
-        -- spawning in the NEW world, not a cached cross-world reference.
+        -- Cheap name check first, one GetFullName per actor; the class-cache
+        -- route is only the fallback when the name read gives nothing. Running
+        -- TryGetSkyClass() for every actor revalidated a cached class object
+        -- with IsValid() during world swaps, a freed-memory read matching the
+        -- intermittent transition-crash signature (read AV in a game-thread
+        -- hook). Not tostring(Actor): UE4SS's __tostring returns the userdata
+        -- address, never the name (the 3.3.0 version made isSky never match,
+        -- so discovery only resumed via the 15s failsafe: "TOD takes ~15s to
+        -- snap in after a load"). GetFullName on the live hook param is safe:
+        -- this actor spawns in the new world, no cached cross-world reference.
         local actorName = nil
         pcall(function()
             if Actor.GetFullName then actorName = Actor:GetFullName() end
         end)
 
-        -- One-shot per map load: log the first NAMED actor's world, so worlds
-        -- whose sky never matches the patterns below (PA? menus?) are still
-        -- identifiable from the log. Same safe pattern as the sky path: live
-        -- spawning actor, GetWorld+GetFullName once per load.
+        -- One-shot per map load: log the first named actor's world, so worlds
+        -- whose sky never matches the patterns below stay identifiable from
+        -- the log. Live spawning actor, GetWorld+GetFullName once per load.
         if _WorldLogPending and type(actorName) == "string" and #actorName > 0 then
             _WorldLogPending = false
             pcall(function()
@@ -1474,21 +1476,18 @@ if RegisterBeginPlayPreHook then
         end
 
         if not isSky then
-            -- Garage/menu worlds have NO sky actor, so the sky-based resume
-            -- below never fires there and the teardown suspension always sat
-            -- out the full 15s failsafe. While suspended the garage probe is
-            -- cache-only, so the exposure garage branch could not fire either:
-            -- the garage ran ~15s on the previous course's cvars (after a dusk
-            -- course that is sky=0.1 = a very dark garage). The outgame
-            -- managers begin play early in those worlds; use them as the
-            -- resume signal.
+            -- Garage/menu worlds have no sky actor, so the sky-based resume
+            -- below never fires there and the suspension sat out the full 15s
+            -- failsafe (cache-only garage probe, exposure garage branch blocked:
+            -- ~15s on the previous course's cvars, sky=0.1 after a dusk course
+            -- = a very dark garage). The outgame managers begin play early in
+            -- those worlds and serve as the resume signal.
             if type(actorName) == "string"
                and (actorName:find("OutGameGarageManager") or actorName:find("OutGameMode"))
                and Actors then
                 -- Event-driven outgame signal (2026-07-21 map-open crash fix):
-                -- this actor constructing IS the outgame world; game-thread
-                -- context with the actor in hand, so the async garage probe
-                -- (FindFirstOf x2 every 1.5s) never needs to run there.
+                -- game-thread context with the actor in hand, so the async
+                -- garage probe (FindFirstOf x2 every 1.5s) never runs there.
                 if Actors.OnOutgameManagerBeginPlay then
                     Actors.OnOutgameManagerBeginPlay()
                 end
@@ -1507,9 +1506,8 @@ if RegisterBeginPlayPreHook then
             Actors.ResumeDiscovery()
         end
 
-        -- Get world tag from actor. GetFullName, NOT tostring: tostring(world)
-        -- is just "UWorld: 0x..." (the address, no map path), which made every
-        -- world tag as the "course" default; the PA branch below never fired.
+        -- World tag from the actor. GetFullName, not tostring: tostring(world)
+        -- is "UWorld: 0x..." (no map path), which tagged every world "course".
         local tag = "course"
         local worldString = "unknown"
         pcall(function()
@@ -1519,9 +1517,8 @@ if RegisterBeginPlayPreHook then
                 if type(ws) ~= "string" or #ws == 0 then return end
                 worldString = ws  -- Capture for logging
                 local lw = ws:lower()
-                -- NOTE: there is NO separate "pa" world; the PA scene lives
-                -- inside the outgame world (L_OutGame_P) and is handled by
-                -- the tick loop's PA lifecycle (Actors.IsInPAScene).
+                -- No separate "pa" world: the PA scene lives inside the outgame
+                -- world (L_OutGame_P); the tick loop's PA lifecycle handles it.
                 if lw:find("garage") or lw:find("outgame") or lw:find("ls_") then
                     tag = "outgame"
                 end
@@ -1531,10 +1528,9 @@ if RegisterBeginPlayPreHook then
         if Log then Log.Info("Main", string.format("BeginPlayPreHook: worldString=%s tag=%s (was %s)",
             worldString:sub(1,80), tag, _LastWorldTag)) end
         
-        -- PA handling moved to the tick loop's PA lifecycle (applyPAState):
-        -- the old tag=="pa" branch here was DEAD: no world path ever matched,
-        -- the PA scene is part of the outgame world. Course return: don't
-        -- restore here; the tick loop's Persistence.Restore() handles it.
+        -- PA handling lives in the tick loop's PA lifecycle (applyPAState); no
+        -- world path ever tags "pa". Course return: no restore here, the tick
+        -- loop's Persistence.Restore() handles it.
         if tag == "course" and _pendingRestore then
             if Log then Log.Info("Main", "Course entry: deferring restore to tick loop") end
             _pendingRestore = false

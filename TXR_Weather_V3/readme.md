@@ -5,7 +5,7 @@ A modular UE4SS Lua mod for **Tokyo Xtreme Racer** that drives **Ultra Dynamic S
 full feature + configuration + developer reference. For install and a short feature list, see the
 landing `README.md`. For per-version changes, see `CHANGELOG.md`.
 
-**Current version: 4.0.0**
+**Current version: 4.0.1**
 
 ---
 
@@ -32,7 +32,9 @@ composite, so they never render reliably. See section 6.
 
 ## 2. Install and Engine.ini (summary)
 
-Run `install.bat`. It auto-detects the Steam install, downloads a pinned and tested UE4SS build,
+Run `install.bat`. It finds the game, Steam or not (Steam libraries, Windows run history,
+shortcuts, common game folders, then an optional drive scan; you can also paste the game folder
+or exe path), downloads a pinned and tested UE4SS build,
 installs the mod, registers it in `mods.txt`, copies the content paks into the game's
 `Content\Paks`, and sets up `Engine.ini` (backing up any existing file first).
 
@@ -44,10 +46,12 @@ For Engine.ini it offers:
 - **Merge**, keeps your own Engine.ini and just appends the required cvars at the end.
 - **Skip**, changes nothing.
 
-It then asks whether to use the mod's dynamic day/night exposure (the game's own auto-exposure
-steered by the real sun, see Lighting and exposure below); answering no leaves vanilla brightness
-and switches the LightCycle module off to match. It also asks whether you want the dark garage
-look. If dusk or night look wrong, you most likely skipped the Engine.ini step: re-run the
+It asks whether you want the dark garage look. The dynamic day/night exposure (the game's own
+auto-exposure steered by the real sun, see Lighting and exposure below) is always installed:
+the game's stock auto-exposure is broken, and fixing it is the point of the mod. To run without
+it anyway, set `Config.ModuleToggles.LightCycle = false` in `Scripts/config.lua` after
+installing (stock brightness; also turns off the dark garage look and the brightness keybinds).
+If dusk or night look wrong, you most likely skipped the Engine.ini step: re-run the
 installer and pick a profile. **Updating from 3.3.x or older: download a fresh `install.bat` +
 `install.ps1` first**: old installer copies write an Engine.ini line that breaks the 3.4+
 exposure.
@@ -130,8 +134,9 @@ a short press turns headlights on, a ~2-second hold turns them off.
   decks. The mod gives the tunnel and bridge meshes invisible collision bodies that only rain
   traces can see: the AI, the camera and every other game system are unaffected. Rain now dies
   inside bores and under overpasses and returns past the portal, all from the game's own
-  particle physics. Since 4.0.0 the collision data itself ships pre-baked (see the content paks
-  below); no original game file is modified either way. The pass re-applies as the world streams
+  particle physics. The mod writes the collision data itself at every course load (4.0.1 restored
+  this; the optional content paks add pre-baked shadows), and no original game file is modified
+  either way. The pass re-applies as the world streams
   in, spread across frames so it costs no visible frame time, and going under any cover triggers
   an immediate pass so a first approach is already dry. `Config.RainCollision`
   (`TargetPatterns` names which meshes get flipped; extend it from `Alt+N` reports if you find a
@@ -187,8 +192,8 @@ a short press turns headlights on, a ~2-second hold turns them off.
   frame instead of being fixed a few seconds into each course, and streamed-in areas arrive
   correct. These are the mod's own files layered over the game's data: **no original game file
   is modified or replaced**, and deleting the two paks restores stock behaviour exactly.
-  Declining the download is fine: the installer then sets `Config.RainCollision.CtfWrite = true`
-  so the mod does that collision work itself at runtime, exactly as 3.x did, and covered
+  Declining the download is fine: since 4.0.1 the mod does the collision work itself at runtime
+  regardless (`Config.RainCollision.CtfWrite`, default true), exactly as 3.x did, and covered
   sections settle a few seconds into a course instead of being right on the first frame.
 
 ### Lighting and exposure
@@ -422,6 +427,12 @@ BPC_PhotoMode_C, BP_FreeCamera_C; WBP_PhotoMode_Bar_Slider_C (ListKey "FOV")
 ## 8. Version history
 
 See `CHANGELOG.md` for the full list. Most recent:
+- **4.0.1**: rain stops at tunnel walls and overpass decks again (the mod
+  writes the collision data itself at every course load); the parking area
+  keeps your clock and the course picks up where the PA left off; photo mode
+  no longer thickens the clouds with every session; headlights react to
+  tunnels at once; fewer object scans per tick; installer and GrabLogs work
+  from bracketed folder names.
 - **4.0.0**: the city casts shadows in daylight (buildings ship with shadow
   casting off and the game re-applies that on every load, so the mod re-enables
   it every course); covered-road shadow and rain-collision data now ships

@@ -1,18 +1,15 @@
 -- TXR Weather Mod v3.0
 -- systems/cinematic_sky.lua
 -- Cinematic daytime grade: volumetric-cloud shading, sky-atmosphere color,
--- cloud wisps (cirrus), cloud render quality and cloud movement mood.
---
--- Every target is a reflected primitive/struct on UDS verified against the v1.5
--- dump (shared/types/Ultra_Dynamic_Sky.lua); nothing here is in the dead
--- post-process (MID + WeightedBlendable) family.
---
--- Knobs with undocumented internal scales are configured as MULTIPLIERS on the
--- value UDS spawned with. The sky actor is recreated on every course load, so
--- stock values are re-read fresh each course and scaling never compounds.
--- Applied once per course on the game thread after the settle gate, then baked
--- with UDS's own "Static Properties - X" calls (the stars/nebula/moon pattern).
--- Original -> tuned pairs are logged on each apply for easy retuning.
+-- cloud wisps (cirrus), cloud render quality and cloud movement mood. Every
+-- target is a reflected primitive/struct on UDS verified against the v1.5
+-- dump (shared/types/Ultra_Dynamic_Sky.lua); nothing is in the dead
+-- post-process (MID + WeightedBlendable) family. Knobs with undocumented
+-- internal scales are multipliers on the value UDS spawned with, cached per
+-- course (stockValues), so a re-apply after an actor blip writes the same
+-- absolute value. Applied once per course on the game thread after the settle
+-- gate, then baked with UDS's Static Properties calls (the stars/moon
+-- pattern); original and tuned values are logged on each apply for retuning.
 
 local CinematicSky = {}
 
@@ -26,7 +23,7 @@ local MODULE = "CinematicSky"
 
 -- ============== UDS PROPERTY NAMES (verified, v1.5 dump) ==============
 -- Global grade (Basic Controls). Saturation stock = 1.0 (absolute is fine);
--- Contrast stock = 0.1, so it MUST be scaled, not overwritten.
+-- Contrast stock = 0.1, so it must be scaled, not overwritten.
 local PROP_SATURATION = "Saturation"
 local PROP_CONTRAST   = "Contrast"
 
@@ -75,6 +72,12 @@ local debugMode = false
 local settleTicks = 0
 local appliedThisCourse = false
 local lastApplySummary = nil
+-- Stock values read before the first scale of each course. setMult writes
+-- stock * mult from this cache: the module re-arms on every actor blip (a
+-- photomode open is a ClientRestart), and scaling the live value compounded
+-- the multipliers on each re-apply (08-31 log: Extinction Scale 10 -> 12.5 ->
+-- 15.6). Cleared by OnCourseUnload (main.lua's debounced course lifecycle).
+local stockValues = {}
 
 local function getActors()
     if not Actors then
@@ -92,7 +95,7 @@ end
 
 -- ============== APPLY HELPERS (game thread only) ==============
 
---- Write an absolute value; records "old->new" in the changes table.
+--- Write an absolute value; records old and new in the changes table.
 local function setAbs(uds, prop, value, changes)
     if value == nil then return end
     local old = nil
@@ -106,30 +109,36 @@ local function setAbs(uds, prop, value, changes)
 end
 
 --- Scale a numeric property by a multiplier (1.0/nil = leave stock).
+--- Absolute write from the per-course stock cache, so a re-apply lands the
+--- same value instead of multiplying again.
 local function setMult(uds, prop, mult, changes)
     if mult == nil or mult == 1.0 then return end
-    local old = nil
-    pcall(function() old = uds[prop] end)
-    old = tonumber(old)
-    if old == nil then
-        if debugMode then Log.Warn(MODULE, "Read failed (skipping)", {prop = prop}) end
-        return
+    local base = stockValues[prop]
+    if base == nil then
+        local old = nil
+        pcall(function() old = uds[prop] end)
+        base = tonumber(old)
+        if base == nil then
+            if debugMode then Log.Warn(MODULE, "Read failed (skipping)", {prop = prop}) end
+            return
+        end
+        stockValues[prop] = base
     end
-    local new = old * mult
+    local new = base * mult
     local ok = pcall(function() uds[prop] = new end)
     if ok then
-        changes[prop] = string.format("%.3f->%.3f", old, new)
+        changes[prop] = string.format("%.3f->%.3f", base, new)
     elseif debugMode then
         Log.Warn(MODULE, "Write failed", {prop = prop})
     end
 end
 
 -- ============== PER-PRESET WEATHER GRADE ==============
--- Weather presets can carry a skyGrade table (presets.lua): ABSOLUTE values
--- for a small set of UDS grade props, applied on weather change so overcast
--- and rain read cool/grey instead of the warm session grade. A preset
--- without a grade restores the session baseline (the values the per-course
--- apply above settled). This module owns these UDS props (single writer).
+-- Weather presets can carry a skyGrade table (presets.lua): absolute values
+-- for a few UDS grade props, applied on weather change so overcast and rain
+-- read cool/grey instead of the warm session grade. A preset without a grade
+-- restores the session baseline (the per-course apply's settled values).
+-- This module is the single writer of these props.
 
 local GRADE_PROPS = {
     "Saturation",
@@ -231,10 +240,9 @@ local function applyOnGameThread()
     lastApplySummary = changes
     Log.Info(MODULE, "Cinematic sky applied", changes)
 
-    -- Session baseline for the per-preset weather grade: the values THIS
-    -- apply just settled (grade props restore to these when a preset has
-    -- no grade). Then land any grade that arrived before we ran (weather
-    -- applies before the cinematic sky on course load).
+    -- Session baseline for the per-preset weather grade (the values this apply
+    -- settled), then any grade that arrived before this ran (weather applies
+    -- before the cinematic sky on course load).
     captureGradeBaselineGT(uds)
     if pendingGradeSet then
         applyWeatherGradeGT(uds)
@@ -263,7 +271,6 @@ function CinematicSky.Init()
     return true
 end
 
---- Per-tick: apply once per course, after the settle gate.
 --- Per-preset sky grade from weather.lua (nil = restore session baseline).
 --- Queued until the per-course apply has settled a baseline to restore to.
 function CinematicSky.ApplyWeatherGrade(grade)
@@ -280,16 +287,14 @@ function CinematicSky.ApplyWeatherGrade(grade)
     -- No baseline yet = course still settling; applyOnGameThread lands it
 end
 
+--- Per-tick: apply once per course, after the settle gate.
 function CinematicSky.Tick()
     if not initialized or not enabled then return end
 
+    -- Actors missing = a blip or a real exit; OnCourseUnload does the re-arm,
+    -- so a photomode open no longer re-runs the four Static Properties bakes
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then
-        settleTicks = 0
-        appliedThisCourse = false
-        gradeBaseline = nil   -- fresh sky actor per course = fresh baseline
-        return
-    end
+    if not actors or not actors.IsOnCourse() then return end
 
     settleTicks = settleTicks + 1
     if not appliedThisCourse and settleTicks >= SETTLE_TICKS then
@@ -298,13 +303,13 @@ function CinematicSky.Tick()
     end
 end
 
-function CinematicSky.GetStatus()
-    return {
-        initialized = initialized,
-        enabled = enabled,
-        appliedThisCourse = appliedThisCourse,
-        lastApply = lastApplySummary,
-    }
+--- Course edge (main.lua's debounced lifecycle, cascade and PA exit): the
+--- next course has a fresh sky actor with its own stock values.
+function CinematicSky.OnCourseUnload()
+    stockValues = {}
+    gradeBaseline = nil
+    appliedThisCourse = false
+    settleTicks = 0
 end
 
 return CinematicSky

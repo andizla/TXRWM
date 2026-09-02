@@ -25,7 +25,6 @@ local PROPS = {
     FLASH_CAST_SHADOWS = "Lightning Flashes Cast Shadows",
     DAYTIME_INTENSITY = "Daytime Lightning Flash Intensity",
     NIGHTTIME_INTENSITY = "Nighttime Lightning Flash Intensity",
-    LIGHTNING_MANAGER = "Lightning Spawn Manager",
     REFRESH_SETTINGS = "Refresh Settings",
 }
 
@@ -52,7 +51,6 @@ local internalState = {
     initialized = false,
     lastThunderValue = 0,
     lightningEnabled = false,
-    managerReference = nil,
 }
 
 -- ============== INTERNAL FUNCTIONS ==============
@@ -74,38 +72,6 @@ local function ensureManualOverride()
     end
     
     return success
-end
-
---- Get the Lightning Spawn Manager object from UDW
---- @return userdata|nil manager
-local function getLightningManager()
-    if internalState.managerReference then
-        -- Validate cached reference
-        if Utils.IsValidObject(internalState.managerReference) then
-            return internalState.managerReference
-        end
-        internalState.managerReference = nil
-    end
-    
-    local udw = Actors.GetUDW()
-    if not udw then
-        return nil
-    end
-    
-    local manager = nil
-    local success = pcall(function()
-        manager = udw[PROPS.LIGHTNING_MANAGER]
-    end)
-    
-    if success and manager and Utils.IsValidObject(manager) then
-        internalState.managerReference = manager
-        Log.Debug(MODULE, "Got Lightning Spawn Manager", {
-            address = Utils.FormatAddress(manager)
-        })
-        return manager
-    end
-    
-    return nil
 end
 
 --- Configure lightning flash properties
@@ -160,7 +126,6 @@ function Lightning.Init()
     internalState.initialized = true
     internalState.lastThunderValue = 0
     internalState.lightningEnabled = false
-    internalState.managerReference = nil
     return true
 end
 
@@ -228,125 +193,13 @@ function Lightning.EnableFromPreset(presetData)
     return Lightning.SetIntensity(intensity)
 end
 
---- Disable lightning
---- @return boolean success
-function Lightning.Disable()
-    Log.Info(MODULE, "Disabling lightning")
-    return Lightning.SetIntensity(0)
-end
-
---- Check if lightning is currently enabled
---- @return boolean
-function Lightning.IsEnabled()
-    return internalState.lightningEnabled
-end
-
---- Get current lightning intensity
---- @return number intensity (0-10)
-function Lightning.GetIntensity()
-    local udw = Actors.GetUDW()
-    if not udw then
-        return internalState.lastThunderValue
-    end
-    
-    local value = nil
-    local success = pcall(function()
-        value = udw[PROPS.THUNDER_LIGHTNING]
-    end)
-    
-    if success and value then
-        return value
-    end
-    
-    return internalState.lastThunderValue
-end
-
---- Trigger a manual lightning flash (for testing/effects)
---- @param angle number|nil Flash angle in degrees (random if nil)
---- @return boolean success
-function Lightning.TriggerFlash(angle)
-    local udw = Actors.GetUDW()
-    if not udw then
-        return false
-    end
-    
-    angle = angle or (math.random() * 360)
-    
-    -- Try to call Flash Lightning function
-    local flashFn = nil
-    local success = pcall(function()
-        flashFn = udw["Flash Lightning"]
-    end)
-    
-    if success and flashFn then
-        local callSuccess = pcall(function()
-            -- Flash Lightning(Self, Angle, UseCustomLocation, CustomLocation, CustomTarget, RandomSeed)
-            flashFn(udw, angle, false, {X=0, Y=0, Z=0}, {X=0, Y=0, Z=0}, -1)
-        end)
-        
-        if callSuccess then
-            Log.Debug(MODULE, "Triggered manual lightning flash", {angle = angle})
-            return true
-        end
-    end
-    
-    -- Fallback: Try Global Lightning Managed Spawn via the manager
-    local manager = getLightningManager()
-    if manager then
-        local spawnFn = nil
-        pcall(function()
-            spawnFn = udw["Global Lightning Managed Spawn"]
-        end)
-        
-        if spawnFn then
-            local callSuccess = pcall(function()
-                spawnFn(udw, angle, 0.0)  -- Angle, ThresholdIntensity
-            end)
-            if callSuccess then
-                Log.Debug(MODULE, "Triggered lightning via manager", {angle = angle})
-                return true
-            end
-        end
-    end
-    
-    Log.Warn(MODULE, "Could not trigger lightning flash")
-    return false
-end
-
---- Tick function (called from main loop)
-function Lightning.Tick()
-    -- Lightning is managed by UDW's internal systems once enabled
-    -- This tick can be used for any periodic adjustments if needed
-end
-
---- Get status for debugging
---- @return table
-function Lightning.GetStatus()
-    return {
-        initialized = internalState.initialized,
-        enabled = internalState.lightningEnabled,
-        lastIntensity = internalState.lastThunderValue,
-        currentIntensity = Lightning.GetIntensity(),
-        hasManager = getLightningManager() ~= nil,
-    }
-end
-
---- Reset lightning state
-function Lightning.Reset()
-    Lightning.Disable()
-    internalState.managerReference = nil
-    Log.Info(MODULE, "Reset")
-end
-
 --- Called when course loads
 function Lightning.OnCourseLoad()
-    internalState.managerReference = nil
     -- Lightning state will be restored via Weather.Apply from persistence
 end
 
 --- Called when course unloads
 function Lightning.OnCourseUnload()
-    internalState.managerReference = nil
     internalState.lightningEnabled = false
 end
 

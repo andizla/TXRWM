@@ -1,19 +1,16 @@
 -- TXR Weather Mod v3.0
 -- systems/light_cycle.lua
--- Exposure + look. Stock auto-exposure runs; this module:
---   1. Can bias it via UDS "Exposure Bias Day/Night" from the sun's REAL
---      elevation (BiasCurve; season-proof, unlike a clock table).
---   2. Applies per-course one-shots onto the course sky's main PP
---      component: adaptation speeds, the skylight-translucency kill, and
---      the Config.LightCycle.PostProcess look overrides. All writes are
---      readback-verified ("held=false" = a per-tick writer owns that field;
---      measure, don't silently re-assert).
---   3. One-shot UDS night floors + Hard Reset Cache bake.
---   4. Neutral cvar parking + the garage neutral push (no valid UDS there)
---      + the Alt+Z/X/C skylight tuning and Alt+D feedback keys.
--- Tunnel/rain detection lives in systems/tunnels.lua; per-volume exposure
--- writes are a closed dead end (non-blendable fields snap at the blend
--- edge). History for all of this: HANDOFF.md.
+-- Exposure + look on top of stock auto-exposure: an EV bias on UDS's
+-- "Exposure Bias Day/Night" from the sun's real elevation (BiasCurve,
+-- season-proof unlike a clock table); per-course one-shots on the course
+-- sky's main PP component (adaptation speeds, the skylight-translucency kill,
+-- the Config.LightCycle.PostProcess look overrides), all readback-verified
+-- (held=false means a per-tick writer owns that field: measure, do not
+-- silently re-assert); one-shot UDS night floors with a Hard Reset Cache
+-- bake; neutral cvar parking plus the garage neutral push (no valid UDS
+-- there), the Alt+Z/X/C skylight tuning and the Alt+D feedback keys.
+-- Tunnel/rain detection lives in systems/tunnels.lua. Per-volume exposure
+-- writes are a closed dead end (non-blendable fields snap at the blend edge).
 
 local LightCycle = {}
 
@@ -22,12 +19,12 @@ local Log = require("core.logging")
 local GT = require("core.gt")
 local State = require("core.state")
 local Config = require("config")
+local Utils = require("core.utils")
 
 -- Lazy-loaded to avoid circular dependencies
 local Actors = nil
 local TimeOfDay = nil
 local Tunnels = nil
-local UEHelpers = nil
 
 local MODULE = "LightCycle"
 
@@ -57,20 +54,20 @@ local PROP_OVERCAST_NIGHT = "Overcast Brightness Night"
 -- Sun vector property (FVector, updated by UDS every frame)
 local PROP_SUN_VECTOR = "Cached Sun Vector"
 
--- Engine auto-exposure ADAPTATION speeds (f-stops/sec), written once per
--- course onto BP_CourseSky's composited PostProcess component. UE defaults
--- (3 up / 1 down) are the felt "exposure reacts slowly" under bridges and
--- at portals. nil = leave stock. Write verified to stick (readback).
+-- Auto-exposure adaptation speeds (f-stops/sec), written once per course
+-- onto BP_CourseSky's composited PostProcess component. UE defaults (3 up /
+-- 1 down) are the felt "exposure reacts slowly" under bridges and at portals.
+-- nil = leave stock. Readback-verified.
 local ADAPT_UP, ADAPT_DOWN = nil, nil
 
 -- Skylight off translucents (Config.LightCycle.KillSkylightTranslucentLighting):
 -- bAffectTranslucentLighting=false on the course skylights, once per course.
 local KILL_SKY_TRANSLUCENT = false
 
--- Generic post-process look overrides (Config.LightCycle.PostProcess):
--- field name -> value, written with bOverride flags onto the course sky's
--- main PP component in the same per-course one-shot, verified by the
--- readback. Vector/color fields arrive as {X=,Y=,Z=,W=} tables.
+-- Post-process look overrides (Config.LightCycle.PostProcess): field name to
+-- value, written with bOverride flags onto the course sky's main PP component
+-- in the same per-course one-shot and readback-verified. Vector/color fields
+-- arrive as {X=,Y=,Z=,W=} tables.
 local PP_OVERRIDES = nil
 
 -- Bias output: drives UDS's Exposure Bias knobs (confirmed live) on top
@@ -115,34 +112,31 @@ local PHOTO_GARAGE_LENS = 30.0   -- the 3.4.0 garage value (no sun there)
 -- indoor value applies instead; nil = feature off.
 local PHOTO_COVERED_LENS = nil
 local photoCoveredLatch = false  -- latched at session open (car is parked)
--- Live per-session exposure trim (Alt+E family, 2026-07-27): each step
--- multiplies the branch's lens by NudgeStep^steps. Session-scoped (reset
--- at open); every press logs the resulting level = field telemetry for
--- retuning the curve/garage/covered constants ("often not bright enough
--- or too bright").
+-- Per-session exposure trim (Alt+E family, 2026-07-27): each step multiplies
+-- the branch's lens by NudgeStep^steps; reset at session open. Every press
+-- logs the level: field telemetry for retuning the curve/garage/covered
+-- constants ("often not bright enough or too bright").
 local PHOTO_NUDGE_STEP = 1.25
 local photoNudgeSteps = 0
--- Alt+G "dark look" (2026-07-27): forces this lens regardless of branch =
--- the crushed low-key look the 07-22 tester screenshotted in the garage
--- (their SDR render of garage lens 30) as a deliberate feature. Session
--- scoped; the nudge still applies on top.
+-- Alt+G dark look (2026-07-27): forces this lens regardless of branch, the
+-- crushed low-key look a tester's SDR render of garage lens 30 showed on
+-- 07-22, kept as a feature. Session scoped; the nudge applies on top.
 local PHOTO_DARK_LENS = 30.0
 local photoDarkOn = false
 
--- UDS sun-vector vertical convention: the cached vector is the LIGHT direction,
--- so raw Z = -sin(elevation) and the sign is a CONSTANT -1 (measured across
--- sessions: Nov midday raw=-39 with real +39; a full inverted December day when
--- v1's auto-calibration latched +1). Auto-calibration was removed because it
--- RACED the course-load restore. Config.LightCycle.SunVectorSign overrides if
--- a UDS update ever flips the convention; a trusted-window sanity check WARNS
--- on persistent disagreement but never auto-flips.
+-- UDS's cached sun vector is the light direction, so raw Z = -sin(elevation)
+-- and the sign is a constant -1 (Nov midday raw=-39 with real +39). The old
+-- auto-calibration raced the course-load restore and once latched +1 for a
+-- whole inverted December day, so it is gone: Config.LightCycle.SunVectorSign
+-- overrides if a UDS update flips the convention, and a trusted-window sanity
+-- check warns on persistent disagreement but never auto-flips.
 local SUN_VECTOR_SIGN = -1
 local signViolations = 0
 local signWarned = false
 local usedPseudoLogged = false
 local lastApplied = { sky = nil, leak = nil, lens = nil }
 
--- Skylight tuning overrides (Alt+Z/X/C): identical semantics to exposure.lua
+-- Skylight tuning overrides (Alt+Z/X/C)
 local tune = { sky = nil, leak = nil, rough = nil }
 local TUNE_LIMITS = {
     sky   = { min = 0.0, max = 4.0, fallback = 1.0 },
@@ -176,13 +170,6 @@ local function getTunnels()
     return Tunnels
 end
 
-local function getUEHelpers()
-    if not UEHelpers then
-        pcall(function() UEHelpers = require("UEHelpers") end)
-    end
-    return UEHelpers
-end
-
 local function clamp(x, a, b)
     if x < a then return a end
     if x > b then return b end
@@ -210,79 +197,14 @@ local function curveLookup(curve, elev)
     return curve[n].bias
 end
 
-local cachedEngine = nil
-local cachedKsl = nil
-
-local function validRef(o)
-    if not o then return false end
-    local ok, v = pcall(function() return o:IsValid() end)
-    return ok and v
-end
-
-local function getEngineRef()
-    if validRef(cachedEngine) then return cachedEngine end
-    local eng = nil
-    pcall(function() eng = FindFirstOf("Engine") end)
-    if validRef(eng) then cachedEngine = eng; return eng end
-    return nil
-end
-
-local function getKslRef()
-    if validRef(cachedKsl) then return cachedKsl end
-    local UEH = getUEHelpers()
-    if not UEH or not UEH.GetKismetSystemLibrary then return nil end
-    local ksl = nil
-    pcall(function() ksl = UEH.GetKismetSystemLibrary() end)
-    if validRef(ksl) then cachedKsl = ksl; return ksl end
-    return nil
-end
-
 -- ============== INTERNAL: cvar push machinery ==============
 
-local execBatches = 0
-local dropBatches = 0
-local execLoggedOnce = false
-local cmdErrWarned = false
-local function scheduleExec(cmds)
-    if not cmds or #cmds == 0 then return false end
-    local run = function()
-        local ksl = getKslRef()
-        local eng = getEngineRef()
-        if not ksl or not eng then
-            dropBatches = dropBatches + 1
-            if dropBatches == 1 or dropBatches % 50 == 0 then
-                Log.Warn(MODULE, "Cvar batch DROPPED: Engine/KSL unavailable at run time",
-                    {drops = dropBatches, ksl = ksl ~= nil, eng = eng ~= nil})
-            end
-            return
-        end
-        local allOk = true
-        for _, cmd in ipairs(cmds) do
-            local ok = pcall(function() ksl:ExecuteConsoleCommand(eng, cmd, nil) end)
-            if not ok then allOk = false end
-        end
-        execBatches = execBatches + 1
-        if not execLoggedOnce then
-            execLoggedOnce = true
-            Log.Info(MODULE, "First cvar batch EXECUTED on game thread", {cmds = #cmds})
-        end
-        if not allOk and not cmdErrWarned then
-            cmdErrWarned = true
-            Log.Warn(MODULE, "ExecuteConsoleCommand errored for at least one cvar push")
-        end
-    end
-    if ExecuteInGameThread then
-        return pcall(function() GT.Run(run) end)
-    end
-    run()
-    return true
-end
+-- Cvar pushes ride the shared game-thread path in core/utils.lua.
+local function scheduleExec(cmds) return Utils.ExecConsoleCommands(cmds) end
 
--- Garage exposure trim + dark look (the Alt+E/Alt+G family OUTSIDE photo
--- sessions; 2026-07-28 decision: the garage look should be dialable
--- while just browsing cars, no photomode needed). Same levers as the
--- photo-session versions, applied on the garage-neutral lens; scoped to
--- the garage visit (reset on leaving).
+-- Garage exposure trim + dark look (Alt+E/Alt+G outside photo sessions;
+-- 2026-07-28 decision: the garage look is dialable while browsing cars).
+-- Same levers on the garage-neutral lens, reset on leaving the garage.
 local garageNudgeSteps = 0
 local garageDarkOn = false
 
@@ -293,11 +215,10 @@ local function noteDriveState(state)
         garageNudgeSteps = 0
         garageDarkOn = false
     end
-    -- CONFIG-SEEDED GARAGE LOOK (2026-08-11): entering the garage starts
-    -- from the shipped dark-look baseline instead of neutral. Values from
-    -- the 00:31 field tuning (dark lens 30 * 1.25^-33 ~= lens 0.019).
-    -- Alt+G / Alt+E still adjust live on top for the visit; the exit
-    -- reset above plus this seed make every visit start identical.
+    -- Config-seeded garage look (2026-08-11): entering the garage starts from
+    -- the shipped dark-look baseline (field tuning: dark lens 30 * 1.25^-33
+    -- ~= lens 0.019); Alt+G / Alt+E adjust on top, the exit reset above plus
+    -- this seed make every visit start identical.
     if state == "garage" and Config.LightCycle then
         local gd = Config.LightCycle.GarageDark
         if type(gd) == "table" and gd.Enabled then
@@ -316,31 +237,38 @@ local function noteDriveState(state)
     Log.Info(MODULE, "Drive state: " .. state, {world = tag})
 end
 
+--- Photo-session lens: the 3.4.0 curve keyed on sun elevation, the fixed
+--- garage value with no sun, the indoor value under a roof, the Alt+G dark
+--- look winning the branch, then the Alt+E trim on top.
+local function photoLens(elev)
+    local lens
+    if photoDarkOn then
+        lens = PHOTO_DARK_LENS
+    elseif photoCoveredLatch and PHOTO_COVERED_LENS then
+        lens = PHOTO_COVERED_LENS
+    elseif elev == nil then
+        lens = PHOTO_GARAGE_LENS
+    else
+        lens = curveLookup(PHOTO_LENS_CURVE, elev)
+    end
+    if photoNudgeSteps ~= 0 then
+        lens = lens * (PHOTO_NUDGE_STEP ^ photoNudgeSteps)
+    end
+    return lens
+end
+
 --- Push the cvar trio; skips values unchanged since the last push.
 local function applyValues(sky, leak, lens, elev, reason)
     local eps = 1e-4
     if tune.sky  then sky  = tune.sky  end
     if tune.leak then leak = tune.leak end
-    -- Photo session: manual metering is live, the 3.4.0 lens curve sets
-    -- the level from SUN ELEVATION (garage/PA menu: the fixed garage
-    -- value; there is no sun there and 3.4.0 forced night values).
-    -- Covered sessions use the fixed indoor level instead: a lit bore's
-    -- brightness does not follow the sun. Lens carries the exposure
-    -- alone: photomode never scales the skylight (the config ManualCurve
-    -- sky column is 3.4.0 reference data only).
+    -- Photo session: manual metering is live and the 3.4.0 lens curve sets
+    -- the level from sun elevation (garage/PA menu: the fixed garage value,
+    -- no sun there; covered sessions: the fixed indoor level, a lit bore does
+    -- not follow the sun). Lens carries the exposure alone: photomode never
+    -- scales the skylight (the config ManualCurve sky column is 3.4.0 reference).
     if photoExpFrozen and #PHOTO_LENS_CURVE > 0 then
-        if photoDarkOn then
-            lens = PHOTO_DARK_LENS            -- Alt+G dark look wins the branch
-        elseif photoCoveredLatch and PHOTO_COVERED_LENS then
-            lens = PHOTO_COVERED_LENS
-        elseif elev == nil then
-            lens = PHOTO_GARAGE_LENS
-        else
-            lens = curveLookup(PHOTO_LENS_CURVE, elev)
-        end
-        if photoNudgeSteps ~= 0 then          -- Alt+E trim rides on top
-            lens = lens * (PHOTO_NUDGE_STEP ^ photoNudgeSteps)
-        end
+        lens = photoLens(elev)
     end
     local cmds = {}
     if not lastApplied.sky  or math.abs(sky  - lastApplied.sky)  >= eps then
@@ -368,10 +296,9 @@ end
 
 -- ============== INTERNAL: per-course PP pipeline one-shots ==============
 
---- One-shot (game thread): adaptation speeds + compensation-curve kill.
---- Runs once per course when the module arms; both writes are re-verified by
---- ppShotsReadbackGT ~8s later. GT closure re-checks world state at RUN time
---- (teardown rule).
+--- One-shot (game thread): adaptation speeds, PP look overrides and the
+--- skylight-translucency kill, once per course when the module arms;
+--- ppShotsReadbackGT re-verifies ~8s later. World state re-checked at run time.
 local function applyPPShotsGT()
     local actors = getActors()
     if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
@@ -379,7 +306,7 @@ local function applyPPShotsGT()
         return
     end
 
-    -- ADAPTATION SPEEDS onto BP_CourseSky's composited PP component
+    -- Adaptation speeds onto BP_CourseSky's composited PP component
     local pp = nil
     pcall(function()
         local a = FindFirstOf("BP_CourseSky_C")
@@ -414,9 +341,8 @@ local function applyPPShotsGT()
         end
     end
 
-    -- GENERIC LOOK OVERRIDES (Config.LightCycle.PostProcess): numbers/bools
-    -- write directly, struct fields (color/vector) write component-wise
-    -- into the live struct. Each in its own pcall; the readback verifies.
+    -- Look overrides (Config.LightCycle.PostProcess): numbers/bools write
+    -- directly, struct fields (color/vector) component-wise into the live struct.
     if pp and PP_OVERRIDES then
         local nOk, failed = 0, {}
         for name, val in pairs(PP_OVERRIDES) do
@@ -438,11 +364,10 @@ local function applyPPShotsGT()
         })
     end
 
-    -- SKYLIGHT OFF TRANSLUCENTS: the skylight's translucent-lighting feed is
-    -- what paints leaked sky onto glass/taillight lenses under ceilings
-    -- (the translucency probe grid is too coarse to occlude it). Killing
-    -- the feed costs nothing: glass is specular/reflection dominated, and
-    -- opaque surfaces keep their normally-occluded skylight via Lumen GI.
+    -- Skylight off translucents: that feed paints leaked sky onto glass and
+    -- taillight lenses under ceilings (the translucency probe grid is too
+    -- coarse to occlude it). Free to kill: glass is reflection dominated and
+    -- opaque surfaces keep their occluded skylight via Lumen GI.
     if KILL_SKY_TRANSLUCENT then
         local written, found = 0, 0
         pcall(function()
@@ -469,13 +394,13 @@ local function applyPPShotsGT()
     ppShotsWroteClock = os.clock()
 end
 
---- Delayed one-shot readback ~8s after the writes: held=false means a
---- per-tick writer re-asserts that field and the kill/speeds need a carrier
---- (measure first, do NOT silently re-assert).
+--- Delayed readback ~8s after the writes: held=false means a per-tick writer
+--- re-asserts that field and the kill/speeds need a carrier (measure first,
+--- do not silently re-assert).
 local function ppShotsReadbackGT()
-    -- Same run-time teardown re-check as applyPPShotsGT: this lands ~8s
-    -- after course arm, so a quick course exit can put it mid-teardown,
-    -- where a FindFirstOf reads dying objects (2026-08-04, code review).
+    -- Teardown re-check as in applyPPShotsGT: ~8s after arm a quick course
+    -- exit can put this mid-teardown, where FindFirstOf reads dying objects
+    -- (2026-08-04).
     local actors = getActors()
     if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
         return
@@ -554,11 +479,10 @@ local function readSunElevation(uds, tod)
     local raw = math.deg(math.asin(clamp(z / mag, -1.0, 1.0)))
     local elev = raw * SUN_VECTOR_SIGN
 
-    -- Sanity check in windows that are day/night in EVERY season at Tokyo's
-    -- latitude (clock 10:00-14:00 = sun up; 22:00-03:00 = sun down). Three
-    -- consecutive strong disagreements = the convention likely changed in a
-    -- UDS update: WARN once, never auto-flip (one bad latch already cost a
-    -- whole session).
+    -- Sanity check in windows that are day/night in every season at Tokyo's
+    -- latitude (10:00-14:00 sun up, 22:00-03:00 sun down). Three consecutive
+    -- strong disagreements = the convention likely changed in a UDS update:
+    -- warn once, never auto-flip (one bad latch already cost a session).
     if type(tod) == "number" and not signWarned then
         local t = tod % 2400
         local expect = nil
@@ -588,9 +512,9 @@ local function biasLookup(elev)
 end
 
 
---- Write the bias to UDS's knobs: Day and Night get the SAME value (our
---- elevation curve owns the number; UDS's internal day/night blend becomes a
---- no-op), scenario knobs zeroed once per course so UDS can't double-blend.
+--- Write the bias to UDS's knobs: Day and Night get the same value (the
+--- elevation curve owns the number, UDS's day/night blend becomes a no-op);
+--- scenario knobs zeroed once per course so UDS cannot double-blend.
 --- Primitive writes, change-gated.
 local function writeBiasKnobs(uds, value)
     if not scenarioZeroed then
@@ -681,14 +605,11 @@ local function applyAbsentBrightness(uds)
     -- no-blend cache refill mid-carry (visible sky snap).
     if not wrote then return end
 
-    -- Hard Reset Cache is a UFUNCTION, and this whole path runs on the 8 Hz
-    -- async tick (LightCycle.Tick = LightCycle.Update, ticked from main.lua's
-    -- LoopAsync). Calling a UFunction off the game thread can access-violate
-    -- natively, and pcall does NOT catch a native AV, so the pcall below was
-    -- decoration rather than protection. Marshal it, and re-resolve UDS INSIDE
-    -- the closure instead of carrying the caller's ref across the thread hop:
-    -- IsValid can read true on freed memory, so a ref captured on the async
-    -- side is exactly the pattern that produced the 2026-07-14 PA crash.
+    -- Hard Reset Cache is a UFunction and this path runs on the 8 Hz async
+    -- tick; a UFunction off the game thread can access-violate natively and
+    -- pcall does not catch that. Marshal it, and re-resolve UDS inside the
+    -- closure: a ref carried across the thread hop can pass IsValid on freed
+    -- memory, the pattern behind the 2026-07-14 PA crash.
     local function bakeGT()
         local a = getActors()
         local u = a and a.GetUDS and a.GetUDS() or nil
@@ -707,12 +628,10 @@ end
 
 -- ============== PHOTOMODE MANUAL METERING (legacy lens curve) ==============
 -- photomode.lua drives this on session open/close. Manual metering
--- (MethodOverride 3) is the ONLY mode where the photomode aperture
--- physically drives exposure (field-verified; every read/hook emulation of
--- the applied f-stop failed, the value is unreachable). The manual level
--- rides the legacy lens-attenuation machinery, keyed on SUN ELEVATION
--- (the 3.4.0 lens curve, applied inside applyValues), like every other
--- modern curve in this module. Histogram AE + neutral lens return on close.
+-- (MethodOverride 3) is the only mode where the photomode aperture drives
+-- exposure (field-verified; the applied f-stop is unreachable from Lua). The
+-- level rides the lens-attenuation cvar keyed on sun elevation (the 3.4.0
+-- curve, applied in applyValues). Histogram AE + neutral lens return on close.
 
 function LightCycle.SetPhotoExposureFreeze(on)
     if on == photoExpFrozen then return end
@@ -733,15 +652,22 @@ function LightCycle.SetPhotoExposureFreeze(on)
         end)
     end
     if on then
-        scheduleExec({ "r.EyeAdaptation.MethodOverride 3" })
+        -- The session lens rides the same batch as the metering switch: on its
+        -- own the switch landed one pump before the lens push, a dark blink of
+        -- 2.7 to 5 stops at every open
+        local cmds = { "r.EyeAdaptation.MethodOverride 3" }
+        if #PHOTO_LENS_CURVE > 0 then
+            local lens = photoLens((lastDriveState == "garage") and nil or lastElevation)
+            cmds[#cmds + 1] = string.format("%s %.6f", CVAR_LENS, lens)
+            lastApplied.lens = lens
+        end
+        scheduleExec(cmds)
     else
-        -- Restore the NEUTRAL LENS in the SAME batch as the metering switch
-        -- (field bug 2026-07-27 23:48): the restore used to ride the next
-        -- Update tick, but a close at world teardown (quitting the course
-        -- from inside photomode) has no armed Update: the session lens
-        -- (nudged to 15.28 that night) stayed in the process-global cvar
-        -- into the menus = "exposure never came back". The batch below is
-        -- world-independent; Update re-tunes once a course arms again.
+        -- Neutral lens in the same batch as the metering switch (field bug
+        -- 2026-07-27): a close at world teardown (quitting the course from
+        -- inside photomode) has no armed Update to ride, so the session lens
+        -- stayed in the process-global cvar into the menus ("exposure never
+        -- came back"). This batch is world-independent.
         scheduleExec({
             "r.EyeAdaptation.MethodOverride -1",
             string.format("%s %.6f", CVAR_LENS, NEUTRAL_LENS),
@@ -756,12 +682,11 @@ function LightCycle.SetPhotoExposureFreeze(on)
         on and {covered = photoCoveredLatch and "YES (indoor lens)" or nil} or nil)
 end
 
---- Alt+E family: exposure trim. dir > 0 = brighter step, dir < 0 =
---- darker. Live during a photo session (photoExpFrozen branch) AND in
---- the plain garage (garage branch; the garage look is cvar-driven, so
---- the same lens lever works there without photomode). Returns the new
---- step count and effective multiplier for the keybind log, nil when
---- neither context is active.
+--- Alt+E family: exposure trim. dir > 0 = brighter step, dir < 0 = darker.
+--- Live during a photo session and in the plain garage (the garage look is
+--- cvar-driven, so the same lens lever works there without photomode).
+--- Returns the new step count and effective multiplier for the keybind log,
+--- nil when neither context is active.
 function LightCycle.NudgePhotoExposure(dir)
     if photoExpFrozen then
         photoNudgeSteps = photoNudgeSteps + ((dir or 1) > 0 and 1 or -1)
@@ -791,10 +716,9 @@ function LightCycle.NudgePhotoExposure(dir)
     return nil
 end
 
---- Alt+G: toggle the dark look inside a photo session, or the garage's
---- own dark look outside one (the tester-render look, available in the
---- garage without photomode). Returns the new state, nil when neither
---- context is active.
+--- Alt+G: toggle the dark look inside a photo session, or the garage's own
+--- dark look outside one. Returns the new state, nil when neither context
+--- is active.
 function LightCycle.TogglePhotoDarkLook()
     if photoExpFrozen then
         photoDarkOn = not photoDarkOn
@@ -816,14 +740,13 @@ function LightCycle.TogglePhotoDarkLook()
 end
 
 -- ============== DISPLAY PROFILE (HDR vs SDR) ==============
--- The game lifts shadows 1.5x + global 1.2x for HDR displays only (BP_HDR
--- enables its grading component when GameUserSettings.IsHdrEnabled). The
--- config look tables are tuned on HDR on top of that lift; on SDR they
--- crush. Resolved ONCE per session on the first Update ("auto" reads the
--- live HDR output state; Config.LightCycle.DisplayProfile forces "hdr"/
--- "sdr"); the SDR profile swaps PP_OVERRIDES/BIAS_CURVE for the
--- Config.LightCycle.SDR tables. An in-session HDR toggle is NOT tracked
--- (restart to re-resolve).
+-- The game lifts shadows 1.5x + global 1.2x on HDR displays only (BP_HDR
+-- grades when GameUserSettings.IsHdrEnabled); the config look tables are
+-- tuned on top of that lift and crush on SDR. Resolved once per session on
+-- the first Update: "auto" reads the live HDR state and
+-- Config.LightCycle.DisplayProfile forces "hdr"/"sdr"; "sdr" swaps
+-- PP_OVERRIDES/BIAS_CURVE for the Config.LightCycle.SDR tables. An
+-- in-session HDR toggle is not tracked (restart to re-resolve).
 
 local DISPLAY_PROFILE_CFG = "auto"
 local SDR_TABLES = nil
@@ -850,12 +773,11 @@ local function finishDisplayProfile(prof, src)
     Log.Info(MODULE, "Display profile", {profile = prof, source = src})
 end
 
---- force=true resolves even when the HDR state is unreadable (falls back
---- to "hdr" = the historical look) so the PP one-shots never stall on it.
---- The HDR readback runs in a GT closure: until 2026-08-04 this was the
---- one remaining bare FindFirstOf + UFunction call on the 8 Hz async
---- tick (the wet_grip 3.8.0 crash class), retrying from mod boot while
---- worlds churn.
+--- force=true resolves even when the HDR state is unreadable (falls back to
+--- "hdr", the historical look) so the PP one-shots never stall on it. The
+--- readback runs in a GT closure: a bare FindFirstOf + UFunction call on the
+--- 8 Hz async tick, retrying from mod boot while worlds churn, was the
+--- wet_grip 3.8.0 crash class (fixed 2026-08-04).
 local function resolveDisplayProfile(force)
     if displayProfile then return end
     local prof = DISPLAY_PROFILE_CFG
@@ -958,7 +880,7 @@ function LightCycle.Init()
         end
     end)
 
-    -- PA mode lives OUTSIDE the LightCycle block (Config.PA, shared with
+    -- PA mode lives outside the LightCycle block (Config.PA, shared with
     -- main.lua): any non-stock mode makes the PA scene follow the elevation
     -- path instead of the garage constants.
     pcall(function()
@@ -986,10 +908,9 @@ function LightCycle.Init()
 end
 
 --- True when this module is the active exposure provider (keybinds/headlights
---- route here instead of the legacy exposure module). Checks the module toggle
---- too: consumers require() this file directly, bypassing main.lua's nil-ing,
---- so without the check a toggled-off (never-ticking) module would still
---- capture the Alt+D family and the headlight elevation provider.
+--- route here). Checks the module toggle too: consumers require() this file
+--- directly, bypassing main.lua's nil-ing, so a toggled-off module would
+--- otherwise still capture the Alt+D family and the headlight elevation provider.
 function LightCycle.IsActive()
     if not (isInitialized and enabled) then return false end
     local tg = Config.ModuleToggles
@@ -1044,10 +965,10 @@ function LightCycle.Update()
     lastCheckClock = now
 
     -- Garage / PA-menu worlds: neutral push (no sun there; stock adaptation
-    -- meters the garage fine by itself, this just clears Alt+Z/X/C leftovers).
-    -- EXCEPTION: the PA scene (validated own UDS/UDW; the garage never
-    -- validates) has a real sun; in PA continue/freeze mode it falls
-    -- through to the normal elevation path (armed by main's PA apply).
+    -- meters the garage fine, this only clears Alt+Z/X/C leftovers). Exception:
+    -- the PA scene (validated own UDS/UDW, unlike the garage) has a real sun,
+    -- so in PA continue/freeze mode it falls through to the elevation path
+    -- (armed by main's PA apply).
     if actors.IsInGarage and actors.IsInGarage() then
         local paScene = PA_FOLLOW and actors.IsInPAScene and actors.IsInPAScene()
         if not paScene then
@@ -1077,14 +998,13 @@ function LightCycle.Update()
     end
 
     -- Per-course pipeline one-shots (game thread) + their delayed readback.
-    -- The display profile MUST be settled before these fire (they consume
-    -- PP_OVERRIDES); force the fallback if auto-detect never resolved.
+    -- The display profile must settle first (they consume PP_OVERRIDES);
+    -- force the fallback if auto-detect never resolved.
     if not ppShotsApplied then
         if not displayProfile then
-            -- The auto probe queued at arm time may still be in flight
-            -- (fast UDS discovery): forcing the HDR fallback now would
-            -- first-caller-win over a real SDR result. Give the probe a
-            -- few Updates before forcing.
+            -- The auto probe may still be in flight (fast UDS discovery); a
+            -- forced HDR fallback now would first-caller-win over a real SDR
+            -- result, so give the probe a few Updates.
             if profileProbeInFlight and ppShotsProbeWait < 5 then
                 ppShotsProbeWait = ppShotsProbeWait + 1
                 return true
@@ -1110,8 +1030,8 @@ function LightCycle.Update()
         if ok then tod = v end
     end
 
-    -- Sun elevation: real vector when available, pseudo (clock) fallback until
-    -- the sign is calibrated / when the vector read fails.
+    -- Sun elevation: real vector when available, pseudo (clock) fallback when
+    -- the vector read fails.
     local elev = readSunElevation(uds, tod)
     if elev == nil then
         elev = pseudoElevation(tod)
@@ -1255,67 +1175,6 @@ function LightCycle.ResetSkylightTune()
     lastCheckClock = 0.0
     scheduleExec({ string.format("%s %.6f", CVAR_ROUGH, ROUGH_BASELINE) })
     Log.Info("SkylightTune", "RESET to curve")
-end
-
--- Alt+H exposure liveness test: toggle +2 EV on ALL of UDS's Exposure Bias
--- knobs (the proven native path). Screen brightens and holds while driving =
--- the UDS knob pipeline is alive. (Historic: this test identified UDS as the
--- per-tick AutoExposureBias writer, 2026-07-08.)
-local ppBiasOn = false
-function LightCycle.ToggleHDRDebug()   -- name kept for the keybind wiring
-    ppBiasOn = not ppBiasOn
-    local on = ppBiasOn
-    local run = function()
-        local actors = getActors()
-        if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
-            Log.Warn(MODULE, "UDS bias test skipped (world teardown)")
-            return
-        end
-        local uds = actors and actors.GetUDS and actors.GetUDS()
-        if not (uds and uds.IsValid and uds:IsValid()) then
-            Log.Warn(MODULE, "UDS bias test: no UDS")
-            return
-        end
-        local v = on and 2.0 or 0.0
-        local ok = pcall(function()
-            uds["Exposure Bias Day"] = v
-            uds["Exposure Bias Night"] = v
-            uds["Exposure Bias Cloudy"] = v
-            uds["Exposure Bias Foggy"] = v
-            uds["Exposure Bias Dusty"] = v
-        end)
-        Log.Info(MODULE, "UDS bias test " .. (on and "ON (+2 EV all scenarios)" or "OFF (0.0)"), {ok = ok})
-        if not on then
-            -- The test zeroed the knobs behind writeBiasKnobs' change gate;
-            -- drop the memo so the next Update re-applies the curve bias
-            -- (otherwise the shipped look stays un-applied until the next
-            -- elevation ramp or course reload).
-            lastBias = nil
-        end
-    end
-    if ExecuteInGameThread then
-        pcall(function() GT.Run(run) end)
-    else
-        run()
-    end
-end
-
-function LightCycle.GetStatus()
-    return {
-        initialized = isInitialized,
-        enabled = enabled,
-        armed = armed,
-        sunElevation = lastElevation,
-        sunVectorSign = SUN_VECTOR_SIGN,
-        lastApplied = lastApplied,
-        lastBias = lastBias,
-        execBatches = execBatches,
-        dropBatches = dropBatches,
-    }
-end
-
-function LightCycle.IsInitialized()
-    return isInitialized
 end
 
 --- Alias so the module can be ticked as either Tick() or Update().

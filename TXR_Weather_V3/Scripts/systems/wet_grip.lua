@@ -1,30 +1,25 @@
 -- TXR Weather Mod v3.0
 -- systems/wet_grip.lua
--- Dynamic wet grip: tire grip drops as the road gets wet (rain/snow) and recovers as it
--- dries. Reads live precipitation from Ultra Dynamic Weather and drives it into the
--- GLOBAL tire degradation table (DT_TireDegradationInfo). Because every car's tire model
--- reads that table, this:
---  , affects ALL cars, the player AND the AI rivals, and
---  , works in PA rival battles.
--- The global-tire-table grip approach is credited to Chrystales.
+-- Dynamic wet grip: tire grip drops as the road gets wet (rain/snow) and
+-- recovers as it dries. Live UDW precipitation drives the global tire
+-- degradation table (DT_TireDegradationInfo), which every car's tire model
+-- reads, so it covers the player, the AI rivals and PA battles. The
+-- global-tire-table approach is credited to Chrystales.
 --
--- How it works: each update it reads UDW "Rain" (0-10), smooths it into a wetness value
--- (rises fast, dries slowly), then writes each tire row's grip RATES as the cached dry
--- value * a wet factor. We cache the dry originals once, so the scaling is always from
--- the bone-dry baseline and never compounds; at wetness 0 the originals are written back.
+-- Each update reads UDW "Rain" (0-10), smooths it into a wetness value (rises
+-- fast, dries slowly) and writes each row's grip rates as cached dry value *
+-- wet factor. The dry originals are cached once, so scaling never compounds
+-- and wetness 0 writes the originals back. Only the grip rates are touched
+-- (longitudinal Max/Cliff/MinGripRate, lateral Max/Cliff/MinSideGripRate);
+-- tire life is left alone, and the table has no braking entry.
 --
--- Only the grip rates are touched (longitudinal: Max/Cliff/MinGripRate; lateral:
--- Max/Cliff/MinSideGripRate). Tire life and braking are left alone; the degradation
--- table has no braking entry, so wet braking isn't part of this method.
+-- Threading: precip read and smoothing on the async loop; table resolve and
+-- row writes marshalled onto the game thread through GT.Run.
 --
--- Threading: precip read + smoothing run on the async loop thread; resolving the data
--- table and writing its rows are marshalled onto the game thread via ExecuteInGameThread.
---
--- NOTE (verify in-game): the data-table edit is global and definitely takes on cars as
--- they spawn (so AI/PA battles get it). Whether an ALREADY-spawned car (e.g. the player
--- when rain starts mid-drive) picks up a live edit is decided in the game's tire code; if
--- the player doesn't feel rain live until a respawn, we'd add back a player-only setter
--- pass to complement this. Config.WetGrip.Debug logs each re-apply.
+-- Open question (verify in-game): the table edit takes on cars as they spawn;
+-- whether an already-spawned car (the player when rain starts mid-drive)
+-- picks up a live edit is decided in the game's tire code. If not, add a
+-- player-only setter pass. Config.WetGrip.Debug logs each re-apply.
 
 local WetGrip = {}
 
@@ -59,13 +54,12 @@ local dtHandle    = nil   -- cached data-table object
 
 local function valid(o) return o and o.IsValid and o:IsValid() end
 
---- The discovery cache is the ONLY source (2026-07-28 review): the old
---- FindFirstOf fallback was an ungated async world sweep, so it ran
---- against the dying world through every map teardown (the documented
---- native-AV class that pcall cannot catch) and polled forever in the
---- garage, where UDW never validates. Actors.GetUDW validates per call
---- and covers the course and the PA scene; nil simply means wetness
---- holds for the few seconds before discovery caches the actor.
+--- Discovery cache only (2026-07-28 review): a FindFirstOf fallback here was
+--- an ungated async sweep that ran against the dying world on every map
+--- teardown (native AV, pcall cannot catch it) and polled forever in the
+--- garage, where UDW never validates. Actors.GetUDW validates per call and
+--- covers the course and the PA scene; nil means wetness holds until
+--- discovery caches the actor.
 local function get_udw()
     local udw = Actors.GetUDW()
     if valid(udw) then return udw end
@@ -99,11 +93,10 @@ local function get_dt()
     return nil
 end
 
--- Scale the table's grip rates to (dry original * factor). The dry originals are
--- captured once per session by a WRITE-FREE sweep committed before any row is scaled:
--- a capture pass that dies partway leaves the table untouched, so a retry can never
--- re-capture already-scaled values as "dry" (which would compound the baseline).
--- Must run on the game thread. Returns true if the table was found and written.
+-- Scale the grip rates to dry original * factor. The dry originals come from a
+-- write-free sweep committed before any row is scaled, so a capture that dies
+-- partway leaves the table untouched and a retry can never re-capture scaled
+-- values as dry. Game thread only. Returns true if the table was written.
 local function apply_wet_to_dt(mainF, sideF)
     local dt = get_dt()
     if not dt then return false end
@@ -124,9 +117,8 @@ local function apply_wet_to_dt(mainF, sideF)
                 cache[tostring(rowName)] = orig
             end)
         end)
-        -- A zero-row "success" (table resolved pre-serialization, footgun
-        -- 11 class) must not latch an empty baseline: the scaling pass
-        -- would then no-op forever with the factors marked applied.
+        -- A zero-row "success" (table resolved pre-serialization, footgun 11)
+        -- must not latch an empty baseline: scaling would then no-op forever.
         if not ok or next(cache) == nil then return false end
         origRows = cache
     end
@@ -165,7 +157,7 @@ function WetGrip.Init()
 end
 
 -- Force a re-apply on course entry (incl. returning from PA) in case a level load reset
--- the table back to its cooked dry values. Does NOT touch the cached dry originals.
+-- the table back to its cooked dry values. Does not touch the cached dry originals.
 function WetGrip.OnCourseLoad()
     lastMainF, lastSideF = nil, nil
     -- Drop the cached table handle: never trust a UObject ref across a world
@@ -186,7 +178,7 @@ function WetGrip.Tick()
     local interval = (cfg.UpdateMs or 250) / 1000.0
     if (now - lastUpdate) < interval then return end
     lastUpdate = now
-    -- Smooth with the FIXED update period (not real elapsed) so the rise/dry-seconds
+    -- Smooth with the fixed update period (not real elapsed) so the rise/dry-seconds
     -- tuning stays calibrated and a long gap can't snap wetness in one jump.
     local dt = interval
 
@@ -222,7 +214,7 @@ function WetGrip.Tick()
 
     if type(ExecuteInGameThread) == "function" then
         GT.Run(function()
-            -- Re-check at RUN time: a queued closure can land mid-teardown.
+            -- Re-check at run time: a queued closure can land mid-teardown.
             -- Skipping is free: lastMainF stays stale, so the next tick
             -- still reads changed=true and re-applies.
             if Actors.IsDiscoverySuspended and Actors.IsDiscoverySuspended() then return end
@@ -237,17 +229,6 @@ function WetGrip.Tick()
             end
         end)
     end
-end
-
-function WetGrip.GetStatus()
-    return {
-        initialized = initialized,
-        enabled = enabled,
-        wetness = wet_current,
-        mainFactor = lastMainF,
-        sideFactor = lastSideF,
-        tableCached = origRows ~= nil,
-    }
 end
 
 return WetGrip

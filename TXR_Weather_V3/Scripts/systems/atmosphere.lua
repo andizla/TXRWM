@@ -23,7 +23,7 @@ local ENABLE_GOD_RAYS = true
 -- Auroras are a confirmed dead end in TXR: the Aurora_Clouds texture is not in
 -- the game's cook (runtime StaticLoadObject fails), so the 2D aurora shader has
 -- nothing to sample; UDS computes intensity happily but nothing renders. The
--- machinery below is kept for a future content-pipeline route. Default OFF.
+-- machinery below is kept for a future content-pipeline route. Default off.
 local ENABLE_AURORA = false
 local ENABLE_SECOND_CLOUD_LAYER = true
 
@@ -32,14 +32,13 @@ local AURORA_NIGHT_START = 1950  -- 19:30, aurora becomes visible
 local AURORA_NIGHT_END = 550     -- 05:30, aurora fades out
 local AURORA_MAX_INTENSITY = 1.5
 
--- City glow (Tokyo night ambiance): light pollution + night sky glow.
--- Ramped on the SUN'S ELEVATION (season-proof: the drifting in-game date
--- moves the sun events, a clock window aims wrong within days): glow rises
--- from CityGlowStartElev to full at CityGlowFullElev and holds a plateau
--- all night (real city glow does not dim toward midnight). The TOD night
--- window below is the fallback when no elevation is available (LightCycle
--- off / first seconds after load). Light pollution lights the cloud bases
--- from below; night sky glow adds a minimum ambient to the night sky.
+-- City glow (Tokyo night ambiance): light pollution lights the cloud bases
+-- from below, night sky glow adds a minimum ambient. Ramped on the sun's
+-- elevation (season-proof: the drifting in-game date moves the sun events, a
+-- clock window aims wrong within days): rises from CityGlowStartElev to full
+-- at CityGlowFullElev and holds all night (real city glow does not dim toward
+-- midnight). The TOD night window is the fallback when no elevation is
+-- available (LightCycle off / first seconds after load).
 local ENABLE_CITY_GLOW = true
 local LIGHT_POLLUTION_MAX = 1.0   -- peak light-pollution intensity at deep night
 local NIGHT_SKY_GLOW_MAX = 0.5    -- peak ambient night-sky glow
@@ -55,34 +54,26 @@ local SUN_SHAFT_THRESHOLD = {X = 6.0, Y = 2.5}  -- above the sky; stock 1.3/0.35
 local SUN_SHAFT_SCALE = {X = 0.15, Y = 0.10}   -- half stock; the extent knob
 local SUN_SHAFT_TINT = {R = 1.00, G = 0.92, B = 0.80, A = 1.0}
 
--- GOD RAY WEATHER GATE (2026-07-31). There are no crepuscular rays under a
--- solid deck, because there is no direct sun. UDS never works that out: Update
--- Low Priority Properties feeds Apply Light Shaft Settings the sun's forward
--- vector and nothing else (update_low.txt:130-132), and it reads the three
--- shaft properties as RAW instance variables rather than through Get Cached
--- Float, so they take no part in Change Weather transition blending either.
--- Result: full-strength streaks fanning over the road under heavy overcast,
--- which is the reported bug. So the mod gates them itself, on its own cloud
--- coverage (clouds_fog, 0-10): full shafts at or below GATE_CLEAR_CLOUD, none
--- at or above GATE_OVERCAST_CLOUD, smoothstep between.
---
--- WHY A RAMP AND NOT A THRESHOLD: UDS does no blending of its own here (see
--- above), so a hard flip would change the whole frame's shaft bloom in one
--- frame while every other weather property eases over 5-10 s. The ramp costs
--- nothing because the input is already smoothed over
--- Config.CloudsFog.PresetTransitionSeconds.
---
--- WHERE THE DEFAULTS LAND (preset cloudCoverage, systems/presets.lua):
---   Clear_Skies 0.5, Partly_Cloudy 2.0, Sand_Dust_Calm 2.0, Foggy 3.0 -> 1.00
---   Cloudy 4.0, Sand_Dust_Storm 4.0, Snow_Light 4.0                   -> 0.65
---   Rain_Light 5.0                                                    -> 0.10
---   Snow 5.5, Overcast 6.0, Rain 6.0, Snow_Blizzard 7.0,
---   Overcast_Heavy 7.5, Rain_Thunderstorm 8.0                         -> 0.00
--- Foggy staying at full is deliberate: rays through haze are the real thing.
--- NOTE this DISAGREES with volumetric_light_rays.lua's DISABLED_PRESETS, which
--- blocks Foggy and Rain_Light outright. That is not a bug: that gate belongs to
--- the Niagara cloud-ray system, which is dormant in TXR, and it is a
--- preset-name list rather than a coverage ramp. Do not "reconcile" them.
+-- God ray weather gate (2026-07-31). There are no crepuscular rays under a
+-- solid deck, but UDS never works that out: Update Low Priority Properties
+-- feeds Apply Light Shaft Settings the sun's forward vector and nothing else,
+-- and reads the three shaft properties as raw instance variables rather than
+-- through Get Cached Float, so they take no part in Change Weather blending
+-- either. Result: full-strength streaks under heavy overcast. The mod gates
+-- them on its own cloud coverage (clouds_fog, 0-10): full shafts at or below
+-- GATE_CLEAR_CLOUD, none at or above GATE_OVERCAST_CLOUD, smoothstep between.
+-- A ramp rather than a threshold because UDS blends nothing here: a hard flip
+-- would move the whole frame's shaft bloom in one frame while every other
+-- weather property eases over 5-10 s, and the input is already smoothed over
+-- Config.CloudsFog.PresetTransitionSeconds. Where the defaults land (preset
+-- cloudCoverage, systems/presets.lua): Clear_Skies 0.5, Partly_Cloudy 2.0,
+-- Sand_Dust_Calm 2.0 and Foggy 3.0 give 1.00; Cloudy 4.0, Sand_Dust_Storm 4.0
+-- and Snow_Light 4.0 give 0.65; Rain_Light 5.0 gives 0.10; Snow 5.5, Overcast
+-- 6.0, Rain 6.0, Snow_Blizzard 7.0, Overcast_Heavy 7.5 and Rain_Thunderstorm
+-- 8.0 give 0.00. Foggy at full is deliberate (rays through haze are real).
+-- This disagrees with volumetric_light_rays.lua's DISABLED_PRESETS on purpose:
+-- that list gates the dormant Niagara cloud-ray system by preset name. Do not
+-- reconcile them.
 local ENABLE_GOD_RAY_WEATHER_GATE = true
 local GATE_CLEAR_CLOUD = 3.0     -- at or below this: full shafts
 local GATE_OVERCAST_CLOUD = 5.5  -- at or above this: no shafts at all
@@ -112,36 +103,28 @@ local PROP_CLOUD_SHADOWS_INTENSITY_OVERCAST = "Cloud Shadows Intensity When Over
 local PROP_CLOUD_SHADOWS_SOFTNESS_SUNNY = "Cloud Shadows Softness When Sunny"
 local PROP_CLOUD_SHADOWS_SOFTNESS_OVERCAST = "Cloud Shadows Softness When Overcast"
 
--- God rays = the sun's screen-space light-shaft bloom. The names this module
--- used before 3.2.x ("Use Sun Light Shafts" / "Light Shaft Intensity") do NOT
--- exist in v1.5's UDS; those writes were silent no-ops. The real controls are
--- an enable bool, a (clear, overcast) FVector2D max-brightness pair, and a tint.
--- UDS fades the shafts with sun occlusion itself, so no per-tick drive is needed.
+-- God rays = the sun's screen-space light-shaft bloom: an enable bool, an
+-- FVector2D max-brightness pair and a tint. The pre-3.2.x names ("Use Sun
+-- Light Shafts", "Light Shaft Intensity") do not exist in v1.5, so those
+-- writes were silent no-ops. UDS fades the shafts with sun occlusion itself.
 local PROP_SUN_SHAFT_BLOOM  = "Enable Sun Light Shaft Bloom"
 local PROP_SUN_SHAFT_MAX    = "Sun Light Shaft Max Brightness"   -- FVector2D
 local PROP_SUN_SHAFT_THRESH = "Sun Light Shaft Bloom Threshold"  -- FVector2D
 local PROP_SUN_SHAFT_SCALE  = "Sun Light Shaft Bloom Scale"      -- FVector2D
 local PROP_SUN_SHAFT_TINT   = "Sun Light Shaft Tint Color"       -- FLinearColor
 
--- THE PAIRS INTERPOLATE ON SUN ELEVATION, X = high sun, Y = low sun. Settled
--- from the bytecode 2026-07-30: Update Low Priority Properties calls
---   Apply Light Shaft Settings(Sun_LightComponent, MaxBrightness, BloomThreshold,
---                              BloomScale, GetForwardVector(Sun World Rotation))
--- and that forward vector is the only selector. Cloud cover is NOT an input, so
--- UDS applies shafts at full strength under heavy overcast where there is no
--- direct sun at all. The old "(clear, overcast)" note in config was wrong.
---
--- WHICH KNOB DOES WHAT (UE light shaft bloom is a screen-space RADIAL BLUR from
--- the light's screen position; there is no distance parameter anywhere):
---   Max Brightness  intensity ceiling of the streaks
---   Bloom Threshold which pixels seed a streak (useless as a limiter here: an
---                   overcast HDR sky sits far above any sane threshold, which is
---                   why raising it 0.35 -> 0.7 changed nothing)
---   Bloom Scale     HOW FAR THE STREAKS EXTEND. This is the "rays fire too close
---                   to the car" knob, and the mod never wrote it until now.
--- Stock CDO values, kept as constants so every write below is ABSOLUTE (Setup()
--- runs per course load, and scaling off the live value only stays correct while
--- the UDS actor happens to be fresh).
+-- The pairs interpolate on sun elevation, X = high sun, Y = low sun (bytecode
+-- 2026-07-30: Apply Light Shaft Settings gets only the sun's forward vector as
+-- selector; cloud cover is not an input, so UDS applies full shafts under
+-- heavy overcast; the old "(clear, overcast)" note was wrong). UE light shaft
+-- bloom is a screen-space radial blur from the light's screen position with
+-- no distance parameter: Max Brightness is the streak intensity ceiling,
+-- Bloom Threshold selects the seed pixels (useless as a limiter, an overcast
+-- HDR sky sits far above any sane threshold, which is why 0.35 -> 0.7 changed
+-- nothing), Bloom Scale is how far the streaks extend (the "rays fire too
+-- close to the car" knob). Stock CDO values kept as constants so every write
+-- is absolute (Setup runs per course load; scaling off the live value only
+-- stays correct while the UDS actor happens to be fresh).
 local STOCK_SUN_SHAFT_MAX   = {X = 0.35, Y = 0.25}
 local STOCK_SUN_SHAFT_SCALE = {X = 0.30, Y = 0.225}
 
@@ -165,27 +148,22 @@ local targetAuroraIntensity = 0.0
 local auroraOn = false
 local lastAuroraWritten = nil
 
--- Aurora construction gate: the 2D aurora only renders after UDS's
--- "Static Properties - Aurora" has baked it into the sky material. Just flipping
--- "Use Auroras" (what this module did originally) never constructs it, which is
--- why auroras silently failed to show. Constructed once per course, deferred
--- past BeginPlay like the stars/nebula/rainbow modules.
+-- Aurora construction gate: the 2D aurora only renders after UDS's aurora
+-- Static Properties bake; flipping "Use Auroras" alone never constructs it.
+-- Constructed once per course, deferred past BeginPlay like stars/rainbow.
 local auroraStaticApplied = false
 local auroraSettleTicks = 0
 
--- In-game verify 2026-07-01: construct + night_on both succeeded but nothing
--- rendered. Two suspects: (a) the sky material bakes "Aurora Intensity" at
--- static-apply time (the night_on call fired at ~0.02, i.e. invisible), so we
--- now re-bake as the ramp climbs; (b) the aurora texture / sky mode; the
--- diagnostics readback below settles that from the log.
+-- In-game verify 2026-07-01: construct + night_on succeeded, nothing rendered.
+-- Suspects: the sky material bakes "Aurora Intensity" at static-apply time (the
+-- night_on call fired at ~0.02), hence the re-bake as the ramp climbs; and the
+-- aurora texture / sky mode, which the diagnostics readback settles from the log.
 local lastStaticIntensity = 0.0
 local auroraDiagTicks = 0
 
--- God ray weather gate state. lastShaftFactor is the change gate for the
--- writes, lastShaftLogged the coarser change gate for the Info line (a 10 s
--- preset ramp produces ~40 writes; logging every one would bury the file).
--- shaftBaseAsserted covers the entry paths that never run Setup;
--- shaftDiagTicks arms the one-shot component readback.
+-- God ray gate state: lastShaftFactor gates the writes, lastShaftLogged the
+-- Info line more coarsely (a 10 s ramp is ~40 writes); shaftBaseAsserted
+-- covers entry paths that never run Setup; shaftDiagTicks arms the readback.
 local lastShaftFactor = nil
 local lastShaftLogged = nil
 local shaftBaseAsserted = false
@@ -243,12 +221,12 @@ local function writeUDS(propName, value)
     return ok
 end
 
+local auroraTexPreloaded = false
+
 --- Push the aurora state and run UDS's own static init for it, on the game thread.
 --- Uses the 2D aurora (sky-material shader, same rendering family as the stars,
 --- so it composites in TXR) rather than the volumetric one (a whole sky mode).
 --- @param reason string logged so the construct / night transitions are traceable
-local auroraTexPreloaded = false
-
 local function applyAuroraStatic(reason)
     lastStaticIntensity = currentAuroraIntensity
     local function doApply()
@@ -257,9 +235,8 @@ local function applyAuroraStatic(reason)
         local uds = actors.GetUDS()
         if not uds then return end
 
-        -- Make sure the 2D aurora texture is in memory before UDS's static
-        -- apply tries to resolve its soft-ref (defined below, near the
-        -- diagnostics that test whether it is cooked at all)
+        -- Preload the 2D aurora texture (the AURORA_TEXTURE_PATH asset defined
+        -- below) so UDS's static apply can resolve its soft-ref
         if not auroraTexPreloaded then
             auroraTexPreloaded = true
             pcall(function() StaticLoadObject(nil, nil, "/Game/UltraDynamicSky/Textures/Clouds/Aurora_Clouds.Aurora_Clouds") end)
@@ -296,11 +273,10 @@ end
 -- (the cook does strip some UDS assets), the aurora draws nothing.
 local AURORA_TEXTURE_PATH = "/Game/UltraDynamicSky/Textures/Clouds/Aurora_Clouds.Aurora_Clouds"
 
---- One-shot readback of everything that could gate the aurora, for the log
---- (2026-07-01 run: writes land, UDS computes 0.89, skyMode 0, still invisible).
---- Now also force-loads the aurora texture: if the load succeeds, re-apply the
---- static properties with the texture guaranteed in memory; if UDS's own
---- soft-ref resolve was failing quietly, this IS the fix, not just a probe.
+--- One-shot readback of everything that could gate the aurora (2026-07-01 run:
+--- writes land, UDS computes 0.89, skyMode 0, still invisible). Also force-loads
+--- the texture and re-applies the static properties with it in memory: if UDS's
+--- own soft-ref resolve was failing quietly, this is the fix, not just a probe.
 local function logAuroraDiagnostics()
     local function doDiag()
         local actors = getActors()
@@ -339,8 +315,7 @@ local function logAuroraDiagnostics()
             texForcedLoadOk = tostring(texLoads),
         })
 
-        -- Texture is (now) in memory: re-run UDS's static apply so its
-        -- SoftObjectToObject resolve can pick it up this time
+        -- Texture in memory: re-run the static apply so the soft-ref resolves
         if texWasLoaded or texLoads then
             local fn = nil
             pcall(function() fn = uds[FN_STATIC_AURORA] end)
@@ -382,10 +357,9 @@ local function nightFactor01(tod)
         -- Evening side: 1950 to 2400
         nightDepth = ((tod - AURORA_NIGHT_START) / (2400 - AURORA_NIGHT_START)) * 0.5  -- 0 to 0.5
     else
-        -- Morning side: 0 to 550, continuing 0.5 -> 1.0 so sin() carries the
-        -- midnight peak smoothly down to zero at night's end (the old
-        -- "1.0 - ..." form inverted this: a crash to 0 at the midnight wrap,
-        -- then RISING glow toward dawn with a hard cut at the window edge)
+        -- Morning side: 0 to 550, continuing 0.5 to 1.0 so sin() carries the
+        -- midnight peak down to zero at night's end (the old one-minus form
+        -- crashed to 0 at the wrap, then rose toward dawn with a hard cut)
         nightDepth = 0.5 + ((tod / AURORA_NIGHT_END) * 0.5)  -- 0.5 to 1.0
     end
 
@@ -430,9 +404,9 @@ local function cityGlowFactor01(tod)
     return nightFactor01(tod)
 end
 
---- Scale a numeric UDS property from its stock value (read -> multiply -> write).
---- Setup runs once per course on a freshly spawned sky actor, so this never
---- compounds. Skips silently if the property can't be read.
+--- Scale a numeric UDS property from its stock value (read, multiply, write).
+--- Setup runs once per course on a fresh sky actor, so this never compounds.
+--- Skips silently if the property cannot be read.
 local function scaleUDS(propName, mult)
     if not mult or mult == 1.0 then return end
     local old = tonumber(readUDS(propName))
@@ -453,13 +427,11 @@ local function getCloudsFog()
 end
 
 --- Cloud coverage the shaft gate rides, 0-10, or nil if nothing is tracked yet.
---- Order matters. CloudsFog's SMOOTHED value first: it already carries the
---- preset ramp, and that is where all of this gate's smoothing comes from. The
---- preset TARGET second, because CloudsFog.ApplyPreset sets it from inside
---- Weather.Apply, so it is already populated when Setup runs in the course entry
---- burst while cloudCurrent is still nil (CloudsFog.Tick runs later in the same
---- tick, and OnCourseUnload now nils it so it cannot be last course's weather).
---- BOTH paths are plain Lua table reads: no UObject is touched.
+--- CloudsFog's smoothed value first (it carries the preset ramp, this gate's
+--- only smoothing); the preset target second, because CloudsFog.ApplyPreset
+--- sets it from inside Weather.Apply, so it exists when Setup runs in the
+--- course entry burst while cloudCurrent is still nil (OnCourseUnload nils it,
+--- so it cannot be last course's weather). Plain Lua table reads, no UObject.
 --- @return number|nil
 local function gateCloudCoverage()
     local cf = getCloudsFog()
@@ -475,9 +447,8 @@ local function gateCloudCoverage()
 end
 
 --- Shaft strength for a cloud coverage: 1.0 full, 0.0 none, smoothstep between
---- the two thresholds. An unknown cloud value returns 1.0, i.e. exactly the
---- behaviour of the version this replaces, so the gate can never make a boot
---- worse than it already was.
+--- the thresholds. An unknown cloud value returns 1.0 (the pre-gate behaviour),
+--- so the gate can never make a boot worse than it was.
 --- @param cloud number|nil 0-10
 --- @return number 0..1
 local function shaftWeatherFactor(cloud)
@@ -487,27 +458,23 @@ local function shaftWeatherFactor(cloud)
         return (cloud >= GATE_OVERCAST_CLOUD) and 0.0 or 1.0
     end
     local t = (cloud - GATE_CLEAR_CLOUD) / (GATE_OVERCAST_CLOUD - GATE_CLEAR_CLOUD)
-    -- Snap near the endpoints: the smoothed cloud input approaches a
-    -- preset sitting EXACTLY on a gate edge (Snow = 5.5) asymptotically
-    -- and never crosses it, which would park the factor at ~0.01 forever:
-    -- residual faint streaks under a closed deck, and the exact-endpoint
-    -- write clause in Tick could never fire (2026-08-04, code review).
+    -- Snap near the endpoints: the smoothed input approaches a preset sitting
+    -- exactly on a gate edge (Snow = 5.5) asymptotically, which would park the
+    -- factor at ~0.01 forever (faint streaks under a closed deck, and Tick's
+    -- exact-endpoint write clause could never fire; 2026-08-04).
     if t <= 0.005 then return 1.0 end
     if t >= 0.995 then return 0.0 end
     return 1.0 - (t * t * (3.0 - 2.0 * t))
 end
 
---- The three shaft properties that do NOT ride the weather gate: the enable
---- bool, the threshold pair and the tint.
---- WHY IT IS NOT SETUP-ONLY: the restored-from-PA branch in main.lua sets
---- initialWeatherApplied WITHOUT calling Atmosphere.Setup, so on that entry path
---- a fresh UDS actor keeps the stock bool (false) and UDS then skips Apply Light
---- Shaft Settings entirely, which would make the gate's own writes inert on
---- exactly the path it is meant to cover. Tick calls this on the first on-course
---- tick of any course that never ran Setup, well inside real_sun's 32-tick
---- settle gate, so the bool is in place before "Static Properties - Sun" pushes
---- it to the component.
---- CALLER THREAD: async 8 Hz tick. Property writes only, via writeUDS.
+--- The three shaft properties outside the weather gate: enable bool, threshold
+--- pair, tint. Not Setup-only: the restored-from-PA branch in main.lua sets
+--- initialWeatherApplied without calling Atmosphere.Setup, so a fresh UDS actor
+--- would keep the stock bool (false) and UDS would skip Apply Light Shaft
+--- Settings, leaving the gate's writes inert on that path. Tick calls this on
+--- the first on-course tick of such a course, inside real_sun's 32-tick settle
+--- gate, so the bool is in place before the sun bake pushes it to the
+--- component. Caller thread: async 8 Hz tick; property writes only, via writeUDS.
 local function assertShaftBase()
     writeUDS(PROP_SUN_SHAFT_BLOOM, true)
     if SUN_SHAFT_THRESHOLD then
@@ -517,21 +484,19 @@ local function assertShaftBase()
     end
     writeUDS(PROP_SUN_SHAFT_TINT, SUN_SHAFT_TINT)
     shaftBaseAsserted = true
-    shaftDiagTicks = 80   -- ~10 s at 8 Hz: lands AFTER real_sun's 32-tick bake
+    shaftDiagTicks = 80   -- ~10 s at 8 Hz: lands after real_sun's 32-tick bake
 end
 
---- Push the two gated pairs, scaled by the weather factor.
---- ABSOLUTE writes off the configured base (itself absolute off the CDO stock),
---- never scaled off the live value, so repeat calls are idempotent and a factor
---- climbing back to 1.0 restores full strength exactly.
---- BOTH knobs are scaled, deliberately: Max Brightness dims the streaks and
---- Bloom Scale retracts them, so at factor 0 both pairs are {0,0} and nothing
---- draws whichever term the light-shaft shader multiplies.
---- The enable bool is NOT the off switch: UDS only SKIPS the shaft apply when it
---- is false, it never clears the component, so flipping it off would FREEZE the
---- last streaks on screen instead of removing them.
---- CALLER THREAD: async 8 Hz tick. Property writes only, via writeUDS, which
---- re-resolves the UDS ref on every call. No UFunction, nothing to marshal.
+--- Push the two gated pairs scaled by the weather factor. Absolute writes off
+--- the configured base (itself absolute off the CDO stock), never off the live
+--- value, so repeat calls are idempotent and a factor back at 1.0 restores full
+--- strength exactly. Both knobs scale on purpose: Max Brightness dims the
+--- streaks and Bloom Scale retracts them, so at factor 0 both pairs are {0,0}
+--- and nothing draws whichever term the shader multiplies. The enable bool is
+--- not the off switch: UDS only skips the apply when it is false and never
+--- clears the component, so flipping it off would freeze the last streaks on
+--- screen. Caller thread: async 8 Hz tick; property writes only, via writeUDS
+--- (re-resolves the UDS ref per call). No UFunction, nothing to marshal.
 --- @param cloud number|nil for the log only
 --- @param factor number 0..1
 --- @param reason string "setup", "pa-entry" or "tick"
@@ -565,14 +530,12 @@ local function writeSunShafts(cloud, factor, reason)
     end
 end
 
---- One-shot proof that the shaft numbers actually reach the sun light, armed to
---- fire ~10 s after the base assert so real_sun's "Static Properties - Sun" bake
---- has already run. If compEnabled reads false here, nothing this module writes
---- can reach the screen and the streaks have another source entirely; if the
---- pairs read back as our gated values, the write path is proven and only the
---- numbers are in question.
---- MARSHALLED: component property reads are UObject touches, which the tick
---- thread must never do. Every ref is re-resolved inside the closure.
+--- One-shot proof that the shaft numbers reach the sun light, ~10 s after the
+--- base assert so real_sun's sun bake has run. compEnabled=false here means
+--- nothing this module writes can reach the screen (the streaks have another
+--- source); pairs reading back as the gated values prove the write path.
+--- Marshalled: component reads are UObject touches, which the tick thread must
+--- never do; every ref is re-resolved inside the closure.
 local function logShaftComponent()
     local function doRead()
         local actors = getActors()
@@ -644,10 +607,9 @@ function Atmosphere.Init()
             ENABLE_CITY_GLOW = Config.Atmosphere.EnableCityGlow
         end
         if Config.Atmosphere.LightPollutionMax ~= nil then
-            -- HARD CLAMP at 1.0: star intensity carries (1 - pollution) in
+            -- Hard clamp at 1.0: star intensity carries (1 minus pollution) in
             -- the sky material (decompiled formula), so anything above 1.0
-            -- renders stars as black dots. The config comment warns; this
-            -- enforces it.
+            -- renders stars as black dots.
             LIGHT_POLLUTION_MAX = math.max(0.0, math.min(1.0, Config.Atmosphere.LightPollutionMax))
         end
         if Config.Atmosphere.NightSkyGlowMax ~= nil then
@@ -724,12 +686,10 @@ function Atmosphere.Setup()
     end
 
     -- God rays: enable the sun's light-shaft bloom, brighten it from stock and
-    -- tint it warm. One-shot; UDS drives shaft visibility with sun occlusion.
+    -- tint it warm; UDS drives shaft visibility with sun occlusion. This covers
+    -- the first apply of a course; Tick keeps the gate live afterwards and
+    -- re-asserts the base on any entry path that skipped this function.
     if ENABLE_GOD_RAYS then
-        -- Assert the enable bool, threshold and tint, then push the two gated
-        -- pairs through the cloud gate. THIS COVERS THE FIRST APPLY OF A COURSE;
-        -- Tick keeps the gate live afterwards and re-asserts the base on any
-        -- entry path that skipped this function.
         assertShaftBase()
         local setupCloud = gateCloudCoverage()
         writeSunShafts(setupCloud, shaftWeatherFactor(setupCloud), "setup")
@@ -786,9 +746,8 @@ function Atmosphere.Tick()
         auroraSettleTicks = 0
         auroraOn = false
         lastAuroraWritten = nil
-        -- Drop the shaft state too: the next course gets a fresh UDS actor at
-        -- stock values, and the restored-from-PA entry path skips Setup, so Tick
-        -- has to re-assert and re-push there.
+        -- Drop the shaft state too: the next course has a fresh UDS actor at
+        -- stock values, and the restored-from-PA path skips Setup.
         lastShaftFactor = nil
         lastShaftLogged = nil
         shaftBaseAsserted = false
@@ -799,22 +758,17 @@ function Atmosphere.Tick()
     -- Don't run during PA
     if State.IsPAFrozen and State.IsPAFrozen() then return end
 
-    -- GOD RAY WEATHER GATE. Deliberately ABOVE the time-of-day guards below:
-    -- the gate has nothing to do with the clock, and a nil TOD must not strand
-    -- the shafts at whatever strength they were last left on. The cost is that
-    -- these UDS writes now happen on early-course ticks where Tick used to
-    -- early-return; both the course guard and the PA guard are upstream, so
-    -- teardown gating is unchanged.
-    -- THREAD: async 8 Hz loop. gateCloudCoverage reads plain Lua state, and
-    -- assertShaftBase/writeSunShafts only write UDS properties through writeUDS,
-    -- which re-resolves the actor each call. No UFunction, nothing marshalled,
-    -- the same shape as the city-glow drive at the end of this function. The one
-    -- call that DOES touch component objects, logShaftComponent, marshals.
+    -- God ray weather gate, above the time-of-day guards on purpose: it has
+    -- nothing to do with the clock, and a nil TOD must not strand the shafts at
+    -- their last strength (the course and PA guards upstream keep teardown
+    -- gating unchanged). Thread: async 8 Hz loop; gateCloudCoverage reads Lua
+    -- state and the writes go through writeUDS (re-resolves the actor per
+    -- call), like the city-glow drive below. logShaftComponent, the one call
+    -- that touches component objects, marshals.
     if ENABLE_GOD_RAYS then
         if not shaftBaseAsserted then
-            -- Course that never ran Setup (restored from PA). Without this the
-            -- enable bool is stock false and UDS skips the shaft apply outright,
-            -- so the gate's own writes would be inert on this exact path.
+            -- Course that never ran Setup (restored from PA): without this the
+            -- enable bool is stock false and UDS skips the shaft apply outright.
             assertShaftBase()
             local cloud = gateCloudCoverage()
             writeSunShafts(cloud, shaftWeatherFactor(cloud), "pa-entry")
@@ -867,9 +821,8 @@ function Atmosphere.Tick()
                 writeUDS(PROP_AURORA_INTENSITY, currentAuroraIntensity)
                 lastAuroraWritten = currentAuroraIntensity
             end
-            -- If the material bakes intensity at static-apply time, the night_on
-            -- call happened at ~0.02 (invisible). Re-bake as the ramp climbs
-            -- (a couple of extra calls per transition at most).
+            -- If the material bakes intensity at static-apply time the night_on
+            -- call was at ~0.02; re-bake as the ramp climbs (a couple of calls).
             if math.abs(currentAuroraIntensity - lastStaticIntensity) > 0.5 then
                 applyAuroraStatic("ramp")
             end
@@ -889,10 +842,6 @@ function Atmosphere.Tick()
             end
         end
     end
-
-    -- (God rays are one-shot in Setup now: UDS fades the shaft bloom with sun
-    -- occlusion itself, so the old per-tick intensity drive (which wrote a
-    -- nonexistent property anyway) is gone.)
 
     -- City glow: light pollution + night sky glow, ramped on sun elevation
     -- (TOD-window fallback inside cityGlowFactor01)
@@ -922,12 +871,11 @@ function Atmosphere.GetCityGlowFactor()
     return currentCityGlow
 end
 
---- Live night-sky-glow nudge (Alt+K family). Field model 2026-07-18: the
---- star layer's rendered luminance CLAMPS below a glow-lifted sky (no
---- star lever can out-bright it; color multipliers only promote fainter
---- map stars = more equally-dark dots), so star visibility is won by
---- lowering THIS background. The Tick change gate pushes the new level
---- on the next pass automatically.
+--- Live night-sky-glow nudge (Alt+K family). Field model 2026-07-18: the star
+--- layer's rendered luminance clamps below a glow-lifted sky (no star lever
+--- can out-bright it; color multipliers only promote fainter map stars), so
+--- star visibility is won by lowering this background. The Tick change gate
+--- pushes the new level on the next pass.
 --- @param dir number +1 = more glow (fewer stars), -1 = less glow (stars cut through)
 function Atmosphere.NudgeNightGlow(dir)
     local new = NIGHT_SKY_GLOW_MAX + dir * 0.1
@@ -939,41 +887,6 @@ function Atmosphere.NudgeNightGlow(dir)
         max = string.format("%.2f", new),
         applied_now = string.format("%.2f", currentCityGlow * new),
     })
-end
-
---- Get current aurora intensity
---- @return number
-function Atmosphere.GetAuroraIntensity()
-    return currentAuroraIntensity
-end
-
---- Check if aurora is currently active
---- @return boolean
-function Atmosphere.IsAuroraActive()
-    return currentAuroraIntensity > 0.01
-end
-
---- Get status for debugging
---- @return table
-function Atmosphere.GetStatus()
-    return {
-        initialized = isInitialized,
-        auroraIntensity = currentAuroraIntensity,
-        auroraTarget = targetAuroraIntensity,
-        auroraConstructed = auroraStaticApplied,
-        cloudShadowsEnabled = ENABLE_CLOUD_SHADOWS,
-        godRaysEnabled = ENABLE_GOD_RAYS,
-        auroraEnabled = ENABLE_AURORA,
-        secondCloudLayerEnabled = ENABLE_SECOND_CLOUD_LAYER,
-        cityGlowEnabled = ENABLE_CITY_GLOW,
-        cityGlow = currentCityGlow,
-    }
-end
-
---- Check if module is initialized
---- @return boolean
-function Atmosphere.IsInitialized()
-    return isInitialized
 end
 
 return Atmosphere

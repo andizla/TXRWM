@@ -181,18 +181,6 @@ function TimeOfDay.IsPaused()
     return animate == false
 end
 
---- Toggle pause state
---- @return boolean newPausedState
-function TimeOfDay.TogglePause()
-    if TimeOfDay.IsPaused() then
-        TimeOfDay.Resume()
-        return false
-    else
-        TimeOfDay.Pause()
-        return true
-    end
-end
-
 -- Photomode time freeze: photomode.lua calls this on session open/close.
 -- Uses the Animate Time of Day bool (same lever as Pause/Resume), which is
 -- orthogonal to Simulation Speed, so the transitions module's slow-window
@@ -209,7 +197,10 @@ function TimeOfDay.SetPhotoFreeze(on)
     if on == photoFrozen then return end
     photoFrozen = on
     if on then
-        photoWasPaused = TimeOfDay.IsPaused()
+        -- An unreadable UDS (routine at the open instant, see the retry note
+        -- below) reads as "not paused", which made the close resume a manual
+        -- Alt+T pause; the module's own mode is the reliable record.
+        photoWasPaused = (currentSpeedMode == "paused") or TimeOfDay.IsPaused()
         if not photoWasPaused then
             local ok = writeUDSProperty(PROP_ANIMATE_TOD, false)
             Log.Info(MODULE, "Photo freeze ON (time)", {ok = ok})
@@ -251,7 +242,7 @@ local function photoFreezeRetryTick()
     end
 end
 
---- Clear the freeze latch WITHOUT touching UDS. For the course-entry
+--- Clear the freeze latch without touching UDS. For the course-entry
 --- init path: a teardown-close that never delivered SetPhotoFreeze(false)
 --- would otherwise strand the latch and silently disable the next
 --- shoot's freeze (SetPhotoFreeze early-outs on on==photoFrozen).
@@ -286,41 +277,6 @@ function TimeOfDay.CycleSpeed()
     
     TimeOfDay.SetSpeed(newSpeed)
     return newMode
-end
-
---- Get fraction of day (0.0-1.0)
---- @return number
-function TimeOfDay.GetFracDay()
-    local tod = TimeOfDay.GetCurrentTOD()
-    if tod then
-        return (tod % 2400) / 2400
-    end
-    return 0.5
-end
-
---- Check if currently in dawn window
---- @param tod number|nil Optional TOD value, reads current if nil
---- @return boolean
-function TimeOfDay.IsInDawnWindow(tod)
-    tod = tod or TimeOfDay.GetCurrentTOD()
-    if not tod then return false end
-    return tod >= Config.TimeOfDay.DawnStart and tod <= Config.TimeOfDay.DawnEnd
-end
-
---- Check if currently in dusk window
---- @param tod number|nil Optional TOD value, reads current if nil
---- @return boolean
-function TimeOfDay.IsInDuskWindow(tod)
-    tod = tod or TimeOfDay.GetCurrentTOD()
-    if not tod then return false end
-    return tod >= Config.TimeOfDay.DuskStart and tod <= Config.TimeOfDay.DuskEnd
-end
-
---- Check if in any transition window (dawn or dusk)
---- @param tod number|nil
---- @return boolean
-function TimeOfDay.IsInTransitionWindow(tod)
-    return TimeOfDay.IsInDawnWindow(tod) or TimeOfDay.IsInDuskWindow(tod)
 end
 
 --- Get time period name
@@ -421,13 +377,13 @@ function TimeOfDay.BaselineEnforceTick(dt)
     if baselineEnforceAccum < 3.0 then return end
     baselineEnforceAccum = 0
     
-    -- Skip speed enforcement only while Transitions is ACTUALLY controlling
-    -- speed. Transitions slow-time applies in NORMAL mode only (fast-forward
-    -- is exempt by design), so deferring unconditionally left NOBODY writing
-    -- speed when a course loaded INTO a slow window in fast mode: the sky kept
-    -- its spawn-default Simulation Speed (~1.0 = real-time crawl) until a
-    -- manual Alt+T, the "stuck clock" bug (2026-07-06/07 episodes, TOD frozen
-    -- at 1739 and 530 for 70-90s).
+    -- Skip speed enforcement only while Transitions actually controls speed.
+    -- Its slow-time applies in normal mode only (fast-forward is exempt by
+    -- design), so deferring unconditionally left nobody writing speed when a
+    -- course loaded into a slow window in fast mode: the sky kept its
+    -- spawn-default Simulation Speed (~1.0, a real-time crawl) until a manual
+    -- Alt+T (the "stuck clock" bug, 2026-07-06/07, TOD frozen at 1739 and
+    -- 530 for 70-90 s).
     if currentSpeedMode == "normal" then
         local Transitions = nil
         pcall(function() Transitions = require("systems.transitions") end)
@@ -483,27 +439,12 @@ function TimeOfDay.Tick(dt)
     TimeOfDay.BaselineEnforceTick(dt)
 end
 
---- Get status for debugging
---- @return table
-function TimeOfDay.GetStatus()
-    return {
-        currentTOD = lastKnownTOD,
-        formattedTime = TimeOfDay.FormatTime(lastKnownTOD),
-        period = TimeOfDay.GetPeriod(lastKnownTOD),
-        speedMode = currentSpeedMode,
-        speed = TimeOfDay.GetSpeed(),
-        isPaused = TimeOfDay.IsPaused(),
-        nightOnly = Config.TimeOfDay.NightOnly or false,
-        shortCycle = Config.TimeOfDay.DebugShortCycle or false,
-    }
-end
-
 --- Apply starting time of day if configured
 function TimeOfDay.OnCourseLoad()
     -- Fresh course, fresh photo-freeze latch (mirrors light_cycle's
-    -- metering-latch reset). NOTE: with persistence enabled main only
-    -- calls this when restore FAILS; the restore-success path resets the
-    -- latch via TimeOfDay.ResetPhotoFreeze() in main's setup block.
+    -- metering-latch reset). With persistence enabled main only calls this
+    -- when restore fails; the restore-success path calls ResetPhotoFreeze
+    -- from main's setup block.
     TimeOfDay.ResetPhotoFreeze()
 
     if Config.TimeOfDay.StartingTOD then

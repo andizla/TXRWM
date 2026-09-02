@@ -1,16 +1,13 @@
 -- TXR Weather Mod v3.0
 -- systems/real_sun.lua
--- Real-world solar simulation experiment.
--- Phase 0 (always on): probe; logs the sky's stock Simulation-category values
--- once per course (grep "RealSun"), so we know what TXR ships before writing.
--- Phase 1 (Config.RealSun.Enabled): switch UDS to Simulate Real Sun/Moon with
--- Tokyo coordinates and a pinned date: astronomically correct sunrise/sunset
--- times and sun path for that date. Settle-gated one-shot per course on the
--- game thread (the proven recipe). The sky actor is recreated every course, so
--- disabling the experiment needs no revert.
---
--- Property names verified against the v1.5 dump (shared/types/Ultra_Dynamic_Sky.lua).
--- Deliberately does NOT touch "Simulate Real Stars"; the Stars module owns it.
+-- Real-world solar simulation. Phase 0 (always on): probe the sky's stock
+-- Simulation-category values once per course (grep "RealSun"). Phase 1
+-- (Config.RealSun.Enabled): Simulate Real Sun/Moon with Tokyo coordinates and
+-- a pinned date, so sunrise/sunset and the sun path are correct for that date;
+-- settle-gated one-shot per course on the game thread. The sky actor is
+-- recreated every course, so disabling needs no revert. Property names
+-- verified against the v1.5 dump (shared/types/Ultra_Dynamic_Sky.lua). Never
+-- touches "Simulate Real Stars" (the Stars module owns it).
 
 local RealSun = {}
 
@@ -52,7 +49,6 @@ local enabled = false
 local cfg = nil
 local settleTicks = 0
 local doneThisCourse = false
-local lastProbe = nil
 
 local function getActors()
     if not Actors then
@@ -76,7 +72,7 @@ local function readProp(uds, prop)
     return v
 end
 
---- Write an absolute value; records "old->new" in the changes table.
+--- Write an absolute value; records old and new in the changes table.
 --- @return boolean true when the stored value actually moved (numbers get
 --- a small tolerance: the cook stores float32, so an exact compare against
 --- a Lua double would read every lat/long write as a change forever)
@@ -96,24 +92,19 @@ local function setAbs(uds, prop, value, changes)
     end
 end
 
---- Phase 1 property writes ONLY (no probes, no sweeps): lat/long/time zone/
---- date/north yaw plus the Simulate flags, then one Hard Reset Cache.
---- WHY THE RESET: UDS reads Year/Month/Day/Time Zone/Daylight Savings Time LIVE
---- inside "Approximate Real Sun Moon and Stars" (bytecode export 27), which runs
---- only from "Cache Sun and Moon Orientation", i.e. cache group 0. "Monitor for
---- Changes" (export 197) watches Time of Day and the composite weather vectors
---- but has NO date detector, so a bare date write is invisible to UDS's dirty
---- machinery: it lands whenever group 0 next happens to refresh and then blends
---- via lerp(Old, New, timer). "Hard Reset Cache" (export 182) is
---- Cache Properties(-1, true), a no-blend full refill, so the new sun lands on
---- the next frame instead.
---- The Static Properties - Sun / - Moon bakes are deliberately NOT here: export
---- 287 writes only light-shaft bloom, bloom tint, three Sky Sphere MID scalars
---- and transmission, so it cannot move the sun at all, and the Moon bake
---- resolves soft texture refs (the documented BeginPlay access-violation
---- family). Both stay behind the settle gate where the other modules put that
---- class of call.
---- CALLER MUST ALREADY BE ON THE GAME THREAD (Hard Reset Cache is a UFunction).
+--- Phase 1 property writes only: lat/long/time zone/date/north yaw plus the
+--- Simulate flags, then one Hard Reset Cache. UDS reads Year/Month/Day/Time
+--- Zone/DST live inside "Approximate Real Sun Moon and Stars" (export 27),
+--- which runs only from cache group 0, and "Monitor for Changes" (export 197)
+--- has no date detector, so a bare date write lands whenever group 0 next
+--- refreshes and then blends via lerp(Old, New, timer); "Hard Reset Cache"
+--- (export 182) is Cache Properties(-1, true), a no-blend full refill, so the
+--- new sun lands next frame. The Sun and Moon Static Properties bakes stay
+--- behind the settle gate: export 287 only writes light-shaft bloom, tint,
+--- three Sky Sphere MID scalars and transmission (it cannot move the sun), and
+--- the Moon bake resolves soft texture refs (the BeginPlay access-violation
+--- family). Caller must already be on the game thread (Hard Reset Cache is a
+--- UFunction).
 --- @param uds userdata valid UDS actor
 --- @param pass string "entry" or "settled"; tags the log line
 local function applySunSimulation(uds, pass)
@@ -129,20 +120,18 @@ local function applySunSimulation(uds, pass)
     dirty = setAbs(uds, PROP_DAY, cfg.Day, changes) or dirty
     dirty = setAbs(uds, PROP_NORTH_YAW, cfg.NorthYaw, changes) or dirty
     dirty = setAbs(uds, PROP_APPLY_DST, false, changes) or dirty
-    -- SimulateSun=false writes the flag OFF (stock ships it ON): the sun
-    -- becomes a pure TOD curve, independent of the drifting calendar.
-    -- Dev-stage lever for reproducible leak-sun TODs; see Config.RealSun.
+    -- SimulateSun=false writes the flag off (stock ships it on): the sun becomes
+    -- a pure TOD curve, independent of the drifting calendar. Dev lever for
+    -- reproducible leak-sun TODs; see Config.RealSun.
     dirty = setAbs(uds, PROP_SIM_SUN, cfg.SimulateSun ~= false, changes) or dirty
     if cfg.RealMoon ~= false then
         dirty = setAbs(uds, PROP_SIM_MOON, true, changes) or dirty
     end
 
-    -- Hard Reset Cache is a no-blend full refill. The ENTRY pass needs it
-    -- unconditionally (a bare date write is invisible to UDS's dirty
-    -- machinery, see the header). The SETTLED pass lands ~4s into the
-    -- course, i.e. mid-flight of the default 5s weather transition, where
-    -- an unconditional refill visibly snaps the blend: fire it there only
-    -- if a value actually moved (2026-08-04, code review).
+    -- The entry pass needs the no-blend refill unconditionally (a bare date
+    -- write is invisible to UDS's dirty machinery). The settled pass lands ~4s
+    -- in, mid-flight of the default 5s weather transition, where a refill
+    -- visibly snaps the blend, so it fires only if a value moved (2026-08-04).
     if pass == "entry" or dirty then
         local reset = nil
         pcall(function() reset = uds["Hard Reset Cache"] end)
@@ -161,7 +150,10 @@ local function runOnGameThread()
     local uds = getUDS()
     if not uds then return end
 
-    -- Phase 0: probe the stock values (runs whether or not the experiment is on)
+    -- Phase 0 probe (runs whether or not the experiment is on). Every line is
+    -- Log.Debug, so the ~40 property reads, three FindFirstOf calls and the
+    -- PostProcessVolume walk are skipped at the release INFO level.
+    if Log.IsDebugEnabled and Log.IsDebugEnabled() then
     local probe = {
         sim_sun    = tostring(readProp(uds, PROP_SIM_SUN)),
         sim_moon   = tostring(readProp(uds, PROP_SIM_MOON)),
@@ -176,9 +168,8 @@ local function runOnGameThread()
         sys_time   = tostring(readProp(uds, PROP_SYS_TIME)),
         apply_dst  = tostring(readProp(uds, PROP_APPLY_DST)),
     }
-    -- UDS's own computed sun events for the current date (data for aligning
-    -- fallback windows and for the seasons feature; the elevation driver does
-    -- not need them).
+    -- UDS's own computed sun events for the date (data for aligning fallback
+    -- windows and for the seasons feature; the elevation driver needs neither).
     pcall(function()
         local fn = uds["Current Sunrise Event Time"]
         if fn then probe.sunrise_event = tostring(fn(uds)) end
@@ -188,13 +179,11 @@ local function runOnGameThread()
         if fn then probe.sunset_event = tostring(fn(uds)) end
     end)
 
-    lastProbe = probe
     Log.Debug(MODULE, "Sim probe (stock)", probe)
 
     -- Exposure-surface probe: UDS's native exposure system. Since 3.4.0 the
-    -- Exposure Bias knobs ARE the live output path (light_cycle bias mode,
-    -- MethodOverride removed from engine.ini); this probe records the stock
-    -- values per course as the reference baseline.
+    -- Exposure Bias knobs are the live output path (light_cycle bias mode,
+    -- MethodOverride removed from engine.ini); stock values = the baseline.
     local expProbe = {
         apply_exposure = tostring(readProp(uds, "Apply Exposure Settings")),
         metering_mode  = tostring(readProp(uds, "Exposure Metering Mode")),
@@ -243,9 +232,8 @@ local function runOnGameThread()
     Log.Debug(MODULE, "Light probe (stock)", lightProbe)
 
     -- Game PP-component probe: the course sky / course weather / HDR actors
-    -- carry their own composited PostProcess components, the devs' exposure
-    -- plumbing (Curve_ExposureCompensation lives in the same folder). Reads
-    -- each component's exposure-relevant settings once per course.
+    -- carry composited PostProcess components, the devs' exposure plumbing
+    -- (Curve_ExposureCompensation lives in the same folder).
     for _, cls in ipairs({"BP_CourseSky_C", "BP_CourseWeather_C", "BP_HDR_C"}) do
         pcall(function()
             local a = FindFirstOf(cls)
@@ -279,11 +267,9 @@ local function runOnGameThread()
         end)
     end
 
-    -- TXR post-process volume IDENTIFICATION (2026-07-08 v2): all volumes,
-    -- with world position + bounds (for mapping onto known tunnel locations
-    -- and for a future camera-containment signal: tunnel rain kill + tunnel
-    -- exposure trim) and a WIDE override sweep (reports which settings each
-    -- volume actually overrides, the authored purpose).
+    -- TXR post-process volume identification (2026-07-08): every volume with
+    -- world position + bounds (for mapping onto tunnel locations and a future
+    -- camera-containment signal) and a wide override sweep (the authored purpose).
     pcall(function()
         local vols = FindAllOf("PostProcessVolume")
         if not vols or #vols == 0 then
@@ -309,15 +295,13 @@ local function runOnGameThread()
                 local loc = v:K2_GetActorLocation()
                 if loc then info.loc = string.format("%.0f,%.0f,%.0f", loc.X, loc.Y, loc.Z) end
             end)
-            -- Bounds v4: Origin/BoxExtent are OUT-PARAMS; UE4SS fills a
-            -- passed-in table keyed by param name (proven convention:
-            -- GetDisplayVehicle/out_vehicle in headlights.lua). The earlier
-            -- reads took Lua RETURN values that never existed. Same logic as
-            -- light_cycle's ppPollGT.
+            -- Bounds: Origin/BoxExtent are out-params; UE4SS fills a passed-in
+            -- table keyed by param name (GetDisplayVehicle/out_vehicle in
+            -- headlights.lua). Earlier reads took return values that never existed.
             local function takeExtent(oT, xT)
                 if not xT then return end
                 -- Shapes probed in separate pcalls: a missing field on
-                -- userdata ERRORS rather than returning nil.
+                -- userdata errors rather than returning nil.
                 local extent
                 pcall(function() extent = xT.BoxExtent end)
                 if extent == nil then extent = xT end
@@ -371,6 +355,7 @@ local function runOnGameThread()
             Log.Debug(MODULE, "PP volume [" .. i .. "]", info)
         end
     end)
+    end -- IsDebugEnabled
 
     -- Date pin (policy 2026-07-07: pinnable, default off = seasons drift).
     -- The game itself persists the drifting date across sessions, so unpinned
@@ -383,26 +368,21 @@ local function runOnGameThread()
         Log.Info(MODULE, "Date pinned", changes)
     end
 
-    -- (Interior-system probe REMOVED 2026-07-09: verdict was final on
-    -- 2026-07-07: UDS's interior/occlusion family is dead in TXR's cook,
-    -- the cache never moves even force-enabled. Tunnels are handled by the
-    -- PP-volume containment system in light_cycle instead.)
+    -- (Interior-system probe removed 2026-07-09: UDS's interior/occlusion
+    -- family is dead in TXR's cook, the cache never moves even force-enabled;
+    -- tunnels are handled by systems/tunnels.lua instead.)
 
     if not enabled then return end
 
-    -- Phase 1: normally already applied by RealSun.OnCourseLoad in the course
-    -- entry burst. The writes are absolute, so re-running here is idempotent and
-    -- keeps this path working on its own if the entry call was ever missed. A
-    -- pass=settled line that AGAIN reads a changed Month means game code
-    -- rewrites the calendar after entry, and the single entry shot would have to
-    -- become a short re-assert.
+    -- Phase 1: normally already applied by RealSun.OnCourseLoad in the entry
+    -- burst; the writes are absolute, so this re-run is idempotent. A settled
+    -- line that again reads a changed Month would mean game code rewrites the
+    -- calendar after entry (the entry shot would then need a short re-assert).
     applySunSimulation(uds, "settled")
 
-    -- Bake: have UDS re-read its sun/moon static setup. Stays on the settle gate
-    -- deliberately: Static Properties - Sun (export 287) only touches
-    -- light-shaft bloom, bloom tint, three Sky Sphere MID scalars and
-    -- transmission, so it has nothing to do with sun POSITION, and the Moon bake
-    -- resolves soft texture refs. No reason to drag either into the entry burst.
+    -- Bake: have UDS re-read its sun/moon static setup. Stays on the settle
+    -- gate (see applySunSimulation: the Sun bake cannot move the sun and the
+    -- Moon bake resolves soft texture refs).
     for _, fnName in ipairs(STATIC_FNS) do
         local fn = nil
         pcall(function() fn = uds[fnName] end)
@@ -441,20 +421,19 @@ function RealSun.Init()
     return true
 end
 
---- Course entry: apply ONLY the sun-simulation properties, immediately.
---- TXR ships Simulate Real Sun ON, so the sun's position depends on the DATE as
---- much as on Time Of Day, and UDS has no change detector for the date. Landing
---- the pinned date 4-5 s after the TOD write (behind this module's own settle
---- gate) meant the first rendered sky used the GAME's drifting calendar and then
---- snapped: at a dusk TOD the wrong date puts the sun below the horizon, which
---- is the "night for a couple of seconds, then it flips" report. A morning TOD
---- hides it completely, because the sun is above the horizon on either date.
+--- Course entry: apply only the sun-simulation properties, immediately. TXR
+--- ships Simulate Real Sun on, so the sun's position depends on the date as
+--- much as on Time Of Day, and UDS has no date change detector. Landing the
+--- pinned date 4-5 s after the TOD write (behind the settle gate) meant the
+--- first sky used the game's drifting calendar and then snapped: at a dusk
+--- TOD the wrong date puts the sun below the horizon ("night for a couple of
+--- seconds, then it flips"); a morning TOD hides it, sun up on either date.
 function RealSun.OnCourseLoad()
     if not initialized then return end
     if not enabled then return end
     local function applyGT()
-        -- Re-resolve UDS INSIDE the closure: never carry an actor ref across a
-        -- thread hop (IsValid can read true on freed memory). getUDS returns nil
+        -- Re-resolve UDS inside the closure: never carry an actor ref across a
+        -- thread hop (IsValid can read true on freed memory); getUDS returns nil
         -- once discovery is suspended, so this is teardown-safe by construction.
         local uds = getUDS()
         if not uds then return end
@@ -467,31 +446,26 @@ function RealSun.OnCourseLoad()
     end
 end
 
+--- Course edge (main.lua's debounced lifecycle): re-arm the one-shot.
+function RealSun.OnCourseUnload()
+    settleTicks = 0
+    doneThisCourse = false
+end
+
 --- Per-tick: probe (+apply when enabled) once per course, after the settle gate.
 function RealSun.Tick()
     if not initialized then return end
 
+    -- Actors missing = a blip or a real exit: no re-arm here (a photomode
+    -- open used to re-run the probe sweep); OnCourseUnload does it
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then
-        settleTicks = 0
-        doneThisCourse = false
-        return
-    end
+    if not actors or not actors.IsOnCourse() then return end
 
     settleTicks = settleTicks + 1
     if not doneThisCourse and settleTicks >= SETTLE_TICKS then
         doneThisCourse = true
         run()
     end
-end
-
-function RealSun.GetStatus()
-    return {
-        initialized = initialized,
-        enabled = enabled,
-        doneThisCourse = doneThisCourse,
-        lastProbe = lastProbe,
-    }
 end
 
 return RealSun

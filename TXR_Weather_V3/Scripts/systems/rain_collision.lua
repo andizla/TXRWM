@@ -1,35 +1,31 @@
 -- TXR Weather Mod v3.0
 -- systems/rain_collision.lua
--- Native rain occlusion, production form (v9 TARGETED, 2026-07-28).
--- HISTORY OF THE SHAPE: v7 flipped the whole world rain-solid (worked,
--- but AI broke); v8 moved rain to private channel 25 to drop the
--- Visibility writes (rain died globally: containing bodies, envelopes/
--- sight spheres/sky enclosures, default-Block undefined channels; the
--- containment fan fixed that but mid-air rain loss remained) and the AI
--- STILL broke on both channels = the mass ENABLEMENT was the AI vector,
--- not the responses. v9 therefore targets ONLY the meshes that matter
--- and makes them invisible to the game:
---   1. TARGETED FLIP: disabled mesh components whose static-mesh asset
+-- Native rain occlusion, production form (v9 targeted, 2026-07-28).
+-- Why targeted: v7 flipped the whole world rain-solid and v8 moved rain
+-- to private channel 25 without the Visibility writes; the AI broke on
+-- both, so the mass enablement was the AI vector, not the responses (v8
+-- also killed rain globally under containing bodies until the
+-- containment fan). v9 flips only the meshes that matter and hides them
+-- from the game:
+--   1. Targeted flip: disabled mesh components whose static-mesh asset
 --      path matches TargetPatterns (tunnel linings "tnl", Mesh_tn
 --      interior sets, bridge/overpass decks "_br": every confirmed
---      occluder hit in the field digs) get CollisionTraceFlag=3
+--      occluder in the field digs) get CollisionTraceFlag=3
 --      (ComplexAsSimple; live readback proved 3) + QueryOnly enable.
---   2. STEALTH BODIES: each flipped body gets ObjectType=25 (a
---      game-undefined channel: AI object-space queries, obstacle/sight/
---      road-gap, can never include it) + Ignore-ALL responses + Block on
---      the rain channel alone. Rain channel traces hit it; every other
---      query and overlap in the game passes through.
+--   2. Stealth bodies: each flipped body gets ObjectType=25 (a
+--      game-undefined channel no AI object-space query can include) +
+--      Ignore-all responses + Block on the rain channel alone. Rain
+--      traces hit it; every other query and overlap passes through.
 --   3. UDW's 'Weather Particle Collision Channel' is enforced at
 --      Config.RainCollision.Channel (default 3 = stock Visibility,
---      field-verified correct occlusion; 22+ = the private-channel
---      experiment, which also arms the containment fan + shape
---      neutralization machinery below). Write + 'Update Static
---      Variables' = the proven full re-bake.
--- Streaming re-application (16:53/17:06/17:07 field sequence: cells that
--- stream in AFTER a pass are un-flipped): the pass re-runs on a cadence
--- while the weather is wet, is idempotent (already-enabled components
--- are skipped after one cheap read), and fires immediately on rain
--- start. Dry sessions cost one property read per enforcement tick.
+--      field-verified; 22+ = the private-channel experiment, which also
+--      arms the containment fan and shape neutralization below). Write +
+--      'Update Static Variables' = the proven full re-bake.
+-- Cells that stream in after a pass are un-flipped (16:53/17:06/17:07
+-- field sequence), so the pass re-runs on a cadence while wet, is
+-- idempotent (enabled components skip after one cheap read), and fires
+-- at once on rain start. Dry sessions cost one property read per
+-- enforcement tick.
 
 local RainCollision = {}
 
@@ -51,57 +47,53 @@ local CHANNEL = 3           -- ECollisionChannel index for rain traces
 local REAPPLY_S = 20.0      -- streamed-cell re-pass cadence while wet
 local SETTLE_S = 3.0        -- course-arm settle before the first pass
 local ENFORCE_S = 2.0       -- UDW channel enforcement cadence (cheap read)
+-- Car sweep cadence: the panel/probe flip needs the pawn once per pawn, so
+-- after the first pawn is processed the sweep drops to a 30 s safety net (a
+-- new pawn in the same world, e.g. a race retry, is caught within that)
+local CAR_SWEEP_FIRST_S = 2.0
+local CAR_SWEEP_SETTLED_S = 30.0
+local carSweepLast = 0.0
+local carSweepInterval = CAR_SWEEP_FIRST_S
 local FIX_SHADOW_LEAK = false  -- sun-leak fix; permanent shipping feature, config default true (see processCompGT)
--- 4.0.0 REHEARSAL SWITCH (Config.RainCollision.CtfWrite, default true =
--- shipping behavior). false = the pass never writes BodySetup
--- CollisionTraceFlag and relies on the pak-baked ComplexAsSimple instead:
--- exactly the planned 4.0.0 module shape. Field discriminator: with the
--- test paks installed, occlusion works ONLY where a pak covers the mesh
--- (preCtf3 counts those); an enabled target whose BodySetup still lacks
--- CTF shows up in ctfMissing= and rains through = the visible negative
--- control. Flip back to true to restore the self-sufficient module.
+-- Config.RainCollision.CtfWrite (default true = shipping behavior).
+-- false = the pass never writes BodySetup CollisionTraceFlag and relies
+-- on the pak-baked ComplexAsSimple instead (the 4.0.0 rehearsal): with
+-- the test paks installed, occlusion works only where a pak covers the
+-- mesh (preCtf3 counts those); an enabled target whose BodySetup still
+-- lacks CTF shows up in ctfMissing= and rains through.
 local CTF_WRITE = true
--- (The legacy BarelyCollide envelope flip, Config.RainCollision.PlayerCar,
--- was removed in the pre-4.0.0 dead-code pass: superseded by PlayerCarBody,
--- which occludes on the tight BaseBody panels instead of the oversized
--- envelope. History in HANDOFF.md.)
--- ONE-BOOT PROBE (Config.RainCollision.PlayerCarProbe, default false):
--- the BarelyCollide flip alone produced no occlusion (2026-08-11 field),
--- and the AE86 sun-probe hit proved vehicle BaseBody comps DO answer
--- channel traces. Probe mode flips ch3 to Block on EVERY enabled
--- StaticMeshComponent the pawn owns and logs each one: if rain then
--- sheds on the car, the logged list names the working component and the
--- shipped feature narrows to it. Ch3 IS stock Visibility, so during a
--- probe boot watch for camera/HUD oddities; that risk is why this is a
+-- Config.RainCollision.PlayerCarProbe (default false): flips the rain
+-- channel to Block on every enabled StaticMeshComponent the pawn owns and
+-- logs each one, so a boot with rain shedding on the car names the
+-- working component. Channel 3 is stock Visibility, so watch for
+-- camera/HUD oddities during a probe boot; that risk is why this is a
 -- probe and not the feature.
 local PLAYER_CAR_PROBE = false
--- PLAYER-CAR BODY OCCLUSION (Config.RainCollision.PlayerCarBody,
--- 2026-08-12): the probe proved UDW rain paths DO collide with
--- pawn-owned blockers (splashes + rings on the flipped hitbox envelope,
--- floating ~10cm over the roof: the envelope is oversized). The right
--- surface is BaseBody: the tight visual body mesh, per-car automatic
--- sizing, and AI vehicles already run it collision-ENABLED (the AE86
--- sun-probe hit), so enabling the player's matches the game's own
--- state. Full v9 stealth recipe: QueryOnly + ObjectType 25 +
--- ignore-all + Block rain only: paths end ON the paint.
+-- Config.RainCollision.PlayerCarBody (2026-08-12): the probe proved UDW
+-- rain paths collide with pawn-owned blockers (splashes and rings on the
+-- flipped hitbox envelope, floating ~10cm over the roof because the
+-- envelope is oversized). The right surface is BaseBody: the tight visual
+-- body mesh, sized per car, and AI vehicles already run it
+-- collision-enabled (the AE86 sun-probe hit), so enabling the player's
+-- matches the game's own state.
 local PLAYER_CAR_BODY = false
 -- Shadow-roster meshes shipping CastShadow=false never cast regardless
 -- of two-sided flags; test key forces them on (see processCompGT).
 local FORCE_CAST_SHADOW = false
 local DEBUG = false
--- Lua patterns matched against each disabled mesh component's STATIC MESH
--- asset full name: tunnel linings/pieces ("tnl"), the Mesh_tn interior-set
--- folders, and bridge/overpass deck pieces ("_br" suffix; the trailing
--- "%." / "$" anchor it to the asset name end, so "_brk"-style names never
--- match). Extend from field data via Config.RainCollision.TargetPatterns.
--- HARD CONSTRAINT: this list feeds the COLLISION block, and mass collision
--- enablement is the proven AI breaker (v7/v8 field failures, both
--- channels). Keep it to the v9 trio unless a confirmed rain-through spot
--- names a new asset. Shadow-only families go in SHADOW_PATTERNS below.
+-- Lua patterns matched against each disabled mesh component's static
+-- mesh asset full name: tunnel linings ("tnl"), the Mesh_tn interior-set
+-- folders, and bridge/overpass decks ("_br"; the "%." / "$" anchors pin
+-- it to the asset name end, so "_brk"-style names never match). Extend
+-- via Config.RainCollision.TargetPatterns. Hard constraint: this list
+-- feeds the collision block, and mass collision enablement is the proven
+-- AI breaker (v7/v8, both channels), so keep it to the v9 trio unless a
+-- confirmed rain-through spot names a new asset. Shadow-only families go
+-- in SHADOW_PATTERNS.
 local TARGET_PATTERNS = { "tnl", "Mesh_tn", "_br%.", "_br$" }
--- Patterns for the sun-leak SHADOW flip only (broad structural roster:
--- walls/kerbs/sidewalks/aprons). Rendering flags only, never collision,
--- so breadth is safe here. Config.RainCollision.ShadowFixPatterns.
+-- Sun-leak shadow flip only (broad structural roster: walls/kerbs/
+-- sidewalks/aprons). Rendering flags, never collision, so breadth is safe.
+-- Config.RainCollision.ShadowFixPatterns.
 local SHADOW_PATTERNS = TARGET_PATTERNS
 
 -- ============== STATE ==============
@@ -171,9 +163,9 @@ end
 
 -- ============== INTERNAL: UDW channel enforcement (game thread) ==============
 
---- Keep UDW's particle collision channel on the private channel. Cheap
---- steady state (one property read); writes + re-bakes only when the live
---- value differs (fresh course instance, or CoolConsoleCommands' warmup
+--- Keep UDW's particle collision channel at CHANNEL. Cheap steady state
+--- (one property read); writes + re-bakes only when the live value
+--- differs (fresh course instance, or CoolConsoleCommands' warmup
 --- re-constructing UDW state mid-course). The re-bake restarts rain
 --- particles, so it must never run redundantly.
 local function enforceChannelGT()
@@ -215,18 +207,16 @@ local probeDonePawns = {}
 -- Panel-route state: pawns whose body panels are already flipped
 local panelDonePawns = {}
 
--- Body-panel mesh families (Lua patterns on the SHORT mesh name).
--- Ordered so the cheap literal prefixes come first; _EF_ and SM_Hit are
--- excluded by the explicit rejects below, not by pattern gymnastics.
+-- Body-panel mesh families (Lua patterns on the short mesh name); _EF_
+-- and SM_Hit are excluded by the rejects below.
 local PANEL_PATTERNS = {
     "^SM_Body_", "^SM_BN_", "^SM_FB_", "^SM_RB_",
     "^SM_SS_", "^SM_RS_", "^SM_Window_", "^SM_RHL_",
 }
--- SM_Aura_Body rejected 2026-08-12 same-night: it is an INFLATED ghost
--- shell (outline/aura effect mesh), and flipping it recreated the
--- floating-plane artifact a few cm off the paint (field: rings on an
--- invisible plane + door hits only where the shell does not wrap).
--- SM_Hit = the even bigger envelope, same disease.
+-- SM_Aura_Body rejected 2026-08-12: an inflated ghost shell (outline
+-- effect mesh); flipping it recreated the floating-plane artifact a few
+-- cm off the paint (field: rings on an invisible plane, door hits only
+-- where the shell does not wrap). SM_Hit is the even bigger envelope.
 local PANEL_REJECTS = { "_EF_", "EF$", "^SM_Hit", "^SM_Aura", "DriverModel" }
 
 local function isPanelMesh(short)
@@ -241,14 +231,13 @@ end
 
 --- Flip the rain response on every pawn-owned body-panel SMC, once per
 --- pawn instance. Runs in the GT closure like the probe sweep.
-local function playerCarPanelsGT(pawn)
+local function playerCarPanelsGT(pawn, comps)
     local pawnAddr = nil
     pcall(function() pawnAddr = pawn:GetAddress() end)
     if not pawnAddr or panelDonePawns[pawnAddr] then return end
     panelDonePawns[pawnAddr] = true
     local flipped, enabled, suppressed = 0, 0, 0
     pcall(function()
-        local comps = FindAllOf("StaticMeshComponent")
         if type(comps) ~= "table" then return end
         for _, c in ipairs(comps) do
             if validRef(c) then
@@ -280,12 +269,11 @@ local function playerCarPanelsGT(pawn)
                         if wrote then flipped = flipped + 1 end
                     elseif short and (short:find("^SM_Hit")
                             or short:find("^SM_Aura")) then
-                        -- COUNTER-FLIP the inflated envelopes (10cm-proud
-                        -- shells): if one is enabled and blocking the
-                        -- rain channel (stock state unknowable from old
-                        -- logs: the probe only logged what it CHANGED),
-                        -- it eats the paths before the real panels can.
-                        -- Force its rain response to Ignore.
+                        -- Counter-flip the inflated envelopes (10cm-proud
+                        -- shells): one that is enabled and blocking the
+                        -- rain channel (stock state unknown: the probe
+                        -- only logged what it changed) eats the paths
+                        -- before the real panels can. Force Ignore.
                         local resp = nil
                         pcall(function() resp = c:GetCollisionResponseToChannel(CHANNEL) end)
                         if resp and resp ~= 0 then
@@ -303,17 +291,15 @@ local function playerCarPanelsGT(pawn)
     })
 end
 
---- PROBE sweep (PLAYER_CAR_PROBE): flip ch3 Block on every enabled SMC
---- the current pawn owns, once per pawn instance. FindAllOf runs inside
---- the GT closure that called us, matching the pass's own pattern.
-local function playerCarProbeGT(pawn)
+--- Probe sweep (PLAYER_CAR_PROBE): flip the rain channel to Block on
+--- every enabled SMC the current pawn owns, once per pawn instance.
+local function playerCarProbeGT(pawn, comps)
     local pawnAddr = nil
     pcall(function() pawnAddr = pawn:GetAddress() end)
     if not pawnAddr or probeDonePawns[pawnAddr] then return end
     probeDonePawns[pawnAddr] = true
     local flipped = 0
     pcall(function()
-        local comps = FindAllOf("StaticMeshComponent")
         if type(comps) ~= "table" then return end
         for _, c in ipairs(comps) do
             if validRef(c) then
@@ -354,13 +340,11 @@ local function playerCarProbeGT(pawn)
     Log.Info(MODULE, "CarProbe pawn sweep done", { flipped = flipped })
 end
 
---- One response write on the pawn's BarelyCollide component (see the
---- PLAYER_CAR note at the top). Runs on the enforce cadence; the resp
---- read short-circuits once applied, so the steady state is one cheap
---- UFunction read per 2s. Never touches enablement or object type: the
---- envelope keeps its stock near-miss behavior (object-space overlaps
---- are per-channel-independent of the rain response).
-local function playerCarGT()
+--- Worker for the car routes (probe, body panels): resolves the pawn on
+--- the game thread and hands it, with the async-fetched component array,
+--- to whichever routes are on. Each route runs once per pawn, so after
+--- the first pawn the steady state is one pawn lookup per car sweep.
+local function playerCarGT(comps)
     local actors = getActors()
     if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
         return
@@ -370,45 +354,42 @@ local function playerCarGT()
         local pc = UEH and UEH.GetPlayerController and UEH.GetPlayerController()
         local pawn = pc and pc.Pawn
         if not (pawn and pawn.IsValid and pawn:IsValid()) then return end
-        -- (2026-08-12 evening bug: this function is the worker for ALL
-        -- three car features; the Tick gate below must arm it when ANY
-        -- of them is on. The first PlayerCarBody boot silently did
-        -- nothing because the gate only checked PLAYER_CAR.)
-        if PLAYER_CAR_PROBE then playerCarProbeGT(pawn) end
-        -- PANEL-FAMILY route (user design 2026-08-12, from the mesh
-        -- catalog: the visible body panels are the right rain surface).
-        -- Flip every pawn-owned SMC whose MESH belongs to a body-panel
-        -- family: Body/Aura_Body shell, BN bonnet, FB/RB bumpers, SS
-        -- skirts, RS spoiler, Window. The convention holds across the
-        -- whole Car tree, addons included. EXCLUDED on purpose: SM_Hit
-        -- (the oversized envelope: the floating-ring artifact) and _EF_
-        -- effect cards (emissive glows, not surfaces). Recipe per
-        -- panel = the minimal one: enable QueryOnly with zeroed
-        -- responses when disabled stock, then Block the rain channel;
-        -- never ObjectType, never BodySetup (shared assets).
+        carSweepInterval = CAR_SWEEP_SETTLED_S   -- pawn seen: safety-net cadence from here
+        -- (The Tick gate must arm this worker when any car route is on:
+        -- the first PlayerCarBody boot, 2026-08-12, did nothing because
+        -- the gate checked a single flag.)
+        if PLAYER_CAR_PROBE then playerCarProbeGT(pawn, comps) end
+        -- Panel-family route (2026-08-12, from the mesh catalog: the
+        -- visible body panels are the right rain surface): every
+        -- pawn-owned SMC whose mesh is a Body shell, BN bonnet, FB/RB
+        -- bumper, SS skirt, RS spoiler or Window (the convention holds
+        -- across the whole Car tree, addons included). Excluded: SM_Hit
+        -- (the oversized envelope, the floating-ring artifact) and _EF_
+        -- effect cards (emissive glows, not surfaces). Recipe per panel:
+        -- enable QueryOnly with zeroed responses when disabled stock, then
+        -- Block the rain channel; never ObjectType, never BodySetup
+        -- (shared assets).
         if PLAYER_CAR_BODY then
-            pcall(function() playerCarPanelsGT(pawn) end)
+            pcall(function() playerCarPanelsGT(pawn, comps) end)
         end
     end)
 end
 
 -- ============== INTERNAL: containment fan (game thread) ==============
 
---- THE NO-RAIN KILLER CLASS (2026-07-28 17:49 field: zero rain anywhere
---- on channel 25 despite a healthy apply): a body whose SIMPLE collision
---- CONTAINS the car (section-envelope volumes, AI sight spheres, sky
---- enclosures) and whose profile default-Blocks the undefined private
---- channel. UDW's per-particle ceiling probe (8000 uu up) then hits it at
---- distance ~0 from every spawn point = "roof overhead, everywhere" =
---- all rain dies. Such bodies ignore Visibility by AUTHORED response
---- (stock rain never saw them), but nothing authored the high channels.
---- Fix: an upward object-type trace fan from the car; any hit at
---- containment distance (< 50 uu; real geometry, being ComplexAsSimple
---- trimesh, hits at true surface distances) that Blocks the private
---- channel gets that ONE response flipped to Ignore. Nothing in the game
---- queries the channel, so the write is invisible to every other system.
---- Runs every enforce tick while wet (21 traces, trivial); each write
---- logs the culprit's name = the diagnosis and the fix in one motion.
+--- Containment fan (private channels only). 2026-07-28 17:49 field: zero
+--- rain anywhere on channel 25 despite a healthy apply, because a body
+--- whose simple collision contains the car (section-envelope volumes, AI
+--- sight spheres, sky enclosures) default-Blocks an undefined channel;
+--- UDW's per-particle ceiling probe (8000 uu up) then hits it at
+--- distance ~0 from every spawn point and all rain dies. Such bodies
+--- ignore Visibility by authored response, but nothing authored the high
+--- channels. Fix: an upward object-type trace fan from the car; any hit
+--- at containment distance (< 50 uu; real ComplexAsSimple geometry hits
+--- at true surface distances) that Blocks the private channel gets that
+--- one response flipped to Ignore. Nothing in the game queries the
+--- channel, so the write is invisible to every other system. 21 traces
+--- per enforce tick while wet; each write logs the culprit's name.
 local TRACE_COLOR = { R = 0.0, G = 0.0, B = 0.0, A = 1.0 }
 
 local function containmentFanGT()
@@ -475,34 +456,25 @@ end
 
 -- ============== INTERNAL: world pass (game thread) ==============
 
---- TARGETED rain-solid pass (v9, 2026-07-28 field round 2: the v7/v8
---- world-wide flip broke AI on BOTH channels = the mass ENABLEMENT was
---- the AI vector all along, never the Visibility writes; the call was:
---- "target the correct meshes"). Only mesh components whose STATIC MESH
---- ASSET path matches the target patterns (tunnel linings + interior
---- sets + bridge/overpass decks: the exact assets every confirmed
---- occlusion hit named today) get flipped, and each flipped body is a
---- STEALTH BODY the game cannot see:
----   - CollisionTraceFlag = 3 (ComplexAsSimple: simple rain traces route
----     to the cooked trimesh),
----   - QueryOnly enable (en 0 -> 1 only; physics never touched),
----   - ObjectType = 25 (a game-undefined channel: NO object-space query
----     the AI runs, obstacle/sight/road-gap, can ever include it),
----   - responses = Ignore ALL + Block the rain channel alone (no overlap
----     events, no phantom hits on any game channel).
---- Rain (a channel trace) hits it; everything else passes through.
---- Idempotent: already-enabled components are skipped after one read;
---- disabled non-matching components pay one asset-name read per pass
---- (ms= in the log tells the real cost).
--- FIELD DATA 2026-07-29: across ~30 passes the per-class match counter
--- read `Stat=N Inst=0 Hier=0` EVERY time. Tunnel linings and bridge decks
--- are unique large meshes; the instanced classes carry scattered props and
--- never match a target pattern. Sweeping them cost 2 of the 3 FindAllOf
--- calls per pass for nothing, so they are retired. (If a future target
--- pattern ever needs instanced geometry, add the class back here and the
--- matchedBy counter will show it earning its keep.)
+--- Targeted rain-solid pass (v9, 2026-07-28): only mesh components whose
+--- static mesh asset path matches the target patterns get flipped, and
+--- each flipped body becomes a stealth body: CollisionTraceFlag = 3
+--- (ComplexAsSimple, so simple rain traces route to the cooked trimesh),
+--- QueryOnly enable (en 0 -> 1 only, physics never touched), ObjectType
+--- 25, and Ignore-all + Block on the rain channel (no overlap events, no
+--- phantom hits on any game channel). Idempotent: enabled components
+--- skip after one read; disabled non-matching components pay one
+--- asset-name read per pass (ms= in the log is the real cost).
+-- Classes swept. The instanced classes were retired 2026-07-29 on a C1
+-- census (Inst=0 Hier=0 across ~30 passes) and restored 2026-09-02: with
+-- the same paks installed, 3.8.0 (which swept all three) occludes every
+-- bore and 3.9.0 through 4.0.0 (static only) occlude none, so instanced
+-- linings exist that the census never saw. The matchedBy counter in the
+-- pass line shows what each class contributes.
 local CLASSES = {
     "StaticMeshComponent",
+    "InstancedStaticMeshComponent",
+    "HierarchicalInstancedStaticMeshComponent",
 }
 local SHAPE_CLASSES = {
     "BrushComponent",
@@ -519,27 +491,21 @@ local function meshMatchesAny(fn, patterns)
     return false
 end
 
--- CHUNKED pass state. Two rounds of hitch work:
---   1. (first cut) the single-closure pass was a visible frame stall, so
---      the scan walks CHUNK components per 8 Hz tick.
---   2. (2026-07-28 telemetry: gt_ms_maxchunk read 27-34 ms) the residue
---      was FindAllOf itself: one unsplittable ~30 ms block that ran ON
---      THE GAME THREAD, three times per pass. That breaks our own
---      standing rule (sweeps are free on the async thread and ruinous on
---      the GT), so the fetch now happens ASYNC in Tick and only the
---      component work is marshalled. With the sweep gone the GT slices
---      cost ~1-5 ms, so CHUNK went up 4x: the pass finishes in ~3-4 ticks
---      instead of ~14, which also shrinks the window where component
---      refs are held across ticks (a cell streaming out mid-pass is the
---      one remaining dangling-ref risk).
--- The comps array lives WITHIN one world only: every touch re-validates,
--- and the teardown gate plus OnCourseLoad/Unload drop the state outright.
-local CHUNK = 250   -- was 400: with the verdict cache dead, 400-comp
-                    -- chunks ran 7-27ms ON THE GT (2026-08-10 13:55
-                    -- field log) = dropped frames at every course entry
-                    -- and ~23s micro-hitches while driving. 250 caps the
-                    -- worst case; the GetAddress cache fix below cuts the
-                    -- per-comp cost underneath it as well.
+-- Chunked pass state. The single-closure pass was a visible frame stall,
+-- so the scan walks CHUNK components per 8 Hz tick; the residue
+-- (2026-07-28 telemetry: gt_ms_maxchunk 27-34 ms) was FindAllOf itself,
+-- an unsplittable ~30 ms block on the game thread three times per pass,
+-- so the fetch now happens async in Tick and only the component work is
+-- marshalled (GT slices ~1-5 ms; a cell streaming out mid-pass is the one
+-- remaining dangling-ref risk). The comps array lives within one world:
+-- every touch re-validates, and the teardown gate plus
+-- OnCourseLoad/Unload drop the state outright.
+local CHUNK = 250   -- 400-comp chunks ran 7-27ms on the GT (2026-08-10
+                    -- 13:55 field log): dropped frames at every course
+                    -- entry and ~23s micro-hitches while driving. 250 caps
+                    -- the worst case; the GetAddress verdict cache cuts
+                    -- the per-comp cost underneath it.
+local CHUNK_BUDGET_S = 0.004   -- game-thread time per chunk (see passChunkGT)
 local passState = nil   -- see startWorldPass for the shape
 
 local function startWorldPass(trigger)
@@ -547,42 +513,35 @@ local function startWorldPass(trigger)
         ci = 1, comps = nil, i = 1,
         enabledN = 0, casN = 0, scannedN = 0,
         gtMs = 0.0, maxMs = 0.0, chunks = 0, trigger = trigger,
-        -- per-class match counts: one boot of data decides whether the
-        -- instanced classes are ever worth sweeping (tunnel linings and
-        -- decks are unique meshes; instancing is for scattered props)
+        -- per-class match counts (matchedBy= in the pass line)
         perClass = {},
     }
 end
 
--- DISTANCE GATE state. K2_GetActorLocation is a UFunction, so the car
--- position is read on the GAME THREAD (one call per enforce tick, riding
--- the closure that is already dispatched) and cached as plain numbers
--- that the async side reads: the standing "cache on GT, async consumes
--- the verdict" pattern. Fails OPEN in every unknown case, so a missing
--- reading can never silently stop the pass from running.
+-- Distance gate state. The car position comes from tunnels' pawn cache
+-- (plain numbers, async-readable); the gate fails open in every unknown
+-- case, so a missing reading can never silently stop the pass.
 local MOVE_THRESHOLD = 2500.0   -- uu (25 m); cells cannot stream without motion
-local carX, carY, carZ = nil, nil, nil          -- GT-written, async-read
+local carX, carY, carZ = nil, nil, nil          -- async-read from tunnels' pawn cache
 local passOX, passOY, passOZ = nil, nil, nil    -- car position at pass start
 
-local function updateCarPosGT()
-    -- Run-time teardown re-check, same as every other GT closure body in
-    -- this module: the closure can land while the GT is destroying the
-    -- world, and pcall cannot catch that AV (IsValid can false-pass too).
-    local actors = getActors()
-    if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
-        return
+local Tunnels = nil
+local function getTunnels()
+    if not Tunnels then
+        local ok, mod = pcall(require, "systems.tunnels")
+        if ok then Tunnels = mod end
     end
-    pcall(function()
-        local UEH = getUEHelpers()
-        local pc = UEH and UEH.GetPlayerController and UEH.GetPlayerController()
-        local pawn = pc and pc.Pawn
-        if pawn and pawn.IsValid and pawn:IsValid() then
-            local loc = pawn:K2_GetActorLocation()
-            if loc then
-                carX, carY, carZ = tonumber(loc.X), tonumber(loc.Y), tonumber(loc.Z)
-            end
-        end
-    end)
+    return Tunnels
+end
+
+--- Async side: the car position comes from tunnels' 4 Hz pawn cache (a
+--- plain number triple), so no controller sweep runs on the game thread
+--- for it any more.
+local function updateCarPosAsync()
+    local T = getTunnels()
+    if not (T and T.GetCarPos) then return end
+    local px, py, pz = T.GetCarPos()
+    if px and py and pz then carX, carY, carZ = px, py, pz end
 end
 
 --- Has the car moved far enough since the last pass for new cells to
@@ -598,59 +557,41 @@ local function markPassOrigin()
     passOX, passOY, passOZ = carX, carY, carZ
 end
 
--- Per-ASSET match verdicts, keyed by the mesh userdata's tostring (the
--- OBJECT ADDRESS on this UE4SS build: cheap, unique per live asset).
--- GetFullName is the expensive reflection read; with the cache it runs
--- once per unique mesh asset per course instead of once per disabled
--- component per pass. Cleared on course load/unload.
--- KEY STABILITY IN DOUBT (2026-08-09): a PA pass logged 56 fresh
--- verdicts for ONE asset name (SMobj_pylon_a), and a later pass in the
--- same world recomputed pylon verdicts without flipping anything (the
--- components were already two-sided), consistent with the Alt+I lesson:
--- tostring keys that do not survive re-access. cacheMiss= in the pass
--- line measures it. If it tracks scanned across passes the cache never
--- hits and every component pays GetFullName every pass. That cost is
--- already inside today's measured gt_ms numbers, so leave the cache
--- alone until the counter has field data.
+-- Per-asset match verdicts keyed by the mesh's GetAddress (the UObject
+-- address, stable per live asset, the tuning.lua idiom). tostring(sm)
+-- minted a fresh userdata per access, so that key never hit
+-- (cacheMiss==scanned on every pass, 08-09 and 08-10 field logs) and
+-- every component re-paid GetFullName, the expensive reflection read,
+-- every pass: the bulk of the 7-27ms GT chunks. Cleared on course
+-- load/unload so it cannot alias across worlds. cacheMiss= in the pass
+-- line is the health counter: if it tracks scanned pass after pass, the
+-- key is unstable and the cache never hits.
 local meshVerdict = {}
--- Raised 25 -> 60 (2026-07-30): at 25 the list was truncating before we
--- could tell whether a newly added pattern (_wc/_wl/_wr, _kb) had matched
--- anything at all, which is the question the log exists to answer.
+-- 60 (raised from 25, 2026-07-30): at 25 the list truncated before it
+-- could show whether a newly added pattern had matched anything.
 local MATCHED_NAME_CAP = 60
 local matchedNamesLogged = 0
--- Log dedupe by SHORT NAME (2026-08-09): the address-keyed cache above
--- does not dedupe same-named meshes (the 56 pylon lines), so the cap now
--- counts unique NAMES: one prop family can no longer blind the readout
--- the cap exists for. Bounded at MATCHED_NAME_CAP entries; cleared with
--- the cache.
+-- Dedupe by short name (2026-08-09): the address-keyed cache does not
+-- dedupe same-named meshes (56 SMobj_pylon_a lines in one PA pass), so
+-- the cap counts unique names. Cleared with the cache.
 local matchedNamesSeen = {}
--- (shadowFlipped and the Alt+I forcePass state deleted 2026-08-04 with
--- the toggle: the revert path keyed on tostring(component), which is not
--- stable across passes, so an A/B via toggle falsely exonerated the fix.)
 
 --- Order matters for cost (2026-07-29 telemetry: gt_ms_maxchunk stayed
---- ~20 ms after the sweep moved off the GT, so the PER-COMPONENT work
---- was the real expense at ~15-20 us each). GetCollisionEnabled is a
---- UFunction call (ProcessEvent marshalling); the asset verdict is a
---- property read plus a cached table lookup. So the cheap check runs
---- FIRST and the UFunction only runs for the handful of components whose
---- mesh actually matches. The en==0 gate stays exactly where it was, as
---- a SAFETY property (never touch a body the game already enabled), it
---- is just consulted later.
+--- ~20 ms after the sweep left the GT, so per-component work at ~15-20 us
+--- each was the expense). GetCollisionEnabled is a UFunction call
+--- (ProcessEvent marshalling); the asset verdict is a property read plus
+--- a cached lookup, so the verdict runs first and the UFunction only for
+--- components whose mesh matches. The en==0 gate remains a safety
+--- property (never touch a body the game already enabled), consulted
+--- later.
 local function processCompGT(st, c)
     if not validRef(c) then return end
     st.scannedN = st.scannedN + 1
     local sm = nil
     pcall(function() sm = c.StaticMesh end)
     if not sm then return end
-    -- OBJECT-address key (2026-08-10): tostring(sm) keys never repeat
-    -- because every c.StaticMesh access mints a fresh userdata, so the
-    -- cache never hit (cacheMiss==scanned on every pass, 08-09 and 08-10
-    -- field logs) and every component re-paid GetFullName every pass:
-    -- the bulk of the 7-27ms GT chunks. GetAddress is the UObject
-    -- address (stable per live asset, proven idiom in tuning.lua);
-    -- cleared per world with the rest of the cache, so it cannot alias
-    -- across worlds.
+    -- GetAddress key (2026-08-10, see meshVerdict); the tostring fallback
+    -- only covers a failed address read.
     local key = nil
     pcall(function() key = sm:GetAddress() end)
     if key == nil then pcall(function() key = tostring(sm) end) end
@@ -668,13 +609,9 @@ local function processCompGT(st, c)
             verdict = { coll = false, shadow = false }
         end
         if key then meshVerdict[key] = verdict end
-        -- Name the ASSETS we accept, deduped by SHORT NAME and capped.
-        -- This is the readout that answers "are we flipping the right
-        -- meshes?": the patterns are substring matches, so an unintended
-        -- asset with "tnl" in its path would otherwise be invisible in
-        -- the counts. Name-keyed on purpose (2026-08-09): the address-
-        -- keyed cache above missed 56 times on one pylon asset in a
-        -- single PA pass and the cap spent itself on duplicates.
+        -- Name the accepted assets, deduped by short name and capped: the
+        -- patterns are substring matches, so an unintended asset with
+        -- "tnl" in its path would otherwise hide inside the counts.
         if (verdict.coll or verdict.shadow)
            and matchedNamesLogged < MATCHED_NAME_CAP then
             local short = (type(meshName) == "string")
@@ -693,38 +630,30 @@ local function processCompGT(st, c)
     end
     if not (verdict.coll or verdict.shadow) then return end
 
-    -- SUN-LEAK FIX (permanent, Config.RainCollision.FixShadowLeak).
-    -- Field-proven diagnosis 2026-07-29: these decks ship CastShadow=true
-    -- but bCastShadowAsTwoSided=FALSE, so from the sun's side the shadow
-    -- depth pass culls their backfaces, writes no depth, and sunlight
-    -- lands INSIDE the tunnel. Same one-sided geometry that makes rain
-    -- traces need an upward leg: one authoring decision, two leaks.
-    -- bCastShadowAsTwoSided has NO setter on this cook and UE snapshots
-    -- it into the scene proxy at render-state creation, so a bare write
-    -- is a silent no-op. SetCastShadow DOES exist and dirties render
-    -- state, but early-outs on an unchanged value: hence the false->true
-    -- toggle to force the proxy to rebuild and pick the flag up.
-    -- Deliberately OUTSIDE the en==0 gate below: a leaking deck usually
-    -- already has collision, so gating the shadow write on "collision
-    -- disabled" would skip exactly the meshes that leak. Idempotent: the
-    -- twoSided read short-circuits once a component is done.
-    -- Keys on the SHADOW verdict (broad roster); the collision block below
-    -- keys on the narrow coll verdict. The lists were one until 2026-08-04:
-    -- the kerb-hunt pattern expansion silently widened the STEALTH BODY
-    -- set to every wall/kerb/sidewalk, re-creating the v7/v8 mass-
-    -- enablement AI breakage the v9 targeting exists to prevent.
-    -- (The Alt+I live-revert machinery is deleted: its revert keyed on
-    -- tostring(component), which is not stable across passes, so an A/B
-    -- via toggle falsely exonerates the fix. A/B by course reload.)
+    -- Sun-leak fix (Config.RainCollision.FixShadowLeak). Diagnosis
+    -- 2026-07-29: these decks ship CastShadow=true but
+    -- bCastShadowAsTwoSided=false, so the shadow depth pass culls their
+    -- backfaces from the sun's side and sunlight lands inside the tunnel
+    -- (the same one-sided geometry that makes rain traces need an upward
+    -- leg). bCastShadowAsTwoSided has no setter on this cook and UE
+    -- snapshots it into the scene proxy at render-state creation, so a
+    -- bare write is a silent no-op; SetCastShadow dirties render state
+    -- but early-outs on an unchanged value, hence the false->true toggle.
+    -- Outside the en==0 gate on purpose: a leaking deck usually already
+    -- has collision. Idempotent via the twoSided read. Keys on the broad
+    -- shadow verdict; the collision block keys on the narrow coll verdict
+    -- (one list until 2026-08-04, when the kerb-hunt pattern expansion
+    -- widened the stealth-body set to every wall/kerb/sidewalk and
+    -- re-created the v7/v8 AI breakage). No live A/B toggle: a revert
+    -- keyed on tostring(component) is unstable across passes and falsely
+    -- exonerated the fix; A/B by course reload.
     if verdict.shadow and FIX_SHADOW_LEAK then
         local twoSided = nil
         pcall(function() twoSided = c.bCastShadowAsTwoSided end)
         if twoSided == false then
-            -- Count casters this flip TURNS ON (they shipped CastShadow
-            -- false, e.g. every BUIL building): the SetCastShadow(true)
-            -- below enables them, so the force block underneath never
-            -- sees them and castForced= alone undercounts the building
-            -- work. castForced is the building verifier; count both paths.
+            -- Casters this flip turns on (shipped CastShadow=false, e.g.
+            -- every BUIL building) never reach the force block below, so
+            -- count them here too or castForced= undercounts the buildings.
             if FORCE_CAST_SHADOW then
                 local preCast = nil
                 pcall(function() preCast = c.CastShadow end)
@@ -738,14 +667,12 @@ local function processCompGT(st, c)
             pcall(function() c:SetCastShadow(true) end)
             st.shadowN = (st.shadowN or 0) + 1
         end
-        -- FORCE-CAST TEST (Config.RainCollision.ForceCastShadow,
-        -- 2026-08-12): pieces shipping CastShadow=FALSE never benefit
-        -- from the two-sided flip at all (the sweep's twoSided
-        -- short-circuit skips the rebuild, and a non-casting mesh
-        -- passes every sun ray regardless). The ginza-ramp leak
-        -- candidates include exactly that failure mode. When enabled,
-        -- any shadow-roster mesh with CastShadow=false gets it forced
-        -- true (counter castForced=; A/B by course reload).
+        -- Force-cast test (Config.RainCollision.ForceCastShadow,
+        -- 2026-08-12): a mesh shipping CastShadow=false passes every sun
+        -- ray whatever its two-sided flag (the ginza-ramp leak candidates
+        -- include that case), so any shadow-roster mesh with
+        -- CastShadow=false gets it forced true (castForced=; A/B by
+        -- course reload).
         if FORCE_CAST_SHADOW then
             local casting = nil
             pcall(function() casting = c.CastShadow end)
@@ -756,29 +683,24 @@ local function processCompGT(st, c)
         end
     end
 
-    -- Matching COLLISION mesh (narrow v9 set only): only now pay for the
+    -- Matching collision mesh (narrow v9 set only): only now pay for the
     -- UFunction. en ~= 0 means the game already gave this body collision,
-    -- so leave it strictly alone.
+    -- so leave it alone.
     if not verdict.coll then return end
     local en = nil
     pcall(function() en = c:GetCollisionEnabled() end)
     if en ~= 0 then
-        -- AI-residual forensics (2026-08-07, parked risk (c)): this is a
-        -- STOCK-ENABLED instance of a target asset. The BodySetup
-        -- CollisionTraceFlag=3 write below lands on the SHARED asset, so
-        -- these instances silently go ComplexAsSimple too: AI queries
-        -- against them return trimesh hits instead of simple-hull hits.
-        -- A nonzero count in the pass log = risk (c) is live geometry.
-        -- MOD-ENABLED FILTER (2026-08-09): everything the block below
-        -- enables is stamped ObjectType 25; stock geometry carries a
-        -- real game type. Without the filter the counter re-counted our
-        -- own targets on every later pass (both 08-08 logs: enable 43,
-        -- next pass stockEnabledTargets=43; enable 218, next pass 218),
-        -- so the risk (c) watch measured nothing. Cost: one UFunction
-        -- read per already-enabled target (218-target worst case ~4 ms,
-        -- spread across chunks). A failed read (ot=nil) still counts as
-        -- stock: over-counting fails toward the pre-filter behavior,
-        -- never toward hiding a live risk.
+        -- AI-residual forensics (2026-08-07, parked risk (c)): a
+        -- stock-enabled instance of a target asset. The shared BodySetup
+        -- CollisionTraceFlag=3 write reaches it too, so AI queries against
+        -- it return trimesh hits instead of simple-hull hits; a nonzero
+        -- count in the pass log means risk (c) is live geometry. The
+        -- ObjectType filter (2026-08-09) excludes our own targets, which
+        -- carry 25 (without it the counter re-counted them on every later
+        -- pass: enable 43, next pass 43). Cost: one UFunction read per
+        -- already-enabled target (~4 ms worst case, spread across
+        -- chunks). A failed read (ot=nil) counts as stock, never toward
+        -- hiding a live risk.
         local ot = nil
         pcall(function() ot = c:GetCollisionObjectType() end)
         if ot ~= STEALTH_OBJ_TYPE then
@@ -794,8 +716,7 @@ local function processCompGT(st, c)
             elseif CTF_WRITE then
                 bs.CollisionTraceFlag = 3
             else
-                -- 4.0.0 rehearsal: no write. This body stays trimesh-
-                -- invisible to simple rain traces = rains through, and
+                -- CtfWrite=false: no write, so this body rains through and
                 -- the counter names the gap the pak failed to cover.
                 st.ctfMissN = (st.ctfMissN or 0) + 1
             end
@@ -812,11 +733,11 @@ end
 
 local finishWorldPassGT   -- defined below (local-ordering rule)
 
---- ASYNC side of the pass: fetch the next class array when the walker
---- needs one. FindAllOf is an object-array walk (~30 ms on this world),
---- which is exactly the work that belongs off the game thread. Teardown
---- must be gated here just like any other async sweep (the wet_grip
---- lesson: an ungated sweep runs against a dying world).
+--- Async side of the pass: fetch the next class array when the walker
+--- needs one (FindAllOf is a ~30 ms object-array walk, work that belongs
+--- off the game thread). Teardown must be gated before calling this, as
+--- for any async sweep (the wet_grip lesson: an ungated sweep runs
+--- against a dying world).
 --- @return boolean true if a GT chunk is worth dispatching
 local function passFetchAsync()
     local st = passState
@@ -832,7 +753,7 @@ local function passFetchAsync()
     return true
 end
 
---- GAME-THREAD side: process up to CHUNK components from the array the
+--- Game-thread side: process up to CHUNK components from the array the
 --- async side fetched. Never sweeps; when it runs out of the current
 --- array it stops and lets the next async tick fetch the next class.
 local function passChunkGT()
@@ -845,7 +766,10 @@ local function passChunkGT()
     end
     local t0 = os.clock()
     local budget = CHUNK
-    while budget > 0 do
+    -- Count ceiling plus a time budget: the first chunks of a load pass
+    -- (cold verdict cache, one GetFullName per unique mesh) ran 28-34 ms on
+    -- the 08-31 logs, later passes 2-6 ms
+    while budget > 0 and (os.clock() - t0) < CHUNK_BUDGET_S do
         if st.comps == nil then
             -- Out of components and nothing fetched yet: if every class is
             -- done the pass ends here, otherwise wait for the async fetch.
@@ -872,17 +796,16 @@ local function passChunkGT()
 end
 
 --- Pass completion: shape neutralization (private channels only) + the
---- telemetry line. gt_ms_total is the SUM of per-frame GT time across
+--- telemetry line. gt_ms_total is the sum of per-frame GT time across
 --- all chunks (each individual chunk stays well under a frame).
 finishWorldPassGT = function(st)
-    -- Shape-class neutralization, PRIVATE channels only (>= 22, outside
-    -- the game-defined 0..21 band: on a game channel like Visibility
+    -- Shape-class neutralization, private channels only (>= 22, outside
+    -- the game-defined 0..21 band; on a game channel like Visibility
     -- these writes would alter real game behavior): query-enabled
     -- Brush/Box/Sphere/Capsule bodies (PP volumes, triggers, section
-    -- envelopes, AI sight spheres) must never occlude rain: they are
-    -- sensors and invisible volumes, not geometry. Flip their
-    -- private-channel response to Ignore (idempotent; the shape classes
-    -- are small enough to run inline at pass end).
+    -- envelopes, AI sight spheres) are sensors, not geometry, so their
+    -- private-channel response goes to Ignore (idempotent; small enough
+    -- to run inline at pass end).
     local t0 = os.clock()
     local shapesN = 0
     for _, cls in ipairs(CHANNEL >= 22 and SHAPE_CLASSES or {}) do
@@ -922,12 +845,10 @@ finishWorldPassGT = function(st)
             shapesIgnored = shapesN, chunks = st.chunks,
             sweeps = st.sweeps or 0,
             shadowFixed = st.shadowN or 0,
-            shadowReverted = st.shadowRevertedN or 0,
-            -- AI-residual forensics (2026-08-07): stockEnabledTargets > 0
-            -- means the shared BodySetup ctf=3 write reaches stock-enabled
-            -- instances of target assets (parked risk (c)); pos lets a
-            -- field "AI bugged HERE around THEN" report be matched against
-            -- pass activity (shadow rebuilds / enables) near that spot.
+            -- stockEnabledTargets > 0 = the shared ctf=3 write reaches
+            -- stock-enabled target instances (risk (c), see processCompGT);
+            -- pos lets an "AI bugged here" field report be matched against
+            -- pass activity near that spot.
             stockEnabledTargets = st.collStockN or 0,
             -- CtfWrite=false rehearsal only: enabled targets whose
             -- BodySetup had no baked CTF (0 everywhere = pak complete)
@@ -935,10 +856,8 @@ finishWorldPassGT = function(st)
             -- ForceCastShadow test only: shadow-roster meshes that
             -- shipped CastShadow=false and got it forced on
             castForced = st.castForcedN or 0,
-            -- cacheMiss (2026-08-09): fresh meshVerdict computes this
-            -- pass. If it tracks scanned pass after pass, the address
-            -- key is not stable and the cache never hits (see the note
-            -- at meshVerdict).
+            -- cacheMiss: fresh meshVerdict computes this pass (see the
+            -- note at meshVerdict)
             cacheMiss = st.missN or 0,
             pos = (carX and string.format("%.0f,%.0f,%.0f", carX, carY, carZ))
                 or "?",
@@ -1002,6 +921,7 @@ function RainCollision.OnCourseLoad()
     passTrigger = "load"
     passState = nil         -- never carry a walker (and its refs) across worlds
     probeDonePawns = {}     -- pawn addresses are world-local
+    carSweepLast, carSweepInterval = 0.0, CAR_SWEEP_FIRST_S
     panelDonePawns = {}
     meshVerdict = {}        -- asset addresses do not survive a world swap
     matchedNamesLogged = 0
@@ -1018,6 +938,7 @@ function RainCollision.OnCourseUnload()
     passState = nil
     probeDonePawns = {}
     panelDonePawns = {}
+    carSweepLast, carSweepInterval = 0.0, CAR_SWEEP_FIRST_S
     meshVerdict = {}
     matchedNamesLogged = 0
     matchedNamesSeen = {}
@@ -1043,12 +964,11 @@ end
 local COVER_TRIGGER_COOLDOWN_S = 8.0
 local lastCoverTrigger = nil
 
---- Cover began (tunnels.lua, road-data bit OR roof trace rising edge).
---- THE FIVE 2026-08-11 Alt+N REPORTS: every one was rain under a cover
---- whose deck the pass had not reached yet (streamed-in cells wait for
---- the periodic cadence, up to REAPPLY_S late on a first approach). A
---- pass requested the moment a cover begins closes that window at
---- exactly the places where being un-flipped is visible.
+--- Cover began (tunnels.lua, road-data bit or roof trace rising edge).
+--- The five 2026-08-11 Alt+N reports were all rain under a cover whose
+--- deck the pass had not reached (streamed-in cells wait for the periodic
+--- cadence, up to REAPPLY_S late on a first approach); a pass requested
+--- at cover entry closes that window where an un-flipped deck is visible.
 function RainCollision.OnCoverEnter()
     if not (enabled and armed) then return end
     if not isWet() then return end
@@ -1065,7 +985,7 @@ end
 
 --- Per-tick entry (8 Hz from main); self-paced. Enforcement (and the
 --- private-channel fan) run every ENFORCE_S; while a chunked pass is
---- active, EVERY tick dispatches one chunk so the pass finishes in a few
+--- active, every tick dispatches one chunk so the pass finishes in a few
 --- seconds with no single-frame hitch. All object work runs in
 --- game-thread closures that re-check the teardown gate at run time.
 function RainCollision.Tick()
@@ -1083,17 +1003,14 @@ function RainCollision.Tick()
     end
     if (now - armedAt) < SETTLE_S then return true end
 
-    -- The world pass runs only while the weather is wet (zero dry-session
-    -- cost): a pending request (course load with a wet restore, rain
-    -- start) starts at the next enforce tick, the periodic re-pass covers
-    -- streamed-in cells after that. A pending request raised while dry
-    -- just waits for the flip to rain. Never start while a pass is
-    -- already walking (a restart every enforce tick would starve it).
-    -- The pass normally only runs while wet (zero dry-session cost). The
-    -- shadow-leak fix is the exception and MUST break that rule: the sun
-    -- leak happens in DRY, SUNNY weather, so gating it behind the rain
-    -- check meant it could never run when it mattered (field 2026-07-29
-    -- 18:00, Clear_Skies session: zero passes, "it didnt take").
+    -- The world pass runs while wet (a pending request from course load
+    -- or rain start starts at the next enforce tick; the periodic re-pass
+    -- covers streamed-in cells after that; a request raised while dry
+    -- waits for the flip to rain) or while the shadow-leak fix is on: the
+    -- sun leak happens in dry, sunny weather, and gating it behind the
+    -- rain check meant it never ran when it mattered (field 2026-07-29
+    -- 18:00, Clear_Skies session: zero passes). Never start while a pass
+    -- is already walking (a restart every enforce tick would starve it).
     local wet, wantStart = false, false
     if doEnforce then
         wet = isWet()
@@ -1101,12 +1018,11 @@ function RainCollision.Tick()
             if passPending then
                 wantStart = true
             elseif lastPass == nil or (now - lastPass) >= REAPPLY_S then
-                -- DISTANCE GATE: world-partition cells only stream in when
-                -- the car moves, so a periodic re-pass after sitting still
-                -- is guaranteed to find nothing. Skip it (and re-arm the
-                -- cadence) unless we have travelled far enough for new
-                -- cells to have appeared. Triggered passes (load, rain
-                -- start) ignore this: they must always run.
+                -- Distance gate: cells only stream in when the car moves,
+                -- so a periodic re-pass after sitting still finds nothing.
+                -- Skip it and re-arm the cadence unless the car travelled
+                -- far enough for new cells; triggered passes (load, rain
+                -- start) always run.
                 if movedSincePass() then
                     wantStart = true
                     passTrigger = "periodic"
@@ -1117,9 +1033,8 @@ function RainCollision.Tick()
         end
     end
 
-    -- ASYNC: fetch the component array here, never on the game thread
-    -- (the ~30 ms FindAllOf was the residual hitch; this is the thread it
-    -- belongs on). Safe because the teardown gate above already returned.
+    -- Async: the component array is fetched here, never on the game thread
+    -- (the ~30 ms FindAllOf); safe because the teardown gate above passed.
     if wantStart and passState == nil then
         startWorldPass(passTrigger)
         markPassOrigin()
@@ -1127,18 +1042,28 @@ function RainCollision.Tick()
     end
     if passState ~= nil then passFetchAsync() end
 
+    -- Car position (async, from tunnels) and the car-sweep component array
+    -- (fetched here, consumed by the game-thread closure below), so the
+    -- game thread walks the object array for neither
+    local carComps = nil
+    if doEnforce then
+        updateCarPosAsync()
+        if (PLAYER_CAR_BODY or PLAYER_CAR_PROBE) and (now - carSweepLast) >= carSweepInterval then
+            carSweepLast = now
+            pcall(function() carComps = FindAllOf("StaticMeshComponent") end)
+        end
+    end
+
     if ExecuteInGameThread then
         pcall(function()
             GT.Run(function()
                 if doEnforce then
                     enforceChannelGT()
-                    updateCarPosGT()   -- feeds the async distance gate
-                    if PLAYER_CAR_BODY or PLAYER_CAR_PROBE then
-                        playerCarGT()
+                    if carComps then
+                        playerCarGT(carComps)
                     end
                     -- The fan mutates responses on game bodies: private
-                    -- channels only (on a game channel like Visibility
-                    -- it would rewrite real game behavior)
+                    -- channels only
                     if wet and CHANNEL >= 22 then containmentFanGT() end
                 end
                 if passState ~= nil then passChunkGT() end
@@ -1147,22 +1072,5 @@ function RainCollision.Tick()
     end
     return true
 end
-
-function RainCollision.GetStatus()
-    return {
-        initialized = isInitialized,
-        enabled = enabled,
-        armed = armed,
-        channel = CHANNEL,
-        lastPassAgo = lastPass and (os.clock() - lastPass) or nil,
-    }
-end
-
-function RainCollision.IsInitialized()
-    return isInitialized
-end
-
---- Alias so the module can be ticked as either Tick() or Update().
-RainCollision.Update = RainCollision.Tick
 
 return RainCollision

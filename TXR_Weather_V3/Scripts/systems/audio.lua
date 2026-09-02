@@ -1,22 +1,21 @@
 -- TXR Weather Mod v3.0
 -- systems/audio.lua
--- Phase 10: Weather audio (rain, wind, thunder). WORKING since 3.2.0 via the
--- direct-spawn engine: the UDS sound assets are loaded and played through
--- GameplayStatics:SpawnSound2D (UEHelpers) on the game thread, with volumes
--- scaled from UDW's live Rain / Wind Intensity, and thunder one-shots on a
--- randomized timer while Thunder/Lightning is high. Loops are respawned if a
--- level change (or a non-looping wave) stops them; everything fades out on
--- course unload.
+-- Weather audio (rain, wind, thunder), working since 3.2.0 via direct spawn:
+-- the UDS sound assets are played through GameplayStatics:SpawnSound2D
+-- (UEHelpers) on the game thread, volumes scaled from UDW's live Rain / Wind
+-- Intensity, thunder one-shots on a randomized timer while Thunder/Lightning
+-- is high. Loops respawn if a level change (or a non-looping wave) stops
+-- them; everything fades out on course unload.
 --
--- UDW's own sound system produces NO audio in TXR (verified: enable + volumes +
--- its apply functions all execute and read back correctly, but Sound_Global
--- never plays, even with a direct FadeIn kick). HOWEVER its apply functions are
--- LOAD-BEARING: calling "Static Properties - Sound Effects" / "Instant Sound
--- Update" makes UDW async-load its soft-referenced sound assets into memory,
--- and that is what makes our StaticFindObject/StaticLoadObject on those assets
--- succeed (StaticLoadObject alone fails for them in TXR; removing the native
--- kick in the 3.2.0 cleanup silenced everything). So the native apply stays as
--- the ASSET LOADER, one-shot per course, and the audible path is the spawns.
+-- UDW's own sound system is silent in TXR (enable, volumes and its apply
+-- functions all execute and read back, but Sound_Global never plays, even
+-- with a direct FadeIn kick). Its apply functions are still load-bearing:
+-- calling FN_STATIC / FN_INSTANT_UPDATE makes UDW async-load its
+-- soft-referenced sound assets, which is what lets StaticFindObject /
+-- StaticLoadObject on them succeed (StaticLoadObject alone fails for them;
+-- dropping the kick in the 3.2.0 cleanup silenced everything). So the native
+-- apply stays as the asset loader, one-shot per course, and the spawns are
+-- the audible path.
 
 local Audio = {}
 
@@ -66,21 +65,17 @@ local SETTLE_TICKS = 32          -- ~4s at 8 Hz past BeginPlay before applying
 local UPDATE_INTERVAL_TICKS = 8  -- ~1s between direct-spawn volume updates
 local THUNDER_GAP_MIN = 7.0      -- seconds between thunder one-shots
 local THUNDER_GAP_MAX = 20.0
--- Failed asset LOADS per path per course before the asset is declared dead, at
--- roughly one attempt per second. Despite the old name this never counted spawn
--- failures: countSpawnFail is called only when loadSoundGT returns nil (a
--- SpawnSound2D that returns no component does not count, see spawn2DGT).
--- DO NOT LOWER THIS. It was cut to 3 on 2026-07-30 on the reasoning that "a
--- load which fails for a path fails the same way every time", which is exactly
--- backwards here: the failure is TRANSIENT. These assets are soft-referenced,
--- and nothing resolves until UDW's native kick finishes an ASYNC load. Measured
--- the same day with the two-point probe below: at 8 ticks past the kick all four
--- test assets read present=false, at 120 ticks (~15 s) all four read present=true
--- (UDS_Global_WeatherSounds, UDS_Directional_WeatherSounds and UDS_Rain_Loop as
--- MetaSoundSource, BrownianNoise_1 as SoundWave). They ARE in TXR's cook. A
--- budget of 3 gives up at ~5 s, before the load lands, and silences rain audio
--- outright, which is the same failure the 3.2.0 cleanup caused by removing the
--- native kick. 30 covers the measured ~15 s with 2x margin.
+-- Failed asset loads per path per course (about one attempt per second)
+-- before the asset is declared dead. Loads only: countSpawnFail runs when
+-- loadSoundGT returns nil, not when SpawnSound2D returns no component.
+-- Do not lower this: the failure is transient. The assets are soft-referenced
+-- and resolve only once UDW's native kick finishes an async load. Measured
+-- 2026-07-30 with the two-point probe below: all four test assets read
+-- present=false at 8 ticks past the kick and present=true at 120 ticks
+-- (~15 s) (UDS_Global_WeatherSounds, UDS_Directional_WeatherSounds and
+-- UDS_Rain_Loop as MetaSoundSource, BrownianNoise_1 as SoundWave), so they
+-- are in TXR's cook. A budget of 3 gave up at ~5 s and silenced rain audio
+-- outright. 30 covers the measured ~15 s with 2x margin.
 local MAX_LOAD_FAILS = 30
 
 -- ============== STATE ==============
@@ -88,7 +83,6 @@ local isInitialized = false
 local audioEnabled = true
 local settleTicks = 0
 local appliedThisCourse = false
-local applied = false
 local updateCounter = 0
 local pendingUpdate = false  -- a game-thread sound update is queued
 local pendingSince = 0.0     -- os.clock at queue time, for the wedge self-heal
@@ -101,12 +95,10 @@ local kickTicks = -1   -- ticks since the native load kick; -1 = not kicked yet
 local warnedOnce = {}  -- one-time warnings per asset/subsystem
 local spawnFails = {}  -- per-asset failed spawn attempts this course
 local deadAssets = {}  -- assets given up on this course (see MAX_LOAD_FAILS)
--- 2026-08-04 (field case that night: ONE kick, and the async load never
--- landed; BrownianNoise_1 burned all 30 attempts over 41 s): a stuck load
--- gets the kick re-fired at 10 and 20 fails. The kick is idempotent
--- (three UDW property writes plus UDW's own three apply calls). Set by
--- countSpawnFail, consumed by Tick (which is defined after the kick fn,
--- so it can reference it without the local-ordering trap).
+-- A stuck async load gets the kick re-fired at 10 and 20 fails (field
+-- 2026-08-04: one kick, the load never landed, BrownianNoise_1 burned all
+-- 30 attempts over 41 s). The kick is idempotent (three UDW property writes
+-- plus UDW's own three apply calls). Set by countSpawnFail, consumed by Tick.
 local kickRefireWanted = false
 local probeFired = {}  -- per-offset: probe sample landed (or was queued)
 
@@ -126,12 +118,11 @@ local function warnOnce(key, msg, ctx)
     Log.Warn(MODULE, msg, ctx)
 end
 
--- ---------- game-thread-only helpers (call only from ExecuteInGameThread) ----------
+-- ---------- game-thread-only helpers (call only from a GT.Run job) ----------
 
---- True while a map teardown is in progress. Game-thread jobs are scheduled
---- from the async tick, so the world can start dying between schedule time and
---- run time; every GT entry point must re-check this at RUN time (a spawn or
---- native call against a dying world is an uncatchable access violation).
+--- True while a map teardown is in progress. GT jobs are scheduled from the
+--- async tick, so every GT entry point re-checks this at run time (a spawn
+--- or native call against a dying world is an uncatchable access violation).
 local function teardownActiveGT()
     local actors = getActors()
     if actors and actors.IsDiscoverySuspended then
@@ -149,19 +140,15 @@ local function loadSoundGT(path)
     return nil
 end
 
---- WHICH UDS SOUNDS ARE RESOLVABLE, AND WHEN (2026-07-30).
---- TIMING IS THE WHOLE POINT, and the first version of this probe got it wrong.
---- Per this module's header: StaticLoadObject ALONE fails for these assets in
---- TXR, and they only become resolvable after UDW's native apply kicks an ASYNC
---- load. A probe that samples before the kick, or in the same frame as it,
---- therefore reports a false negative on assets that are perfectly present. That
---- is exactly what happened: the first run reported all four absent while sound
---- was audibly playing in game.
---- So sample TWICE, both after the kick, and print the tick offset. The same
---- async-load mechanism is why UDW's Rain Particles component carries
---- RainParticlesAsset=nil for the first ~38 s of a course and then suddenly has
---- /Game/UltraDynamicSky/Particles/Rain assigned: sounds and rain particles are
---- one bug, not two.
+--- Which UDS sounds are resolvable, and when (2026-07-30). The assets only
+--- resolve after UDW's native apply kicks an async load (see header), so a
+--- probe sampled before the kick or in the same frame reports a false
+--- negative (the first run reported all four absent while sound was audibly
+--- playing). Sample twice, both after the kick, and print the tick offset.
+--- The same async load is why UDW's Rain Particles component carries
+--- RainParticlesAsset=nil for the first ~38 s of a course before
+--- /Game/UltraDynamicSky/Particles/Rain appears: sounds and rain particles
+--- are one bug, not two.
 local PROBE_PATHS = {
     -- the two MetaSounds UDW itself references (decompiled reference list)
     "/Game/UltraDynamicSky/Sound/MetaSounds/UDS_Global_WeatherSounds.UDS_Global_WeatherSounds",
@@ -170,9 +157,8 @@ local PROBE_PATHS = {
     "/Game/UltraDynamicSky/Sound/MetaSounds/UDS_Rain_Loop.UDS_Rain_Loop",
     "/Game/UltraDynamicSky/Sound/Wind/BrownianNoise_1.BrownianNoise_1",
 }
--- Ticks after the native kick at which to sample, 8 Hz: ~1 s and ~15 s. Two
--- samples separate "absent from the cook" from "async load has not landed yet",
--- which a single sample cannot do.
+-- Ticks after the native kick at which to sample (8 Hz: ~1 s and ~15 s); two
+-- samples separate "absent from the cook" from "async load not landed yet".
 local PROBE_AT_TICKS = { 8, 120 }
 
 local function probeUDSSoundsGT(offsetTicks)
@@ -312,21 +298,9 @@ local function updateSoundsGT(rainVol, windVol, thunderLevel)
     end
 end
 
-local function killAllSoundsGT()
-    -- During a teardown the components die with the world; just drop the
-    -- references without touching them
-    if not teardownActiveGT() then
-        fadeKillGT(rainAC)
-        fadeKillGT(windAC)
-    end
-    rainAC = nil
-    windAC = nil
-    nextThunderAt = 0
-end
-
---- The asset-loading kick: push enable + volumes to UDW and run its own sound
---- apply functions. Produces no audio itself, but causes UDW to async-load the
---- soft-referenced sound assets our spawns need. Game thread only.
+--- The asset-loading kick: push enable + volumes to UDW and run its sound
+--- apply functions. No audio itself; it makes UDW async-load the assets our
+--- spawns need (see header). Game thread only.
 local function nativeLoadKickGT()
     if teardownActiveGT() then return end
     local actors = getActors()
@@ -354,9 +328,8 @@ end
 --- dropped: one-shot callers (the probes) must re-arm on false
 local function scheduleGuarded(fn)
     if pendingUpdate then
-        -- Self-heal: a queued job evicted by the GT queue cap never runs its
-        -- flag-clear; without this every later schedule is dropped and audio
-        -- wedges silently for the session.
+        -- Self-heal: a job evicted by the GT queue cap never clears the flag,
+        -- and audio would wedge silently for the session.
         if (os.clock() - pendingSince) > 10.0 then pendingUpdate = false end
         return false
     end
@@ -442,12 +415,24 @@ function Audio.Setup()
     deadAssets = {}
     kickRefireWanted = false
     probeFired = {}
-    -- Give-up warnings are per-course state: without this clear a give-up
-    -- on any later course in the same session would be silent (deadAssets
-    -- still engages, just no log line).
+    -- Give-up warnings are per-course: without this clear a give-up on a later
+    -- course would be silent (deadAssets still engages, no log line).
     for k in pairs(warnedOnce) do
         if k:sub(1, 5) == "dead_" then warnedOnce[k] = nil end
     end
+end
+
+--- Course edge (main.lua's debounced lifecycle, and Tick's own suspension
+--- check): re-arm the settle/kick sequence and drop the loop refs without
+--- touching them.
+function Audio.OnCourseUnload()
+    settleTicks = 0
+    appliedThisCourse = false
+    kickTicks = -1
+    kickRefireWanted = false
+    probeFired = {}
+    rainAC, windAC = nil, nil
+    nextThunderAt = 0
 end
 
 --- Per-tick: after the settle gate, run the direct-spawn volume update every ~1s
@@ -456,14 +441,16 @@ function Audio.Tick()
 
     local actors = getActors()
     if not actors or not actors.IsOnCourse() then
-        -- Course unloaded: re-arm and fade out anything still playing
-        settleTicks = 0
-        appliedThisCourse = false
-        kickTicks = -1
-        kickRefireWanted = false
-        probeFired = {}
-        if rainAC or windAC then
-            scheduleGuarded(killAllSoundsGT)
+        -- Actors missing. A real exit (discovery suspended by LoadMapPreHook or
+        -- the found-but-invalid sky after a race) re-arms and drops the loop
+        -- refs without touching them: the components die with the world, and
+        -- a fade queued here could drain after the next world is alive (the
+        -- freed-object IsValid class). Anything else is the ~1 s rediscovery
+        -- blip of a photomode open or ClientRestart churn, which main.lua
+        -- absorbs: keep the settle/kick state and the playing loops, so rain
+        -- no longer drops out for ~5 s at every open.
+        if actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
+            Audio.OnCourseUnload()
         end
         return
     end
@@ -473,22 +460,18 @@ function Audio.Tick()
 
     if not appliedThisCourse then
         appliedThisCourse = true
-        applied = true
         kickTicks = 0
         scheduleGuarded(nativeLoadKickGT)
     end
 
-    -- Sound probes run WELL AFTER the kick, never with it: the kick starts an
-    -- async load and the assets are unresolvable until it lands, so a same-frame
-    -- probe reports a false negative (which is exactly what the first version of
-    -- this probe did). Separate scheduleGuarded calls on separate ticks, because
-    -- it drops a request while one is already queued.
+    -- Probes run well after the kick, never with it (see PROBE_PATHS), as
+    -- separate scheduleGuarded calls on separate ticks: it drops a request
+    -- while one is already queued.
     if kickTicks >= 0 then
         kickTicks = kickTicks + 1
-        -- >= plus the fired flag, not ==: a GT hitch spanning one async
-        -- tick used to eat the exact-match sample permanently (observed
-        -- with a 155 ms RainCollision pass one tick before the 8-tick
-        -- probe), corrupting the very timing measurement the probe is for.
+        -- >= plus the fired flag, not ==: a GT hitch spanning one async tick
+        -- ate the exact-match sample permanently (a 155 ms RainCollision pass
+        -- one tick before the 8-tick probe).
         for _, at in ipairs(PROBE_AT_TICKS) do
             if kickTicks >= at and not probeFired[at] then
                 local off = at
@@ -522,7 +505,7 @@ function Audio.Tick()
     pcall(function() wind = tonumber(udw["Wind Intensity"]) or 0.0 end)
     pcall(function() thunder = tonumber(udw["Thunder/Lightning"]) or 0.0 end)
 
-    -- 0-10 -> 0-1, monolith-style volume curves, config scales on top; nil = kill
+    -- 0-10 scaled to 0-1, monolith-style volume curves, config scales on top; nil = kill
     local rain01 = rain / 10.0
     local wind01 = wind / 10.0
     local rainVol = nil
@@ -535,60 +518,6 @@ function Audio.Tick()
     end
 
     scheduleSoundUpdate(rainVol, windVol, thunder)
-end
-
---- Toggle all weather audio
---- @return boolean newState
-function Audio.Toggle()
-    audioEnabled = not audioEnabled
-    if not audioEnabled then
-        scheduleGuarded(killAllSoundsGT)
-    end
-    Log.Info(MODULE, "Audio toggled", {enabled = audioEnabled})
-    return audioEnabled
-end
-
---- Set rain volume (picked up by the next ~1s update)
---- @param volume number 0.0-1.0
-function Audio.SetRainVolume(volume)
-    RAIN_VOLUME_SCALE = math.max(0.0, math.min(1.0, volume))
-end
-
---- Set wind volume
---- @param volume number 0.0-1.0
-function Audio.SetWindVolume(volume)
-    WIND_VOLUME_SCALE = math.max(0.0, math.min(1.0, volume))
-end
-
---- Set thunder volume
---- @param volume number 0.0-1.0
-function Audio.SetThunderVolume(volume)
-    THUNDER_VOLUME_SCALE = math.max(0.0, math.min(1.0, volume))
-end
-
---- Check if audio is enabled
---- @return boolean
-function Audio.IsEnabled()
-    return audioEnabled
-end
-
---- Get status for debugging
---- @return table
-function Audio.GetStatus()
-    return {
-        initialized = isInitialized,
-        enabled = audioEnabled,
-        applied = applied,
-        appliedThisCourse = appliedThisCourse,
-        rainLoop = rainAC ~= nil,
-        windLoop = windAC ~= nil,
-        rainEnabled = ENABLE_RAIN_AUDIO,
-        windEnabled = ENABLE_WIND_AUDIO,
-        thunderEnabled = ENABLE_THUNDER_AUDIO,
-        rainVolume = RAIN_VOLUME_SCALE,
-        windVolume = WIND_VOLUME_SCALE,
-        thunderVolume = THUNDER_VOLUME_SCALE,
-    }
 end
 
 return Audio

@@ -21,32 +21,38 @@ local discoveryAttempts = 0
 local lastDiscoveryTime = 0
 local isSearching = false
 
--- Map-teardown guard. Between LoadMapPreHook (old world starts dying) and the
--- next sky-actor BeginPlay (new world constructing), the game thread is
--- destroying the object array. Searching it from the async tick during that
--- window (FindFirstOf) reads dying objects, the suspected cause of the
--- intermittent course-to-garage transition crash (access violation inside the
--- object search; see the "UDS found but not valid" spam right before each one).
--- Discovery is suspended for the window, with a time failsafe in case no sky
--- actor ever begins play (menu-only worlds).
+-- Map-teardown guard. Between LoadMapPreHook (old world dying) and the next
+-- sky-actor BeginPlay (new world constructing) the game thread is destroying
+-- the object array; an async FindFirstOf in that window reads dying objects
+-- (the suspected cause of the intermittent course-to-garage crash: access
+-- violation inside the object search, "UDS found but not valid" spam right
+-- before each one). Discovery is suspended for the window, with a time
+-- failsafe for worlds where no sky actor ever begins play (menu-only).
 local suspendedForTeardown = false
 local suspendedAt = 0
 local SUSPEND_FAILSAFE_SECONDS = 15
 
--- Outgame settle (2026-07-21, the map-open crash fix). In the GARAGE outgame
--- world the UDS always resolves but its UDW never validates ("UDW found but
--- not valid" once per second, forever), while in the PA outgame world both
--- validate within ~2 attempts of world load. So after the garage signature
--- repeats, further polling is pure exposure: every FindFirstOf/property read
--- from the async tick can land on an object the map screen's streaming just
--- freed (the 07-18/07-20 dump class). Once settled, discovery goes quiet for
--- the rest of the world's life; every scene change on this game is a map swap,
--- so the next world resets the settle in SuspendDiscovery/OnMapLoad.
+-- Outgame settle (2026-07-21, the map-open crash fix). In the garage outgame
+-- world the UDS resolves but its UDW never validates ("UDW found but not
+-- valid" once per second, forever); in the PA outgame world both validate
+-- within ~2 attempts. After the garage signature repeats, further polling is
+-- pure exposure (every async FindFirstOf/property read can land on an object
+-- the map screen's streaming just freed: the 07-18/07-20 dump class), so
+-- discovery goes quiet for the rest of the world's life. Every scene change
+-- on this game is a map swap, and SuspendDiscovery resets the settle.
 local outgameSettled = false
 local udwInvalidStreak = 0
 local resumedAt = 0
-local OUTGAME_SETTLE_STREAK = 2      -- consecutive garage-signature hits
-local OUTGAME_SETTLE_MIN_SECONDS = 3 -- never settle before PA discovery could land
+-- Garage settle. The garage's UDS never gets a valid UDW; the PA's does, a
+-- few seconds after its UDS validates. Two hits inside 3 s settled the
+-- world before the PA's UDW was up, and a settled world was never probed
+-- again, so the PA went undetected: no time carry, no PA autosave, and the
+-- course returned to its exit time. Settle later, and keep one slow probe
+-- alive afterwards (OUTGAME_REPROBE_S) for a PA scene that validates late
+-- or is entered from the garage menus.
+local OUTGAME_SETTLE_STREAK = 6       -- consecutive garage-signature hits
+local OUTGAME_SETTLE_MIN_SECONDS = 12 -- never settle before PA discovery could land
+local OUTGAME_REPROBE_S = 30          -- settled outgame world: one probe per this
 
 -- Event-driven outgame signal: set from main.lua's BeginPlayPreHook when an
 -- OutGameGarageManager/OutGameMode actor begins play (game thread, actor in
@@ -54,12 +60,12 @@ local OUTGAME_SETTLE_MIN_SECONDS = 3 -- never settle before PA discovery could l
 -- its FindFirstOf probe. Cleared with the world.
 local garageEventThisWorld = false
 
--- Course post-race settle (2026-07-21 field find): after a race ends the
--- course world lingers (result/photo screens) with the sky torn down, and
--- rediscovery probed the dead UDS every 2s indefinitely. Once we HAD valid
--- actors in this world and then hit a run of UDS-invalid finds, the sky is
--- gone for this world's life: stop probing. A sky BeginPlay (race retry
--- respawning it) re-runs OnMapLoad and resets this, as does any map swap.
+-- Course post-race settle (2026-07-21 field find): after a race the course
+-- world lingers (result/photo screens) with the sky torn down, and
+-- rediscovery probed the dead UDS every 2s indefinitely. Once this world had
+-- valid actors and then hits a run of UDS-invalid finds, the sky is gone for
+-- the world's life: stop probing. A map swap resets this (SuspendDiscovery)
+-- and a successful discovery clears it.
 local courseSettled = false
 local hadActorsThisWorld = false
 local udsInvalidStreak = 0
@@ -88,10 +94,9 @@ local function getWorldTagFromActor(actor)
     end
     if not worldValid then return "unknown" end
 
-    -- GetFullName, NOT tostring: tostring(world) is just "UWorld: 0x..." (the
-    -- userdata address, no map path), so the old tostring version never
-    -- matched anything and always fell through to "course" here (the
-    -- garage-manager probe below rescued outgame detection).
+    -- GetFullName, not tostring: tostring(world) is "UWorld: 0x..." (address,
+    -- no map path), so a tostring match never fired and always fell through
+    -- to "course".
     local ws = nil
     pcall(function() ws = worldObj:GetFullName() end)
 
@@ -116,20 +121,19 @@ local garageCheckCache = {
     checkInterval = 1.5  -- seconds
 }
 
---- Force the next isInGarage() call to re-probe instead of returning the cache.
---- Called when cached actors are lost so the first check after a world transition
---- is fresh (no up-to-interval stale window on garage/course entry).
+--- Force the next isInGarage() call to re-probe: called when cached actors
+--- are lost, so the first check after a world transition is fresh.
 local function invalidateGarageCache()
     garageCheckCache.lastCheck = 0
 end
 
---- Check if we're in the garage / outgame menus (cached for performance).
---- Two signals, both outgame-only (destroyed on travel into a course/PA, so neither
---- can false-positive in-game and re-trigger the night exposure during course entry):
----   1. BP_OutGameGarageManager_C: the garage manager (garage screen specifically).
----   2. BP_OutGameMode_C:           the outgame GameMode (distinct from the course's
----      BP_RaceGameMode_C). Covers car-select/menus too and spawns early in the
----      outgame level load, so it usually detects sooner than the garage manager.
+--- In the garage / outgame menus? (cached). Two signals, both outgame-only
+--- (destroyed on travel into a course/PA, so neither can false-positive
+--- in-game and re-trigger the night exposure during course entry):
+---   1. BP_OutGameGarageManager_C: the garage screen specifically.
+---   2. BP_OutGameMode_C: the outgame GameMode (the course runs
+---      BP_RaceGameMode_C); covers car-select/menus too and spawns early in
+---      the outgame level load, so it usually detects sooner.
 --- @return boolean
 local function isInGarage()
     -- During map teardown, don't probe the object array; serve the cache
@@ -218,35 +222,36 @@ end
 
 --- Validate that cached actors are still valid
 --- @return boolean True if both actors are valid
+-- Per-tick memo: modules call GetUDS/GetUDW dozens of times per tick and
+-- each call re-ran both IsValid checks; one verdict per loop count and
+-- actor pair covers them all (a fresh pair from discovery misses the memo).
+local validMemoLoop, validMemoUds, validMemoUdw, validMemoResult = -1, nil, nil, false
+
 local function validateCachedActors()
     -- Teardown window: do not even touch the cached objects. IsValidObject
-    -- on a freed object is UNDEFINED and can read true (2026-07-14 beta
+    -- on a freed object is undefined and can read true (2026-07-14 beta
     -- crash: the dead course UDS kept "validating" in the PA world until a
     -- property read hit freed memory).
     if suspendedForTeardown then return false end
 
     local uds = State.GetUDS()
     local udw = State.GetUDW()
-    
-    if not uds or not udw then
-        return false
+    if uds and udw then
+        local loop = State.GetLoopCount()
+        if loop == validMemoLoop and uds == validMemoUds and udw == validMemoUdw then
+            return validMemoResult
+        end
+        validMemoLoop, validMemoUds, validMemoUdw = loop, uds, udw
+        validMemoResult = Utils.IsValidObject(uds) and Utils.IsValidObject(udw)
+        if not validMemoResult then
+            Log.Info(MODULE, "Cached actors became invalid")
+            State.ClearActors()
+            invalidateGarageCache()  -- world is changing: re-probe garage/outgame immediately
+        end
+        return validMemoResult
     end
     
-    -- Check if actors are still valid (not destroyed)
-    local udsValid = Utils.IsValidObject(uds)
-    local udwValid = Utils.IsValidObject(udw)
-    
-    if not udsValid or not udwValid then
-        Log.Info(MODULE, "Cached actors became invalid", {
-            udsValid = udsValid,
-            udwValid = udwValid
-        })
-        State.ClearActors()
-        invalidateGarageCache()  -- world is changing: re-probe garage/outgame immediately
-        return false
-    end
-    
-    return true
+    return false
 end
 
 --- Perform actor discovery
@@ -279,10 +284,8 @@ local function discoverActors()
             udsInvalidWarnAt = nowW + 30.0
             Log.Warn(MODULE, "UDS found but not valid (repeats muted 30s)")
         end
-        -- Course post-race signature: we HAD live actors in this world and
-        -- now the found UDS repeatedly fails validation = the sky is torn
-        -- down for good (result screens). Settle; a sky BeginPlay or map
-        -- swap resets it.
+        -- Course post-race signature (see courseSettled): live actors
+        -- earlier in this world, now a UDS that repeatedly fails validation.
         if hadActorsThisWorld and not garageEventThisWorld then
             udsInvalidStreak = udsInvalidStreak + 1
             if not courseSettled and udsInvalidStreak >= COURSE_SETTLE_STREAK then
@@ -290,17 +293,16 @@ local function discoverActors()
                 Log.Info(MODULE, "Course discovery settled (sky gone, probes off until next sky/map event)")
             end
         end
-        -- EARLY TEARDOWN SUSPENSION (2026-08-10): in a world that HAD
-        -- live actors, a found-but-invalid UDS means the world is dying
-        -- RIGHT NOW, up to ~2s BEFORE LoadMapPreHook fires (the 08-08
-        -- PA-exit timing finding). Crash dumps sit second-exact on this
-        -- log line while a GT closure faulted on a freed object (the
-        -- +0x0C family). Suspend immediately: drops every cached ref and
-        -- closes the pre-hook window for every IsDiscoverySuspended-gated
-        -- closure. False positives (post-race result screens) cost
-        -- nothing: the sky is gone there anyway and the 15s failsafe
-        -- re-arms discovery; SuspendDiscovery resets hadActorsThisWorld,
-        -- so this fires once per teardown.
+        -- Early teardown suspension (2026-08-10): in a world that had live
+        -- actors, a found-but-invalid UDS means the world is dying now, up
+        -- to ~2s before LoadMapPreHook (the 08-08 PA-exit timing finding;
+        -- crash dumps sit second-exact on this log line while a GT closure
+        -- faulted on a freed object, the +0x0C family). Suspending drops
+        -- every cached ref and closes that window for every
+        -- IsDiscoverySuspended-gated closure. False positives (post-race
+        -- result screens) cost nothing: the sky is gone there anyway and
+        -- the 15s failsafe re-arms discovery. Fires once per teardown
+        -- (SuspendDiscovery resets hadActorsThisWorld).
         if hadActorsThisWorld then
             Actors.SuspendDiscovery()
         end
@@ -321,23 +323,26 @@ local function discoverActors()
     
     -- Validate UDW
     if not Utils.IsValidObject(udw) then
-        Log.Warn(MODULE, "UDW found but not valid")
-        -- EARLY TEARDOWN SUSPENSION (2026-08-10): outside the garage
-        -- signature below, a dying UDW in a world that HAD live actors is
-        -- the same pre-LoadMapPreHook death window as the UDS branch
-        -- above (some exit paths kill the UDW first). Suspend and DROP
-        -- the caches instead of falling through to SetUDS, which used to
-        -- re-cache a UDS that is dying with its world and kept a doomed
-        -- ref alive for the whole window.
+        -- A settled garage re-probes every 30 s and always lands here:
+        -- Debug then, Warn only while the verdict is still open
+        if outgameSettled then
+            Log.Debug(MODULE, "UDW found but not valid")
+        else
+            Log.Warn(MODULE, "UDW found but not valid")
+        end
+        -- Same early teardown suspension as the UDS branch: outside the
+        -- garage signature, a dying UDW in a world that had live actors is
+        -- the same pre-LoadMapPreHook death window (some exit paths kill
+        -- the UDW first). Falling through to SetUDS re-cached a UDS dying
+        -- with its world and kept a doomed ref alive for the whole window.
         if hadActorsThisWorld and not garageEventThisWorld then
             Actors.SuspendDiscovery()
             return false
         end
         State.SetUDS(uds)
-        -- Garage signature: UDS resolves, UDW never validates. In a known
-        -- outgame world, repeated hits settle discovery for this world (see
-        -- the settle block at the top of the file). The nil-UDW branch above
-        -- does NOT count: a PA world mid-init can legitimately show that.
+        -- Garage signature: UDS resolves, UDW never validates (see
+        -- outgameSettled). The nil-UDW branch above does not count: a PA
+        -- world mid-init can legitimately show that.
         if garageEventThisWorld then
             udwInvalidStreak = udwInvalidStreak + 1
             if not outgameSettled
@@ -441,20 +446,14 @@ function Actors.GetWorldTag()
     return State.GetWorldContext()
 end
 
---- Check if we're in the PA scene. There is NO separate "pa" world: the PA
---- lives in the same outgame world as the garage but has its OWN working
---- UDS/UDW. Discovery succeeding there is the reliable signal; the garage's
---- UDS never validates, so validated cached actors + outgame context = PA.
+--- In the PA scene? There is no separate "pa" world: the PA lives in the
+--- same outgame world as the garage but has its own working UDS/UDW.
+--- Discovery succeeding there is the reliable signal; the garage's UDS
+--- never validates, so validated cached actors + outgame context = PA.
 --- @return boolean
 function Actors.IsInPAScene()
     if State.GetWorldContext() ~= "outgame" then return false end
     return validateCachedActors()
-end
-
---- Check if in outgame (garage/menu)
---- @return boolean
-function Actors.IsInOutgame()
-    return State.GetWorldContext() == "outgame"
 end
 
 --- Check if specifically in garage (using BP_OutGameGarageManager_C detection)
@@ -463,18 +462,11 @@ function Actors.IsInGarage()
     return isInGarage()
 end
 
---- Force a discovery attempt
---- @return boolean True if actors found
-function Actors.Discover()
-    return discoverActors()
-end
-
---- Suspend discovery while the old world tears down (from LoadMapPreHook).
---- ALSO drops every cached actor ref on the spot: the EndPlay-driven
---- OnMapUnload does not fire on this game's world swaps, and a ref that
---- survives the swap can falsely validate against freed memory and crash
---- the next property read (the 2026-07-14 PA-transition beta crash, dump
---- rsi = the previous course's UDS). No actor ref may outlive its world.
+--- Suspend discovery while the old world tears down (from LoadMapPreHook)
+--- and drop every cached actor ref on the spot: a ref that survives the
+--- swap can falsely validate against freed memory and crash the next
+--- property read (the 2026-07-14 PA-transition beta crash, dump rsi = the
+--- previous course's UDS). No actor ref may outlive its world.
 function Actors.SuspendDiscovery()
     if not suspendedForTeardown then
         suspendedForTeardown = true
@@ -503,31 +495,33 @@ function Actors.ResumeDiscovery()
     if suspendedForTeardown then
         suspendedForTeardown = false
         resumedAt = os.time()
+        -- Fresh world = fresh retry budget: without this a world where
+        -- discovery never succeeded (title, menus) carried the exhausted
+        -- counter into the next course, which then probed at the slow
+        -- PeriodicCheckInterval until its first hit
+        discoveryAttempts = 0
         Log.Info(MODULE, "Discovery resumed (new world alive)")
     end
 end
 
---- Event-driven outgame signal from main.lua's BeginPlayPreHook: an
---- OutGameGarageManager/OutGameMode actor is beginning play in the new world
---- (game-thread context, actor already in hand). Marks the world outgame so
---- the async garage probe never needs to run, and lets the garage settle
---- logic engage. PA worlds carry these managers too; that matches what the
---- old FindFirstOf probe answered there, and IsInPAScene is unaffected (it
---- keys on validated actors, which only the PA scene provides).
+--- Outgame signal from main.lua's BeginPlayPreHook (game thread, actor in
+--- hand): marks the world outgame so the async garage probe never runs and
+--- the garage settle logic can engage. PA worlds carry these managers too,
+--- matching what the FindFirstOf probe answered there; IsInPAScene keys on
+--- validated actors, which only the PA scene provides, so it is unaffected.
 function Actors.OnOutgameManagerBeginPlay()
     garageEventThisWorld = true
     garageCheckCache.isInGarage = true
     garageCheckCache.lastCheck = os.clock()
 end
 
---- Mid-course weather-cluster churn signal (weather.lua's ClientRestart
---- hook, 2026-08-10 20:14 crash): the game rebuilds the weather actor
---- MID-COURSE (a fresh UDW instance appeared 4x in the 13:55 session and
---- 13s before the 20:14:28 crash), so every cached actor ref may be a
---- corpse the moment this fires. Drop the caches WITHOUT suspending:
---- discovery stays live in this world and re-finds within ~1s, and the
---- 5s revalidation cycle can no longer be the first (faulting) touch of
---- a freed object. NOT a teardown: settle/garage state stays untouched.
+--- Mid-course weather-cluster churn (weather.lua's ClientRestart hook,
+--- 2026-08-10 20:14 crash): the game rebuilds the weather actor mid-course
+--- (a fresh UDW instance appeared 4x in the 13:55 session and 13s before
+--- the 20:14:28 crash), so every cached ref may be a corpse when this
+--- fires. Drop the caches without suspending: discovery re-finds within
+--- ~1s, and the 5s revalidation can no longer be the first (faulting)
+--- touch of a freed object. Not a teardown: settle/garage state stays.
 function Actors.OnWeatherClusterChurn()
     State.ClearActors()
     udwInvalidStreak = 0
@@ -538,46 +532,6 @@ end
 --- @return boolean
 function Actors.IsDiscoverySuspended()
     return suspendedForTeardown
-end
-
---- Called when a map loads (from BeginPlay hook)
-function Actors.OnMapLoad()
-    Log.Info(MODULE, "Map load detected: starting actor discovery")
-    suspendedForTeardown = false
-    isSearching = true
-    discoveryAttempts = 0
-    outgameSettled = false
-    courseSettled = false
-    hadActorsThisWorld = false
-    udwInvalidStreak = 0
-    udsInvalidStreak = 0
-    resumedAt = os.time()
-    
-    -- Attempt immediate discovery
-    if discoverActors() then
-        Log.Info(MODULE, "Actors found on map load")
-    else
-        Log.Debug(MODULE, "Actors not immediately available, will retry")
-    end
-end
-
---- Called when a map unloads (from EndPlay hook)
-function Actors.OnMapUnload()
-    Log.Info(MODULE, "Map unload detected: clearing actors")
-    State.ClearActors()
-    State.SetWorldContext("unknown")
-    isSearching = false
-    discoveryAttempts = 0
-    
-    -- Reset garage cache + settle/event state
-    garageCheckCache.isInGarage = false
-    garageCheckCache.lastCheck = 0
-    garageEventThisWorld = false
-    outgameSettled = false
-    courseSettled = false
-    hadActorsThisWorld = false
-    udwInvalidStreak = 0
-    udsInvalidStreak = 0
 end
 
 --- Tick function, called from main loop
@@ -593,10 +547,18 @@ function Actors.Tick()
         end
     end
 
-    -- Settled (garage determined, or course sky gone post-race): zero object
-    -- touches until the next sky BeginPlay / map load
-    if (outgameSettled or courseSettled) and not State.HasActors() then
-        return
+    -- Settled: the post-race course (sky gone for good) stays quiet until
+    -- the next map load; a settled outgame world keeps one slow probe so a
+    -- PA scene that validates late, or is entered from the garage menus,
+    -- is still found
+    if not State.HasActors() then
+        if courseSettled then return end
+        if outgameSettled then
+            if os.time() - lastDiscoveryTime >= OUTGAME_REPROBE_S then
+                discoverActors()
+            end
+            return
+        end
     end
 
     -- If we already have valid actors, just validate periodically
@@ -658,50 +620,6 @@ function Actors.GetStatus()
     }
 end
 
---- Safely read a property from UDS
---- @param propertyName string
---- @param default any
---- @return any value, boolean success
-function Actors.GetUDSProperty(propertyName, default)
-    local uds = Actors.GetUDS()
-    if not uds then
-        return default, false
-    end
-    return Utils.SafeGetProperty(uds, propertyName, default)
-end
-
---- Safely write a property to UDS
---- @param propertyName string
---- @param value any
---- @return boolean success
-function Actors.SetUDSProperty(propertyName, value)
-    local uds = Actors.GetUDS()
-    if not uds then
-        Log.Warn(MODULE, "Cannot set UDS property: no actor", {property = propertyName})
-        return false
-    end
-    
-    local success = Utils.SafeSetProperty(uds, propertyName, value)
-    if success then
-        Log.Debug(MODULE, "Set UDS property", {property = propertyName, value = tostring(value)})
-    else
-        Log.Error(MODULE, "Failed to set UDS property", {property = propertyName})
-    end
-    return success
-end
-
---- Safely read a property from UDW
---- @param propertyName string
---- @param default any
---- @return any value, boolean success
-function Actors.GetUDWProperty(propertyName, default)
-    local udw = Actors.GetUDW()
-    if not udw then
-        return default, false
-    end
-    return Utils.SafeGetProperty(udw, propertyName, default)
-end
-
 --- Safely write a property to UDW
 --- @param propertyName string
 --- @param value any
@@ -731,37 +649,6 @@ function Actors.GetUDWFunction(functionName)
         return nil, false
     end
     return Utils.SafeGetFunction(udw, functionName)
-end
-
---- Call a function on UDW actor
---- @param functionName string
---- @param ... any Arguments
---- @return any result, boolean success
-function Actors.CallUDWFunction(functionName, ...)
-    local udw = Actors.GetUDW()
-    if not udw then
-        Log.Warn(MODULE, "Cannot call UDW function: no actor", {func = functionName})
-        return nil, false
-    end
-    
-    local fn, found = Utils.SafeGetFunction(udw, functionName)
-    if not found then
-        Log.Error(MODULE, "UDW function not found", {func = functionName})
-        return nil, false
-    end
-    
-    local args = {...}
-    local success, result = pcall(function()
-        return fn(table.unpack(args))
-    end)
-    
-    if success then
-        Log.Debug(MODULE, "Called UDW function", {func = functionName})
-        return result, true
-    else
-        Log.Error(MODULE, "UDW function call failed", {func = functionName, error = tostring(result)})
-        return nil, false
-    end
 end
 
 -- Initialize on load

@@ -1,32 +1,26 @@
 -- TXR Weather Mod v3.0
 -- systems/photomode.lua
--- Removes the restrictions on TXR's Advanced Photo Mode free camera. Folded in from
--- the standalone "PhotoModeUnlocked" mod (kept on disk but disabled) so the whole
--- experience ships in one mod. Pure runtime reflection; adds/modifies no game files.
+-- Removes the restrictions on TXR's Advanced Photo Mode free camera (folded
+-- in from the standalone PhotoModeUnlocked mod, kept on disk but disabled).
+-- Pure runtime reflection, no game files touched. Unlocks, all configurable
+-- in Config.PhotoMode: camera collision (fly through cars, walls, off the
+-- track), the distance cap, the orbit camera's pan limits, FOV/zoom (widens
+-- the in-game FOV slider so the normal zoom goes further), move speed
+-- (multiplies the slow fly speed), rotation speed (scaled with FOV so
+-- zoomed-in framing is not twitchy) and the vignette default (the slider
+-- ships at 40, forced off).
 --
--- What it unlocks (all configurable in Config.PhotoMode):
---  , camera collision  (fly through cars/walls and outside the track)
---  , distance limit     (no cap on how far the camera can move from the car)
---  , orbit pan limits   (the non-free "orbit" camera can pan much further)
---  : FOV / zoom         (widens the in-game FOV slider's range so the normal zoom goes further)
---  , move speed         (multiplies the free camera's painfully slow fly speed)
---  , rotation speed     (scaled with FOV so zoomed-in framing isn't twitchy)
---  , vignette default   (forces the photo-mode vignette slider off, it ships at 40)
+-- TXR's photo mode is the AdvancedPhotoMode plugin: BPC_PhotoMode (the
+-- component, holds the limits) and BP_FreeCamera (the spawned free camera),
+-- both under /Game/AdvancedPhotoMode/Blueprints/. The camera copies its
+-- limits from the component on spawn, so both are set (component for
+-- re-spawns, live camera for now) and re-asserted while photo mode is open.
 --
--- TXR's photo mode is the "AdvancedPhotoMode" plugin:
---   /Game/AdvancedPhotoMode/Blueprints/BPC_PhotoMode   (the component, holds the limits)
---   /Game/AdvancedPhotoMode/Blueprints/BP_FreeCamera    (the spawned free camera)
--- The free camera copies its limits from the component when it spawns, so we set both
--- (the component so re-spawns stay unlocked, the live camera so it takes effect now)
--- and re-assert periodically while photo mode is open.
---
--- Threading: this module runs its OWN dedicated LoopAsync (started in Init), NOT the
--- shared 8 Hz main tick. The standalone worked that way and folding it onto the shared
--- tick let other modules / actor-discovery churn occasionally stall the re-assert. The
--- loop body runs on the async thread; the actual writes are object/widget/function calls
--- on photo-mode actors, so they're marshalled onto the game thread via ExecuteInGameThread
--- (the same proven pattern the standalone used). When photo mode isn't open the find()
--- calls return nil and a pass is a cheap no-op.
+-- Threading: this module runs its own LoopAsync (started in Init), not the
+-- shared 8 Hz tick, where module and actor-discovery churn stalled the
+-- re-assert. The loop body is async; the writes touch photo-mode actors and
+-- widgets, so they are marshalled through GT.Run. With photo mode closed the
+-- find() calls return nil and a pass is a cheap no-op.
 
 local PhotoMode = {}
 
@@ -57,11 +51,10 @@ local function getActors()
     return Actors
 end
 
---- True while a map teardown is in progress. This module's dedicated loop and
---- its game-thread closures both do FindAllOf sweeps + object writes; running
---- those against a dying world is the round-3/4 crash mechanism (uncatchable
---- access violation), so every pass checks this on the async side AND again at
---- game-thread RUN time (the world can start dying between schedule and run).
+--- True while a map teardown is in progress. FindAllOf sweeps and object
+--- writes against a dying world are an uncatchable access violation, so every
+--- pass checks this on the async side and again at game-thread run time (the
+--- world can start dying between schedule and run).
 local function teardownActive()
     local actors = getActors()
     if actors and actors.IsDiscoverySuspended then
@@ -70,23 +63,24 @@ local function teardownActive()
     return false
 end
 
--- Resolve the first VALID instance of a class. FindFirstOf can hand back a STALE /
--- pending-kill object (e.g. a just-destroyed free camera lingering until GC) whose
--- IsValid() is false, which would make us think photo mode closed and drop every
--- unlock until the GC runs. Scanning FindAllOf for the first live instance kills that
--- intermittent dropout; FindFirstOf is only a fallback.
+--- First valid instance of cls, plus the whole list so a caller that also
+--- needs every instance does not sweep the object array twice. FindFirstOf
+--- can hand back a pending-kill object (a just-destroyed free camera lingering
+--- until GC) whose IsValid() is false, which read as "photo mode closed" and
+--- dropped every unlock until the GC ran; the first live instance from
+--- FindAllOf fixed that dropout, FindFirstOf is only the fallback.
 local function find(cls)
     local list = nil
     pcall(function() list = FindAllOf(cls) end)
     if type(list) == "table" then
         for _, o in ipairs(list) do
-            if valid(o) then return o end
+            if valid(o) then return o, list end
         end
     end
     local o = nil
     pcall(function() o = FindFirstOf(cls) end)
-    if valid(o) then return o end
-    return nil
+    if valid(o) then return o, list end
+    return nil, list
 end
 
 local function setf(obj, field, value)
@@ -163,19 +157,24 @@ local function unlock_freecam(cam)
 end
 
 -- ============== widen the in-game FOV slider + default the vignette slider ==============
--- The photo-mode menu builds its settings as WBP_PhotoMode_Bar_Slider widgets, each with
--- its own Min/MaxValue. MoveCapture applies the slider's value WITHOUT re-clamping, so
--- raising the FOV slider's Min/Max is what actually widens the zoom range. The menu has
--- several sliders; we match the FOV one by its internal ListKey ("FOV"); the on-screen
--- "Zoom" name is localized display text and is unreliable to match on. Re-applied each
--- tick (the menu rebuilds sliders on open) but only re-inits when the range/step isn't
+-- The menu builds its settings as WBP_PhotoMode_Bar_Slider widgets with their
+-- own Min/MaxValue. MoveCapture applies the slider value without re-clamping,
+-- so raising the FOV slider's Min/Max is what widens the zoom. The FOV slider
+-- is matched by its internal ListKey "FOV" (the on-screen "Zoom" name is
+-- localized text, unreliable to match). Re-applied each pass (the menu
+-- rebuilds sliders on open), re-inited only when the range/step is not
 -- already ours (no flicker).
 
 local _loggedKeys = {}        -- discovery dedup: log each distinct slider (by key) once
 local _fovWidenLogged = false -- log the "Widened" line once per session, not every tick
 local _vignetteForced = false -- force the vignette slider to default once per menu presence
 
+local fovSliderSweepAt = 0.0
 local function widen_fov_sliders()
+    -- One widget sweep per second, not every 200 ms pass (game-thread cost)
+    local nowS = os.clock()
+    if (nowS - fovSliderSweepAt) < 1.0 then return end
+    fovSliderSweepAt = nowS
     local sliders = nil
     pcall(function() sliders = FindAllOf("WBP_PhotoMode_Bar_Slider_C") end)
     if type(sliders) ~= "table" then
@@ -213,8 +212,8 @@ local function widen_fov_sliders()
                 local desiredStep = (now < (cfg.FovFineBelow or 10.0))
                     and (cfg.FovStepFine or 0.25) or (cfg.FovStep or 1.0)
 
-                -- Re-init when the range OR the step isn't what we want. (The menu rebuilds
-                -- the slider on open, and the step has to flip as you cross the threshold.)
+                -- Re-init when the range or the step is off (the menu rebuilds the
+                -- slider on open, and the step flips across the threshold).
                 local curStep = num(s, "StepValue")
                 local rangeOff = (mx == nil) or (math.abs(mx - cfg.FovSliderMax) > 0.5)
                     or (mn ~= nil and math.abs(mn - cfg.FovSliderMin) > 0.5)
@@ -267,9 +266,9 @@ end
 local _origMoveSens = nil
 local function apply_movement_speed(comp, cam)
     if not cfg.SetMovementSpeed then return end
-    -- Cache the vanilla MovementSensitivity ONCE, before we ever change it, so the
-    -- multiplier is always computed from the original and can't compound across
-    -- re-applies / camera respawns. Prefer the component (stable); fall back to the cam.
+    -- Cache the vanilla MovementSensitivity once, before changing it, so the
+    -- multiplier never compounds across re-applies or camera respawns.
+    -- Prefer the component (stable), fall back to the cam.
     if _origMoveSens == nil then
         local src = (valid(comp) and comp) or (valid(cam) and cam) or nil
         if src then
@@ -291,8 +290,7 @@ end
 local _origRotSens = nil
 local function apply_rotation_scale(comp, cam)
     if not cfg.ScaleRotationWithFov then return end
-    -- Cache the vanilla RotationSensitivity once (before we change it) so the scaling
-    -- is always computed from the original and never compounds.
+    -- Cache the vanilla RotationSensitivity once so the scaling never compounds.
     if _origRotSens == nil then
         local src = (valid(comp) and comp) or (valid(cam) and cam) or nil
         if src then
@@ -333,18 +331,16 @@ end
 -- writes onto the game thread. No-op when photo mode isn't open; with the
 -- manager hooks live, idle passes touch no objects at all.
 
--- Session state, declared BEFORE every reader below (local-ordering rule:
+-- Session state, declared before every reader below (local-ordering rule:
 -- onApertureSet reads _sessionOpen from the hook callback)
 local _sessionOpen = false
--- CLOSE DEBOUNCE (2026-08-11, first session on the g1c1a1497 UE4SS build):
--- the member scan intermittently returned a one-pass "everything gone /
--- all false" verdict MID-SESSION (metering ON/OFF flapping seconds apart
--- in the 01:02 log; both BPC_PhotoMode_C and BP_FreeCamera_C vanish for
--- one pass then return, which is a scan-side artifact, most plausibly the
--- GC mark phase making live objects read unreachable to the iterator).
--- A close verdict is now only acted on after CLOSE_MISSES consecutive
--- closed passes (~600ms); opens stay instant. World teardown still closes
--- immediately.
+-- Close debounce (2026-08-11, first session on the g1c1a1497 UE4SS build):
+-- the member scan intermittently returns a one-pass "everything gone / all
+-- false" verdict mid-session (metering flapped on/off seconds apart in the
+-- 01:02 log; both BPC_PhotoMode_C and BP_FreeCamera_C vanish for one pass
+-- then return, a scan-side artifact, most plausibly the GC mark phase). A
+-- close verdict counts only after CLOSE_MISSES consecutive closed passes
+-- (~600ms); opens stay instant, world teardown still closes at once.
 local _closeMisses = 0
 local CLOSE_MISSES = 3
 local _openSigWarned = false
@@ -355,35 +351,33 @@ local _kickHooked = false -- ClientRestart kick registered (see Start)
 local _fbWanted = false
 local _fbIsOpen = false
 local _fbAt = 0.0
--- EVENT-DRIVEN SESSION EDGES (2026-07-27b): the AdvancedPhotoMode manager
--- fires bound events on the exact open/close moments; a pre-hook on each
--- feeds _hookIsOpen (flag write only, GT hook context). While the pair is
--- live, idle passes are PURE no-ops: no FindAllOf sweeps in idle worlds and
--- none in the post-close pending-kill purge window (the 12:52:38 AV = an
--- idle async sweep racing exactly that purge). The 2026-07-27a attempt
--- moved the sweeps to the game thread instead: object-array walks on the
--- GT at pass cadence = heavy frame hitches ("mega lag"), REVERTED same
--- day. Do not marshal sweeps to the GT; make them unnecessary instead.
+-- Event-driven session edges (2026-07-27): a hook on the plugin's toggle
+-- event feeds the open verdict (flag write only, GT hook context). While it
+-- is live, idle passes are pure no-ops: no FindAllOf sweeps in idle worlds
+-- and none in the post-close pending-kill purge window (the 12:52:38 AV was
+-- an idle async sweep racing exactly that purge). Do not marshal the sweeps
+-- to the GT instead: object-array walks there at pass cadence were heavy
+-- frame hitches, reverted the same day. Make them unnecessary.
 local _openHooksLive = false
 local _hookIsOpen = false
 local _hookRegTried = 0.0
--- PROOF GATE (2026-07-27c): registration success is NOT proof a function is
--- ever CALLED (first deploy armed hooks on BP_PhotoModeManager BndEvts: the
--- class is in the cook, but TXR never spawns that manager = dead verdict
--- silenced the working fallback = exposure dead a whole session). The hook
--- verdict is only trusted after a REAL fire; until then the fallback scan
--- runs exactly as pre-2026-07-27.
+-- Proof gate (2026-07-27): registration success is no proof a function is
+-- ever called (the first deploy hooked BP_PhotoModeManager BndEvts; the
+-- class is in the cook but TXR never spawns that manager, and the dead
+-- verdict silenced the working fallback for a whole session). The hook
+-- verdict is trusted only after a real fire; until then the fallback scan
+-- runs as before.
 local _hookEverFired = false
 local _hookProvenLogged = false
 local _hookPoke = false   -- toggle fired: next pass resolves state via one scan
--- THE PROVEN EDGE (2026-07-27 pak/bytecode dig, see reference\photodig):
--- "Photo Mode" on BPC_PhotoMode is the SINGLE state-transition authority.
+-- The proven edge (2026-07-27 pak/bytecode dig, see reference\photodig):
+-- "Photo Mode" on BPC_PhotoMode is the single state-transition authority.
 -- Ubergraph proof: the only write of bIsUsingPhotoMode=true (offset 36429)
--- and the ONLY jump into the =false close path (36424 -> 724 -> 835) both
+-- and the only jump into the =false close path (36424 to 724 to 835) both
 -- live inside this event's body; the course car's SetPhotoMode(IsOpen)
--- gates on a state CHANGE then calls exactly this, and EndPhotoMode's
+-- gates on a state change then calls exactly this, and EndPhotoMode's
 -- programmatic close also lands here via the widget. The hook is consumed
--- as a POKE (state resolved by the next pass's scan): see the callback.
+-- as a poke (state resolved by the next pass's scan): see the callback.
 local HOOK_TOGGLE = "/Game/AdvancedPhotoMode/Blueprints/BPC_PhotoMode.BPC_PhotoMode_C:Photo Mode"
 
 -- BP-function hooks only register once the plugin class is loaded, so
@@ -398,15 +392,13 @@ local function tryRegisterOpenHooks()
         if _openHooksLive then return end
         _openHooksLive = pcall(function()
             RegisterHook(HOOK_TOGGLE, function()
-                -- POKE ONLY, no state inference. First deploy read
-                -- self.bIsUsingPhotoMode here and inverted it ("pre-hook
-                -- sees the old state"): the 20:26 field session proved that
-                -- wrong (hook fired, verdict stuck closed, session never
-                -- opened = metering never applied). Script-hook pre/post
-                -- timing on this build is NOT trustworthy; the fire only
-                -- tells us "the state is flipping RIGHT NOW" and the next
-                -- async pass (<=200ms) resolves the new state with one
-                -- member scan and resyncs the verdict.
+                -- Poke only, no state inference: reading bIsUsingPhotoMode
+                -- here and inverting it ("pre-hook sees the old state") left
+                -- the verdict stuck closed in the 20:26 field session
+                -- (metering never applied). Script-hook pre/post timing on
+                -- this build is not trustworthy; the fire only says the state
+                -- is flipping now, and the next async pass (<=200ms) resolves
+                -- it with one member scan and resyncs the verdict.
                 _hookEverFired = true
                 _hookPoke = true
                 _idleGtLast = 0.0
@@ -418,24 +410,24 @@ local function tryRegisterOpenHooks()
     end)
 end
 
--- Photo-session side effects, fired on the open/close transitions of the
--- detect loop: freeze TOD (time_of_day, Animate Time of Day bool) and
--- switch to manual metering on the 3.4.0 lens curve (light_cycle; the
--- aperture drives exposure physically). Both restore on close.
--- A teardown counts as close: the writes land in a dying world and fail
--- silently, and the next course load re-applies normal state on its own.
+-- Photo-session side effects on the open/close edges: freeze TOD
+-- (time_of_day, the Animate Time of Day bool) and switch to manual metering
+-- on the 3.4.0 lens curve (light_cycle; the aperture then drives exposure
+-- physically). Both restore on close. A teardown counts as close: the writes
+-- fail silently in a dying world and the next course load re-applies normal
+-- state on its own.
 local function setSessionFrozen(on)
-    -- Session flag for main.lua's tick gates (2026-08-07 field: WEATHER
-    -- kept ticking during a shoot - the TOD freeze below never covered the
-    -- scheduler, so a pick or its 15s transition mutated the sky mid-
-    -- session). main.lua gates Scheduler.Tick on this, like PA freeze.
+    -- Session flag for main.lua's tick gates (2026-08-07 field: the TOD
+    -- freeze never covered the scheduler, so a pick or its 15s transition
+    -- mutated the sky mid-shoot). main.lua gates Scheduler.Tick on this,
+    -- like PA freeze.
     pcall(function()
         local s = require("core.state")
         if s and s.SetPhotoSessionOpen then s.SetPhotoSessionOpen(on) end
     end)
-    -- On close, hold auto picks briefly: the scheduler timer may have
-    -- expired DURING the shoot, and an instant pick on the close edge
-    -- reads as "weather snapped the moment I left photo mode".
+    -- On close, hold auto picks briefly: a scheduler timer that expired
+    -- during the shoot would pick on the close edge ("weather snapped the
+    -- moment I left photo mode").
     if not on then
         pcall(function()
             local sch = require("systems.scheduler")
@@ -456,21 +448,20 @@ local function setSessionFrozen(on)
     end
 end
 
--- (Aperture exposure emulation REMOVED 2026-07-15: every read of the
--- applied f-stop failed, static defaults on ~130 carriers, and even the
--- CineCameraComponent:SetCurrentAperture hook never fired in the field.
--- Photomode now runs MANUAL metering with the 3.4.0 sun-elevation curve
--- (light_cycle), under which the aperture works physically.)
+-- No aperture exposure emulation (removed 2026-07-15): the applied f-stop is
+-- unreadable (static defaults on ~130 carriers, and the
+-- CineCameraComponent:SetCurrentAperture hook never fired in the field).
+-- Manual metering on the 3.4.0 curve makes the aperture work physically.
 
 local _dbgPass = 0
 local _dbgLastLog = 0.0
 local function reassert()
     _dbgPass = _dbgPass + 1  -- monotonic pass counter (proves the loop is alive)
     if teardownActive() then
-        -- World is being torn down: no FindAllOf sweeps, and treat photo mode
-        -- as closed so the next real detection logs again. The hook verdict
-        -- resets too: a dying manager never fires its closed event, and a
-        -- stale open=true would falsely open a session in the next world.
+        -- Teardown: no sweeps, treat photo mode as closed (the next detection
+        -- logs again) and reset the hook verdict, since a dying manager never
+        -- fires its close and a stale open=true would open a session in the
+        -- next world.
         _hookIsOpen = false
         _closeMisses = 0
         if _sessionOpen then
@@ -486,10 +477,20 @@ local function reassert()
         tryRegisterOpenHooks()
     end
 
-    -- IDLE THROTTLE (2026-07-21): ~1s pass cadence while no session is open,
-    -- every 200ms pass while open. The ClientRestart kick (see Start) and the
-    -- opened-hook both zero _idleGtLast so a real open is reacted to on the
-    -- next pass instead of waiting out the idle window.
+    -- Photomode exists on course and in the PA only: no sweeps in the
+    -- garage, title or loading worlds (three object-array walks per second
+    -- otherwise, until the edge hook had fired once)
+    if not _sessionOpen then
+        local actors = getActors()
+        local tag = actors and actors.GetWorldTag and actors.GetWorldTag()
+        if tag ~= "course" and not (actors and actors.IsInPAScene and actors.IsInPAScene()) then
+            return
+        end
+    end
+
+    -- Idle throttle (2026-07-21): ~1s cadence while no session is open, every
+    -- 200ms pass while open. The ClientRestart kick (see Start) and the toggle
+    -- hook zero _idleGtLast so a real open reacts on the next pass.
     local hooksProven = _openHooksLive and _hookEverFired
     if not _sessionOpen and not (hooksProven and _hookIsOpen) then
         local nowIdle = os.clock()
@@ -506,21 +507,18 @@ local function reassert()
             _hookProvenLogged = true
             Log.Info(MODULE, "Photomode edge hook proven live (event-driven detection active)")
         end
-        -- The hook's verdict authorizes ONLY the idle no-op: closed + no
-        -- poke = leave WITHOUT touching any object, which keeps the
-        -- post-close pending-kill purge window (the 12:52:38 AV) and every
-        -- idle world completely sweep-free.
+        -- The hook verdict authorizes only the idle no-op: closed + no poke =
+        -- leave without touching any object (keeps the post-close pending-kill
+        -- purge window and every idle world sweep-free).
         if not (_hookIsOpen or _sessionOpen) then
             _loggedActive = false
             return
         end
-        -- A believed-OPEN session is NOT taken on faith (field bug
-        -- 2026-07-27 23:48: a close edge got lost and the stale open
-        -- verdict held forever = metering stuck ON after the session exited
-        -- photomode, until world teardown). While open, the 200ms passes
-        -- sweep for the unlocks anyway, so the scan below re-verifies the
-        -- real member state every pass, exactly like the pre-hook code.
-        -- Close detection therefore never depends on a hook fire.
+        -- A believed-open session is not taken on faith (field 2026-07-27
+        -- 23:48: a lost close edge held the stale open verdict, metering
+        -- stuck on until teardown). The open-session passes sweep for the
+        -- unlocks anyway, so the scan below re-verifies the member state
+        -- every pass; close detection never depends on a hook fire.
     elseif _hookPoke then
         -- The toggle just fired: consume the poke and resolve the new state
         -- through the scan below (which then resyncs _hookIsOpen).
@@ -528,14 +526,13 @@ local function reassert()
         pokePass = true
     end
 
-    local comp = find("BPC_PhotoMode_C")
+    local comp, compList = find("BPC_PhotoMode_C")
     local cam  = find("BP_FreeCamera_C")
     if not comp and not cam then
-        -- A poke pass that hits the one-pass "everything gone" scan flap
-        -- must NOT eat the poke: with the session still closed, the idle
-        -- gate above would then block every future scan and the whole
-        -- session's open edge is lost (the open-side mirror of the fixed
-        -- 2026-07-27 stuck-open bug). Re-arm and let the next pass retry.
+        -- A poke pass that hits the one-pass scan flap must not eat the poke:
+        -- with the session still closed the idle gate would block every future
+        -- scan and the open edge is lost (the open-side mirror of the
+        -- 2026-07-27 stuck-open bug). Re-arm and retry next pass.
         if pokePass then _hookPoke = true end
         if _sessionOpen then
             -- Debounced: a one-pass total absence mid-session is the g1c1a1497
@@ -557,22 +554,20 @@ local function reassert()
     end
 
     if not gotSignal then
-        -- FALLBACK SCAN (manager hooks not armed: plugin class not loaded
-        -- yet, or a path where the manager differs, e.g. replay spectator
-        -- photomode). Session freeze keys on the REAL open state, not object
-        -- existence: BPC_PhotoMode_C lives in every garage/course world from
-        -- load with photomode closed (the 01:24 lesson, 2026-07-14).
-        -- Signals, ORed:
-        -- 1. bIsUsingPhotoMode on ANY live BPC_PhotoMode_C instance,
-        -- 2. the IsOpenedPhotoMode out-param call (fallback; a FUNCTION in
-        --    this cook, not a property, the 08:33 lesson; GT-refreshed
-        --    cache, consumed here at most a pass stale).
-        -- (NO UI-widget signal. It failed three ways across 2026-07-18/20:
-        -- false opens from template widgets, a UFunction sweep crash
-        -- suspect, and "visible"-outside-photomode false opens. Do NOT
-        -- re-add a widget-based openness signal on this cook.)
+        -- Fallback scan (hook not armed or not yet proven, or a path where
+        -- the manager differs, e.g. replay spectator photomode). Session
+        -- freeze keys on the real open state, not object existence:
+        -- BPC_PhotoMode_C lives in every garage/course world from load with
+        -- photomode closed (2026-07-14). Signals, ORed: 1. bIsUsingPhotoMode
+        -- on any live BPC_PhotoMode_C instance, 2. the IsOpenedPhotoMode
+        -- out-param call (a function in this cook, not a property;
+        -- GT-refreshed cache, at most a pass stale). No UI-widget signal: it
+        -- failed three ways across 2026-07-18/20 (template-widget false
+        -- opens, a UFunction sweep crash suspect, "visible" outside
+        -- photomode). Do not re-add one on this cook.
         pcall(function()
-            local all = FindAllOf("BPC_PhotoMode_C")
+            local all = compList
+            if type(all) ~= "table" then all = FindAllOf("BPC_PhotoMode_C") end
             if type(all) == "table" then
                 for _, c in ipairs(all) do
                     if valid(c) then
@@ -619,9 +614,9 @@ local function reassert()
             Log.Info(MODULE, "Photo session opened", {signal = openSrc or "?"})
         end
     elseif gotSignal and _sessionOpen then
-        -- Debounced close: a clean all-false read must repeat CLOSE_MISSES
-        -- passes before it counts (the one-pass flap re-opened instantly in
-        -- the 01:02 field log, which read as "aperture does nothing").
+        -- Debounced close: an all-false read must repeat CLOSE_MISSES passes
+        -- (the one-pass flap re-opened instantly in the 01:02 field log,
+        -- which read as "aperture does nothing").
         _closeMisses = _closeMisses + 1
         if _closeMisses >= CLOSE_MISSES then
             _closeMisses = 0
@@ -630,9 +625,8 @@ local function reassert()
         end
     end
 
-    -- Throttled diagnostic for the long-exposure dropout. Decided on the async
-    -- side so the pass counter reflects the loop, then the read-back happens
-    -- on the game thread.
+    -- Throttled diagnostic for the long-exposure dropout, decided async (so
+    -- the pass counter reflects the loop), read back on the game thread.
     local doDbg = false
     if cfg.Debug then
         local now = os.clock()
@@ -641,7 +635,7 @@ local function reassert()
 
     if type(ExecuteInGameThread) ~= "function" then return end
     GT.Run(function()
-        -- Re-check at RUN time: comp/cam were found up to a pass ago on the
+        -- Re-check at run time: comp/cam were found up to a pass ago on the
         -- async thread and a teardown may have started since
         if teardownActive() then return end
         -- Refresh the IsOpenedPhotoMode fallback verdict here on the game
@@ -659,9 +653,9 @@ local function reassert()
             end)
         end
         if doDbg then
-            -- Read the live limits BEFORE we overwrite them: if these come back
-            -- "re-enabled" every log while pass= keeps climbing, the game is
-            -- re-asserting per frame (a race), not the loop stalling.
+            -- Read the live limits before overwriting them: "re-enabled" every
+            -- log while pass= keeps climbing = the game re-asserts per frame
+            -- (a race), not a stalled loop.
             local camMaxOn, saTest, compMaxOn, fov
             pcall(function() camMaxOn = cam and cam.bUseMaximumDistance end)
             pcall(function() saTest = cam and cam.SpringArm and cam.SpringArm.bDoCollisionTest end)
@@ -682,11 +676,8 @@ end
 
 -- ============== PUBLIC API ==============
 
--- Start the dedicated re-assert loop. Photo mode unlocks run on their OWN LoopAsync
--- (exactly like the standalone did) rather than riding TXRWM's shared 8 Hz tick, so a
--- busy main loop, an actor-discovery storm, or another module hiccupping can never
--- stall or skip the re-assert. The body is pcall-wrapped so a transient reflection
--- error can't kill the loop.
+-- Start the dedicated re-assert loop (own LoopAsync, see the header). The
+-- body is pcall-wrapped so a transient reflection error cannot kill the loop.
 function PhotoMode.Start()
     if loopStarted then return end
     if type(LoopAsync) ~= "function" then
@@ -699,13 +690,12 @@ function PhotoMode.Start()
         pcall(reassert)
         return false  -- keep looping
     end)
-    -- ClientRestart kick: every photomode ENTER possesses the free camera =
-    -- a PlayerController restart (field-confirmed 2026-07-27: all 12 opens
-    -- that session had one at t-0..1s). Zeroing the idle throttle here lets
-    -- the next 200ms pass run full detection instead of waiting out the ~1s
-    -- closed-state cadence, so short sessions get manual metering while the
-    -- the player is still IN them. Flag write only; the detection sweep itself
-    -- stays on the async loop with all its gates.
+    -- ClientRestart kick: every photomode enter possesses the free camera, a
+    -- PlayerController restart (field 2026-07-27: all 12 opens that session
+    -- had one at t-0..1s). Zeroing the idle throttle lets the next 200ms pass
+    -- run full detection instead of waiting out the ~1s closed cadence, so
+    -- short sessions get manual metering while the player is still in them.
+    -- Flag write only; the sweep stays on the async loop with its gates.
     if not _kickHooked and type(RegisterHook) == "function" then
         _kickHooked = pcall(function()
             RegisterHook("/Script/Engine.PlayerController:ClientRestart", function()
@@ -736,15 +726,6 @@ function PhotoMode.Init()
     })
     if enabled then PhotoMode.Start() end
     return true
-end
-
-function PhotoMode.GetStatus()
-    return {
-        initialized = initialized,
-        enabled = enabled,
-        loopStarted = loopStarted,
-        active = _loggedActive,
-    }
 end
 
 return PhotoMode

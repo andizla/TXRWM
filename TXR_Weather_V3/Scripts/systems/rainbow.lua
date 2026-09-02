@@ -1,22 +1,14 @@
 -- TXR Weather Mod v3.0
 -- systems/rainbow.lua
--- Enables UDW's rainbow effect. The rainbow is rendered on a world MESH (UDW's
--- "Rainbow Mesh" static-mesh component, drawn with "Rainbow Material 2D" /
--- "Rainbow Material Volumetric"), NOT as a post-process weighted blendable, so
--- unlike Screen Droplets / Frost / Heat Distortion / Sun Lens Flare it renders in
--- TXR. (Screening rule: a feature with a "... MID" + a "... WB"/WeightedBlendable
--- is post-process and dead in TXR; rainbow has the MID but no WB, and has a Mesh
--- + 2D/Volumetric materials, i.e. scene-rendered.)
---
--- UDW decides WHEN a rainbow is visible from the weather state: there must be rain
--- (or fog) feeding it, the camera must be in direct sun (not under overcast), and
--- the sun must be low enough. So this won't show in every weather; it appears
--- naturally as rain clears toward sun, which is exactly the intended behaviour.
---
--- We just enable it + set the strength caps and call UDW's
--- "Static Properties - Rainbow" on the game thread, deferred past BeginPlay by
--- a settle gate (the proven Stars / WindDebris / Moon / LightRays pattern).
--- UDW drives the actual strength.
+-- Enables UDW's rainbow. It is drawn on a world mesh (the "Rainbow Mesh"
+-- component with the 2D / Volumetric rainbow materials), not as a post-process
+-- weighted blendable, so unlike Screen Droplets / Frost / Heat Distortion / Sun
+-- Lens Flare it renders in TXR (screening rule: a feature with a MID and a WB
+-- is post-process and dead here; the rainbow has the MID but no WB).
+-- UDW decides when it shows: rain or fog feeding it, camera in direct sun, sun
+-- low enough, so it appears as rain clears toward sun. This module enables it,
+-- sets the strength caps and calls UDW's rainbow Static Properties bake on the
+-- game thread behind a settle gate; UDW drives the strength.
 
 local Rainbow = {}
 
@@ -34,8 +26,6 @@ local PROP_MAX_STRENGTH = "Max Rainbow Strength"     -- Double (0-1 cap on visib
 local PROP_MASK_CLOUDS  = "Mask Rainbow Above Clouds" -- Double (how visible above cloud layer)
 local PROP_MASK_WATER   = "Mask Rainbow Below Water"  -- Double (how visible below water level)
 local FN_STATIC         = "Static Properties - Rainbow"
--- Diagnostics
-local PROP_CUR_STRENGTH = "Current Rainbow Strength"  -- Double (UDW-driven, read-only)
 
 local SETTLE_TICKS = 32  -- ~4s at 8 Hz before applying, to clear the BeginPlay window
 
@@ -111,16 +101,20 @@ function Rainbow.Init()
     return true
 end
 
+--- Course edge (main.lua's debounced lifecycle): re-arm the one-shot.
+function Rainbow.OnCourseUnload()
+    settleTicks = 0
+    appliedThisCourse = false
+end
+
 --- Per-tick: enable once per course, after the settle gate, if configured on.
 function Rainbow.Tick()
     if not initialized or not enabled then return end
 
+    -- Actors missing = a blip or a real exit: no re-arm here (a photomode
+    -- open used to re-run the bake); OnCourseUnload does it
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then
-        settleTicks = 0
-        appliedThisCourse = false
-        return
-    end
+    if not actors or not actors.IsOnCourse() then return end
 
     settleTicks = settleTicks + 1
     if not appliedThisCourse and settleTicks >= SETTLE_TICKS then
@@ -130,19 +124,6 @@ function Rainbow.Tick()
             Log.Info(MODULE, "Rainbow enabled (UDW drives visibility from weather)")
         end
     end
-end
-
-function Rainbow.GetStatus()
-    local cur = nil
-    local udw = getUDW()
-    if udw then pcall(function() cur = udw[PROP_CUR_STRENGTH] end) end
-    return {
-        initialized = initialized,
-        enabled = enabled,
-        applied = applied,
-        appliedThisCourse = appliedThisCourse,
-        currentStrength = cur,
-    }
 end
 
 return Rainbow

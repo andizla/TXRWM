@@ -22,26 +22,24 @@ local SLOW_DAWN_END   = 700   -- 07:00
 local SLOW_DUSK_START = 1730  -- 17:30
 local SLOW_DUSK_END   = 1930  -- 19:30
 
--- Speed during dawn/dusk, expressed as a fraction of normal speed. Lower factor
--- = slower time = the window lingers longer in real time. 1.34 used 40%; we
--- deepen it so dusk/dawn last noticeably longer. Both are recomputed from config
--- in Init() (NORMAL_SPEED from Config.TimeOfDay.DefaultSpeed).
+-- Dawn/dusk speed as a fraction of normal: a lower factor makes the window
+-- linger longer in real time (V1.34 used 40%). Both are recomputed from
+-- config in Init (NORMAL_SPEED from Config.TimeOfDay.DefaultSpeed).
 local NORMAL_SPEED = 53.333          -- overwritten from config in Init
 local SLOW_FACTOR  = 0.20            -- fraction of normal during the slow window
 local SLOW_SPEED   = NORMAL_SPEED * SLOW_FACTOR
 
--- Tokyo Tint window: keyed to the SUN'S ELEVATION like the slow window
--- (the old fixed clock shape drifted with the in-game date and peaked 18:00
--- while the effective August sunset is ~19:30). Strength peaks at the sun
--- event (elevation 0) and fades linearly to zero toward both anchors; the
--- same pair serves dawn (rising) and dusk (sinking) symmetrically.
+-- Tokyo Tint window, keyed to the sun's elevation like the slow window (a
+-- fixed clock shape drifts with the in-game date: it peaked 18:00 while the
+-- August sunset is ~19:30). Strength peaks at elevation 0 and fades
+-- linearly to zero at both anchors; the pair serves dawn and dusk alike.
 local TINT_DAY_ELEV = 30.0    -- tint gone by this elevation on the day side
 local TINT_NIGHT_ELEV = -12.0 -- tint gone by this elevation on the night side
 
--- Clock FALLBACK shape (V1.34), used only when no elevation is available
--- (LightCycle off / first seconds after a load)
-local TINT_LEAD_TOD = 240        -- Start tint this much BEFORE slow window
-local TINT_FADE_OUT_EXTRA = 140  -- Continue tint this much AFTER slow window
+-- Clock fallback shape (V1.34), used only when no elevation is available
+-- (LightCycle off, first seconds after a load)
+local TINT_LEAD_TOD = 240        -- Start tint this much before the slow window
+local TINT_FADE_OUT_EXTRA = 140  -- Continue tint this much after the slow window
 
 -- Peak tint times for the fallback (at the V1.34-era sun events)
 local DAWN_PEAK_TOD = 680     -- 06:48
@@ -65,7 +63,6 @@ local isInitialized = false
 local isInSlowWindow = false
 local slowSpeedActive = false  -- Track if we've set slow speed
 local currentTintStrength = 0.0
-local lastTOD = nil
 local originalColors = nil  -- Store original colors for blending
 
 -- ============== INTERNAL FUNCTIONS ==============
@@ -86,13 +83,12 @@ local function getTimeOfDay()
     return TimeOfDay
 end
 
--- Sun-elevation window bounds (2026-07-07): the slow window is keyed to the
--- SUN, not the clock. The stock game's date advances every in-game midnight,
--- so sunrise/sunset drift seasonally; fixed TOD windows aim at the wrong
--- sky within days of play (the measured August dusk collapse was 19:15-20:05
--- while the old window ended at 19:30). Elevation centers the window on the
--- actual event wherever the date drifts. TOD windows remain the FALLBACK when
--- elevation is unavailable (LightCycle off / not yet armed).
+-- Sun-elevation window bounds (2026-07-07): the stock game's date advances
+-- every in-game midnight, so sunrise/sunset drift seasonally and fixed TOD
+-- windows aim at the wrong sky within days (the measured August dusk
+-- collapse was 19:15-20:05 while the old window ended at 19:30). The TOD
+-- windows remain the fallback when elevation is unavailable (LightCycle off
+-- or not yet armed).
 local SLOW_ELEV_MAX = 8.0
 local SLOW_ELEV_MIN = -8.0
 
@@ -467,7 +463,7 @@ function Transitions.Tick()
     local inSlowWindow, slowType = isInSlowTimeWindow(currentTOD)
     local inTintWindow, tintType = isInTintWindow(currentTOD)
     
-    -- Handle SLOW WINDOW (speed control)
+    -- Slow window (speed control)
     if inSlowWindow then
         if not isInSlowWindow then
             -- Just entered slow window
@@ -498,7 +494,7 @@ function Transitions.Tick()
         end
     end
     
-    -- Handle TINT WINDOW (color control); extends beyond slow window
+    -- Tint window (color control); extends beyond the slow window
     if inTintWindow then
         if not originalColors then
             -- First time in tint window: store colors
@@ -521,59 +517,12 @@ function Transitions.Tick()
             restoreOriginalColors()
         end
     end
-    
-    lastTOD = currentTOD
-end
-
---- Force exit from slow window (for manual control)
-function Transitions.ForceExit()
-    if isInSlowWindow then
-        isInSlowWindow = false
-        slowSpeedActive = false
-        currentTintStrength = 0.0
-        setSimulationSpeed(NORMAL_SPEED, true)
-        restoreOriginalColors()
-        Log.Info(MODULE, "Forced exit from slow window")
-    end
 end
 
 --- Check if currently in slow window
 --- @return boolean
 function Transitions.IsInSlowWindow()
     return isInSlowWindow
-end
-
---- Get current tint strength
---- @return number 0.0-1.0
-function Transitions.GetTintStrength()
-    return currentTintStrength
-end
-
---- Get status for debugging
---- @return table
-function Transitions.GetStatus()
-    local dawnTintStart = SLOW_DAWN_START - TINT_LEAD_TOD
-    local dawnTintEnd = SLOW_DAWN_END + TINT_FADE_OUT_EXTRA
-    local duskTintStart = SLOW_DUSK_START - TINT_LEAD_TOD
-    local duskTintEnd = SLOW_DUSK_END + TINT_FADE_OUT_EXTRA
-    
-    return {
-        initialized = isInitialized,
-        inSlowWindow = isInSlowWindow,
-        inTintWindow = originalColors ~= nil,
-        tintStrength = currentTintStrength,
-        lastTOD = lastTOD,
-        slowDawnWindow = string.format("%d-%d", SLOW_DAWN_START, SLOW_DAWN_END),
-        slowDuskWindow = string.format("%d-%d", SLOW_DUSK_START, SLOW_DUSK_END),
-        tintDawnWindow = string.format("%d-%d", dawnTintStart, dawnTintEnd),
-        tintDuskWindow = string.format("%d-%d", duskTintStart, duskTintEnd),
-    }
-end
-
---- Check if module is initialized
---- @return boolean
-function Transitions.IsInitialized()
-    return isInitialized
 end
 
 return Transitions

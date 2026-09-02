@@ -2,41 +2,36 @@
 -- systems/tuning.lua
 -- Native tuning slider-range widening for the alignment tab (camber, toe,
 -- ride height, wheel offset). Successor to the abandoned WheelOffsetUnlocker
--- (NadzW / FenderBender, 04.2025); approach credited to them, rebuilt against
--- the v1.5 API.
+-- (NadzW / FenderBender, 04.2025); approach credited to them, rebuilt on the
+-- v1.5 API.
 --
--- What the game does: the alignment settings menu (WBP_OutGame_Setting_List_
--- Aliment2) builds one row per setting, each with two WBP_Com_Slider_1 widgets
--- (front/rear) whose min/max come from the game's own SetSettingListInit. The
--- slider value is stored into the car save on Decide (values persist even past
--- stock range), but the game's LOAD path does not apply out-of-range values to
--- the car, so extremes need re-asserting on spawn (the physical setters accept
--- them fine).
+-- The alignment menu (WBP_OutGame_Setting_List_Aliment2) builds one row per
+-- setting with two WBP_Com_Slider_1 widgets (front/rear) whose min/max come
+-- from the game's SetSettingListInit. Decide stores the slider value into
+-- the car save (out-of-range values persist), but the game's load path does
+-- not apply them to the car, so extremes need re-asserting on spawn (the
+-- physical setters accept them).
 --
--- What this module does (all game-thread, tick-driven like photomode's FOV
--- slider widening):
---  1. WIDEN: while the alignment tab exists, scale every unlocked row's slider
---     range to RangeMultiplier x its own stock range (multiplicative, so each
---     setting keeps its semantics; locked rows are skipped, this mod does NOT
---     unlock parts).
---  2. LIVE PREVIEW: post-hooks on the tab's own ValueChange events re-apply the
+-- This module (game thread, tick-driven like photomode's FOV widening):
+--  1. Widen: while the alignment tab exists, scale every unlocked row's
+--     slider range to RangeMultiplier x its own stock range (each setting
+--     keeps its semantics; locked rows are skipped, parts stay locked).
+--  2. Live preview: post-hooks on the tab's ValueChange events re-apply the
 --     slider value through the physical setters (SetWheelOffset /
 --     SetSettingHightOffsetRate / SetTireCamberAngle / SetToeAngleFromSetting)
 --     so values beyond stock range show on the displayed car (the game's own
 --     handler clamps).
---  3. RE-APPLY ON LOAD: on course load (settle-gated) and on garage car display,
---     read the stored setting parameters (UserInfoGameInstanceSubsystem:
---     GetSelectedCarSettingParameter) and push them through the setters, since
---     the game's own load path won't apply extremes.
+--  3. Re-apply on load: on course load (settle-gated) and on garage car
+--     display, read the stored parameters (UserInfoGameInstanceSubsystem:
+--     GetSelectedCarSettingParameter) and push them through the setters.
 --
--- v1.5 API notes (verified against the dump / shared types):
--- , stored-parameter scales: offset /1000, ride height /500, camber /-100,
---    toe raw; slider-value scales: offset /10, ride height /5, camber *-1,
---    toe raw (ECarSetting: camber 6/7, toe 8/9, ride height 18/19, offset 26/27).
--- , the old mod's MaxValue/MinValue/step_value wrapper properties do not exist
---    in 1.5 (only max_value/min_value/step_size + SetSliderInit).
--- , the tab now has FIVE element rows (tire width was added), so the old
---    hardcoded element mapping is stale; we iterate all rows and skip locked.
+-- v1.5 API notes (verified against the dump / shared types): stored-parameter
+-- scales offset /1000, ride height /500, camber /-100, toe raw; slider-value
+-- scales offset /10, ride height /5, camber *-1, toe raw (ECarSetting: camber
+-- 6/7, toe 8/9, ride height 18/19, offset 26/27). The old mod's MaxValue /
+-- MinValue / step_value wrapper properties do not exist in 1.5 (only
+-- max_value/min_value/step_size + SetSliderInit). The tab has five element
+-- rows (tire width was added), so rows are enumerated, not hardcoded.
 
 local Tuning = {}
 
@@ -62,12 +57,11 @@ local debugRows = true
 local GARAGE_MANAGER_CLASS = "BP_OutGameGarageManager_C"
 local USERINFO_CLASS = "UserInfoGameInstanceSubsystem"
 
--- The alignment rows are ListView ENTRY widgets built at runtime (the element
--- class implements OnListItemObjectSet); the named Element_1..4 fields on the
--- tab are design-time placeholders that read invalid on the live widget
--- (verified in-game 2026-07-02: only the placeholder row, name "パーツ名", was
--- reachable through the fields). So we enumerate live element instances by
--- CLASS instead of walking the tab's fields.
+-- The alignment rows are ListView entry widgets built at runtime (the element
+-- class implements OnListItemObjectSet); the tab's Element_1..4 fields are
+-- design-time placeholders that read invalid live (2026-07-02: only the
+-- placeholder row "パーツ名" was reachable through them), so live instances
+-- are enumerated by class.
 local ELEMENT_CLASS = "WBP_OutGame_Setting_List_Aliment_Element_C"
 local CONTENT_CLASS = "WBP_OutGame_Setting_List_Element_Content_C"
 local CONTENT_FIELDS = {
@@ -78,7 +72,7 @@ local CONTENT_FIELDS = {
 local HOOK_BASE = "/Game/ITSB/UI/OutGame/Setting/Widgets/WBP_OutGame_Setting_List_Aliment2.WBP_OutGame_Setting_List_Aliment2_C:"
 local GARAGE_HOOK_BASE = "/Game/ITSB/UI/OutGame/Blueprints/BP_OutGameGarageManager.BP_OutGameGarageManager_C:"
 
--- Stored car-setting parameters (ECarSetting index -> physical setter + scale)
+-- Stored car-setting parameters (ECarSetting index, physical setter, scale)
 local STORED_SETTINGS = {
     { name = "camber_front",     idx = 6,  scale = -0.01,  fn = "SetTireCamberAngle",       front = true,  extra = false },
     { name = "camber_rear",      idx = 7,  scale = -0.01,  fn = "SetTireCamberAngle",       front = false, extra = false },
@@ -90,8 +84,8 @@ local STORED_SETTINGS = {
     { name = "offset_rear",      idx = 27, scale = 0.001,  fn = "SetWheelOffset",           front = false, extra = false },
 }
 
--- Live-preview hooks: slider value -> physical setter (the game's own handler
--- applies a clamped copy; these post-hooks re-apply unclamped)
+-- Live-preview hooks: slider value into the physical setter (the game's own
+-- handler applies a clamped copy; these post-hooks re-apply unclamped)
 local VALUE_HOOKS = {
     { event = "OFFSETFrontValueChange",     fn = "SetWheelOffset",           front = true,  scale = 0.1, extra = false },
     { event = "OFFSETRearValueChange",      fn = "SetWheelOffset",           front = false, scale = 0.1, extra = false },
@@ -115,12 +109,11 @@ local pendingScan = false
 local pendingScanAt = 0.0    -- os.clock at queue time, for the wedge self-heal
 local valueHooksRegistered = false
 local garageHooksRegistered = false
-local widened = {}     -- slider address -> {min, max} we last applied
-local probedRows = {}  -- element address -> true (debug row logging, once each)
-local skipLogged = {}  -- one skip/probe/hook-fail log per address (Debug)
-                       -- (declared BEFORE registerValueHooksGT: it used to be
-                       -- declared lower, so that function captured a nil GLOBAL
-                       -- and the hook-retry path errored out of the whole scan)
+local widened = {}     -- keyed by slider address: {min, max} we last applied
+local probedRows = {}  -- keyed by element address (debug row logging, once each)
+local skipLogged = {}  -- one skip/probe/hook-fail log per address (Debug);
+                       -- declared before registerValueHooksGT, which captures
+                       -- it (the local-ordering nil-global trap)
 
 -- ============== INTERNAL ==============
 
@@ -219,7 +212,7 @@ local function applyStoredToDisplayVehicleDeferred(context)
 end
 
 --- Register the live-preview hooks on the alignment tab's value events.
---- RegisterHook fires BEFORE the game's own handler (which clamps its apply to
+--- RegisterHook fires before the game's own handler (which clamps its apply to
 --- the stock range), so the actual re-apply is deferred ~100ms to land after it.
 --- Call only when the widget class is loaded (an instance exists). Game thread.
 local hookDone = {}  -- per-event success (failed ones retry on later scans)
@@ -307,14 +300,13 @@ local function logSkipOnce(addr, rowName, side, reason)
     Log.Info(MODULE, "Slider skipped", {row = rowName, side = side, reason = reason})
 end
 
---- Widen one slider to rangeMultiplier x its current (stock) range.
---- In-game probe 2026-07-02: this menu never fills the WRAPPER's
---- min_value/max_value (they read 0/0 on live rows); the working range lives
---- on the inner AnalogSlider (USlider MinValue/MaxValue floats). So the
---- AnalogSlider is what we probe and widen; the wrapper props and SetSliderInit
---- are left alone. Guard: an AnalogSlider reading exactly 0..1 is a normalized
---- display slider (real range in BP math); logged and not touched.
---- Idempotent per slider instance via the `widened` cache. Game thread.
+--- Widen one slider to rangeMultiplier x its stock range. Probe 2026-07-02:
+--- the wrapper's min_value/max_value read 0/0 on live rows; the working range
+--- lives on the inner AnalogSlider (USlider MinValue/MaxValue floats), so that
+--- is what is probed and widened (wrapper props and SetSliderInit left alone).
+--- An AnalogSlider reading exactly 0..1 is a normalized display slider (real
+--- range in BP math): logged, not touched. Idempotent per slider instance via
+--- the `widened` cache. Game thread.
 local function widenSliderGT(slider, rowName, side)
     if not valid(slider) then return end
     local analog = nil
@@ -396,13 +388,10 @@ local function scanAndWidenGT()
         if valid(gm) then registerGarageHooksGT() end
     end
 
-    -- Live alignment rows: ListView entries, enumerated by class (the tab's
-    -- named element fields only reach the design-time placeholder row).
-    -- FILTERS (from the 2026-07-02 probe run): live UI objects sit under
-    -- /Engine/Transient.GameEngine... (everything else is the blueprint's
-    -- design-time archetype: invalid sliders, endless noise), and the element
-    -- class is REUSED by the LSD tab, so require "Aliment2" (the tab) in the
-    -- path, not just the class name.
+    -- Live rows enumerated by class (see ELEMENT_CLASS). Filters from the
+    -- 2026-07-02 probe: live UI objects sit under /Engine/Transient.GameEngine
+    -- (the rest is the design-time archetype: invalid sliders, noise), and the
+    -- LSD tab reuses the element class, so the path must contain "Aliment2".
     local sawLiveTab = false
     local elems = nil
     pcall(function() elems = FindAllOf(ELEMENT_CLASS) end)
@@ -451,7 +440,7 @@ local function scanAndWidenGT()
         end
     end
 
-    -- Belt-and-braces: sweep live CONTENT widgets directly (catches rows built
+    -- Belt-and-braces: sweep live content widgets directly (catches rows built
     -- from a class we did not anticipate), same live + alignment-tab filters.
     -- The widened cache dedupes against the loop above.
     local contents = nil
@@ -480,7 +469,7 @@ local function scanAndWidenGT()
         end
     end
 
-    -- Register the value hooks only once a LIVE alignment tab exists; at boot
+    -- Register the value hooks only once a live alignment tab exists; at boot
     -- only the archetype is loaded and registration fails with UFunction::Func
     -- 0x0 (seen for OFFSETFrontValueChange on the 2026-07-02 run)
     if sawLiveTab and not valueHooksRegistered then
@@ -534,7 +523,7 @@ function Tuning.Init()
     return true
 end
 
---- Per-tick (8 Hz, runs in AND out of course; the tuning menu is in the garage)
+--- Per-tick (8 Hz, runs in and out of course; the tuning menu is in the garage)
 function Tuning.Tick()
     if not isInitialized or not enabled then return end
 
@@ -549,19 +538,22 @@ function Tuning.Tick()
                 courseApplied = true
                 runOnGameThread(applyStoredToPlayerGT)
             end
-        else
+        elseif actors and actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
+            -- Real exit only (the teardown hook or the post-race sky loss
+            -- suspends discovery). A plain missing-actors tick is the ~1 s
+            -- rediscovery blip of a photomode open or ClientRestart churn,
+            -- and re-arming on it pushed the stored alignment onto the
+            -- moving car again 4 s later.
             courseTicks = 0
             courseApplied = false
         end
     end
 
-    -- Menu scan (~1s): widen sliders, lazily register hooks. The tuning menu
-    -- only exists in the garage/outgame. The old gate was just "not on course",
-    -- which ALSO matched map transitions (IsOnCourse flips false the moment a
-    -- course starts unloading) and PA, so the FindAllOf/GetFullName scans ran
-    -- on the game thread while the world was being torn down, walking dying
-    -- widget objects: the garage-transition crash. Scan only when the
-    -- garage/outgame is POSITIVELY detected and no teardown is in progress.
+    -- Menu scan (~1s): widen sliders, lazily register hooks. Scan only when
+    -- the garage is positively detected and no teardown is in progress: a
+    -- plain "not on course" gate also matched map transitions and PA, so the
+    -- FindAllOf/GetFullName scans walked dying widgets on the game thread
+    -- (the garage-transition crash).
     if onCourse then return end
     if not actors then return end
     if actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then
@@ -574,17 +566,6 @@ function Tuning.Tick()
         scanCounter = 0
         scheduleScan()
     end
-end
-
-function Tuning.GetStatus()
-    return {
-        initialized = isInitialized,
-        enabled = enabled,
-        multiplier = rangeMultiplier,
-        valueHooks = valueHooksRegistered,
-        garageHooks = garageHooksRegistered,
-        courseApplied = courseApplied,
-    }
 end
 
 return Tuning

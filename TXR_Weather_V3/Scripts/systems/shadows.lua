@@ -17,10 +17,11 @@ local MODULE = "Shadows"
 local isInitialized = false
 local currentDistance = 55000
 local currentFOV = 90
+local lastProbeClock = 0     -- os.clock of the last FOV probe
+local PROBE_INTERVAL = 0.5   -- seconds between probes (was every tick)
 
 -- ============== CONFIGURATION ==============
--- Lookup table: FOV -> minimum shadow distance (with ~5000 headroom)
--- Based on testing data
+-- Lookup table: FOV to minimum shadow distance (~5000 headroom), from testing
 local FOV_DISTANCE_TABLE = {
     [10] = 152000, [11] = 152000, [12] = 152000, [13] = 151000, [14] = 151000,
     [15] = 151000, [16] = 150000, [17] = 150000, [18] = 149000, [19] = 149000,
@@ -65,23 +66,20 @@ end
 --- @param fov number Current field of view
 --- @return number Shadow distance
 local function calculateDistance(fov)
-    -- Round FOV to nearest integer for table lookup
     local fovInt = math.floor(fov + 0.5)
     
-    -- Clamp to table range
     if fovInt < 10 then
         return SHADOW_MAX
     elseif fovInt > 120 then
         return SHADOW_MIN
     end
     
-    -- Lookup from table
     local distance = FOV_DISTANCE_TABLE[fovInt]
     if distance then
         return distance
     end
     
-    -- Fallback interpolation if somehow missing
+    -- Fallback interpolation if a table entry is missing
     return SHADOW_MAX - (fovInt - 10) * 1000
 end
 
@@ -160,18 +158,21 @@ end
 --- Call this periodically or on FOV change
 --- @return boolean success
 function Shadows.Update()
-    -- Run ONLY with live validated actors outside a teardown window (course/PA,
-    -- where the FOV lever matters). This used to probe
-    -- FindFirstOf("PlayerCameraManager") + a GetFOVAngle UFUNCTION CALL from the
-    -- async tick 8x/sec in EVERY world, ungated; the garage map screen swaps
-    -- exactly that camera manager, and probing it off-thread mid-swap is the
-    -- reflection AV in the 2026-07-18/20 crash dumps (map-open crashes).
-    -- (2026-07-27: briefly GT-marshalled after the 12:52 crash; REVERTED same
-    -- day, an 8Hz object-array walk on the game thread = frame hitches.)
+    -- Only with live validated actors outside a teardown window (course/PA).
+    -- This used to probe FindFirstOf("PlayerCameraManager") + a GetFOVAngle
+    -- UFunction call from the async tick in every world; the garage map screen
+    -- swaps that camera manager, and probing it mid-swap is the reflection AV
+    -- in the 2026-07-18/20 crash dumps. (GT-marshalling was tried 2026-07-27
+    -- and reverted: an 8 Hz object-array walk on the game thread hitches frames.)
     local actors = getActors()
     if not actors then return false end
     if actors.IsDiscoverySuspended and actors.IsDiscoverySuspended() then return false end
     if not (actors.HasActors and actors.HasActors()) then return false end
+    -- Cadence: the probe is an object-array walk plus a UFunction call, and FOV
+    -- only changes on camera-mode events, so twice a second is plenty.
+    local now = os.clock()
+    if (now - lastProbeClock) < PROBE_INTERVAL then return true end
+    lastProbeClock = now
 
     local fov = getCurrentFOV()
     local distance = calculateDistance(fov)
@@ -206,34 +207,6 @@ function Shadows.Apply()
     end
 
     return ok
-end
-
---- Get current shadow state
---- @return table {distance, fov, initialized}
-function Shadows.GetStatus()
-    return {
-        distance = currentDistance,
-        fov = currentFOV,
-        initialized = isInitialized
-    }
-end
-
---- Get current shadow distance
---- @return number
-function Shadows.GetDistance()
-    return currentDistance
-end
-
---- Get current FOV
---- @return number
-function Shadows.GetFOV()
-    return currentFOV
-end
-
---- Check if initialized
---- @return boolean
-function Shadows.IsInitialized()
-    return isInitialized
 end
 
 return Shadows

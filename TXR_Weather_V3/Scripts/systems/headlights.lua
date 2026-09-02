@@ -1,14 +1,10 @@
 -- TXR Weather Mod v3.0
 -- systems/headlights.lua
--- Phase 10: Automatic headlight control based on time of day
--- Fixed: Uses UEHelpers pattern from V2 for vehicle discovery
---
--- Reverted to the original V2-style actuation (FindAllOf + SetVisibility/SetActive/
--- SetIntensity) after the BP-function rewrite regressed. Two additions kept:
---   * AUTO mode is driven by the SUN'S ELEVATION (LightCycle) with hysteresis,
---     not a hardcoded clock; falls back to the legacy exposure lens proxy,
---     then to TOD, when no better signal is available.
---   * Mode + brightness level PERSIST to headlight_state.txt across sessions.
+-- Automatic headlight control. V2-style actuation (UEHelpers vehicle
+-- discovery, FindAllOf + SetVisibility/SetActive/SetIntensity; the BP-function
+-- rewrite regressed). Auto mode keys on the sun's elevation (LightCycle) with
+-- hysteresis and falls back to TOD thresholds; mode + brightness level persist
+-- to headlight_state.txt across sessions.
 
 local Headlights = {}
 
@@ -28,16 +24,15 @@ local MODULE = "Headlights"
 -- Headlight mode: "auto" | "force_on" | "force_off"
 local currentMode = "auto"
 
--- Auto thresholds on sun elevation (degrees; the primary signal). ON at/below
--- ON_ELEV as dusk falls, OFF at/above OFF_ELEV after dawn; the gap between
+-- Auto thresholds on sun elevation (degrees; the primary signal). On at/below
+-- ON_ELEV as dusk falls, off at/above OFF_ELEV after dawn; the gap between
 -- them is the hysteresis band.
 local ON_ELEV = -1.0
 local OFF_ELEV = 0.5
 
--- Forced-ON contexts for auto mode (Config.Headlights.AutoOnInTunnel /
--- AutoOnInRain): real bores via the road-data cover (lone overpasses
--- deliberately do NOT count) and wet weather presets. When the context
--- ends the decision falls back to the elevation logic.
+-- Forced-on contexts for auto mode (Config.Headlights.AutoOnInTunnel /
+-- AutoOnInRain): real bores via the road-data cover (lone overpasses do not
+-- count) and wet presets; when the context ends the elevation logic resumes.
 local AUTO_ON_TUNNEL = true
 local AUTO_ON_RAIN = true
 
@@ -45,13 +40,11 @@ local AUTO_ON_RAIN = true
 local HEADLIGHT_ON_TOD = 1830   -- Turn on after 18:30 (dusk)
 local HEADLIGHT_OFF_TOD = 630   -- Turn off after 06:30 (dawn)
 
--- Light-button gesture thresholds (seconds). Acted on RELEASE by how long held:
---   held <= GESTURE_TAP_MAX_SEC   -> headlights ON  (a short press / tap)
---   held >= GESTURE_OFF_HOLD_SEC  -> headlights OFF (a deliberate hold)
---   in between                    -> nothing (dead zone)
--- (Manual mode only; auto is untouchable.)
--- Note the 125 ms tick caps timing precision, so the windows are wide and a sub-125 ms
--- flick may be missed; hence "hold to OFF" (reliable) vs a strict instant tap.
+-- Light-button gesture thresholds (seconds), acted on release by hold time:
+-- up to GESTURE_TAP_MAX_SEC = headlights on (tap), GESTURE_OFF_HOLD_SEC and
+-- longer = off (hold), between = dead zone. Manual mode only. The 125 ms tick
+-- caps timing precision, so the windows are wide and a sub-125 ms flick may
+-- be missed; that is why off is the hold rather than a strict instant tap.
 local GESTURE_TAP_MAX_SEC = 1.0
 local GESTURE_OFF_HOLD_SEC = 2.0
 
@@ -59,12 +52,14 @@ local GESTURE_OFF_HOLD_SEC = 2.0
 local isInitialized = false
 local headlightsOn = false
 local lastTOD = nil
+local lastForcedOn = false   -- effective tunnel/rain forced-ON verdict
+local forcedOffSince = nil   -- os.clock when the forced context first read false
+local FORCED_OFF_HOLD_S = 2.0
 local modeChanged = false
 
--- Course-entry reconcile: on a fresh course the cached on/off state is unknown and
--- the game's native auto may have enabled a cast-only light. Force ONE assert of the
--- desired state (ignoring the stale headlightsOn cache) after a short settle so the
--- exposure signal (sun elevation / lens) is available.
+-- Course-entry reconcile: on a fresh course the cached on/off state is unknown
+-- and the game's native auto may have enabled a cast-only light, so one assert
+-- of the desired state runs after a short settle (sun elevation available).
 local entryAssertPending = false
 local courseTicks = 0
 local ENTRY_SETTLE_TICKS = 16  -- ~2s at 125ms tick (lets the exposure provider produce a signal)
@@ -82,12 +77,11 @@ local pendingBrightnessApply = false
 local brightnessRetryCount = 0
 local MAX_BRIGHTNESS_RETRIES = 50  -- ~6 seconds at 125ms tick
 
--- Original SOURCE intensities per light component (GetFullName -> {normal, hibeam}).
--- The game recomputes a lamp's live .Intensity from its source props
--- (Normal_intensity / hibeam_intensity) on every hi-beam or setup event, so a
--- brightness multiplier written only to .Intensity is wiped by the next flash.
--- The multiplier is baked into the source props instead, always scaled from the
--- cached ORIGINAL so re-applies never compound. Cleared per course (fresh comps).
+-- Original source intensities per light component, keyed by GetFullName. The
+-- game recomputes a lamp's live .Intensity from Normal_intensity /
+-- hibeam_intensity on every hi-beam or setup event (a multiplier written only
+-- to .Intensity is wiped by the next flash), so the multiplier is baked into
+-- those props, always from the cached original (never compounds). Cleared per course.
 local srcOrig = {}
 
 -- Debounced brightness re-assert after a hi-beam flash: the OffHiBeam recompute
@@ -129,7 +123,7 @@ local function getExposure()
     return nil
 end
 
---- Check if TOD is in night range (fallback when no exposure lens is available)
+--- Check if TOD is in night range (fallback when no sun elevation is available)
 --- @param tod number
 --- @return boolean
 local function isNightTime(tod)
@@ -137,7 +131,7 @@ local function isNightTime(tod)
     return tod >= HEADLIGHT_ON_TOD or tod < HEADLIGHT_OFF_TOD
 end
 
---- Forced-ON check for AUTO mode: tunnel bores (road-data cover only, so
+--- Forced-on check for auto mode: tunnel bores (road-data cover only, so
 --- overpass shadows do not flash the lights) and wet weather.
 --- @return boolean
 local function autoForcedOn()
@@ -162,14 +156,14 @@ local function autoForcedOn()
     return false
 end
 
---- Decide whether headlights should be on in AUTO mode. Primary signal: the
---- sun's elevation (season-proof; the game's date drifts). Tunnel cover and
---- rain force ON regardless of the sun. Fallbacks: the legacy exposure lens
---- proxy, then the TOD thresholds.
+--- Auto-mode decision. Primary signal: the sun's elevation (season-proof; the
+--- game's date drifts). Tunnel cover and rain force on regardless of the sun;
+--- the TOD thresholds are the fallback.
 --- @param tod number current time of day (for the last-resort fallback)
 --- @return boolean
-local function computeAutoDesired(tod)
-    if autoForcedOn() then return true end
+local function computeAutoDesired(tod, forced)
+    if forced == nil then forced = autoForcedOn() end
+    if forced then return true end
 
     local exp = getExposure()
 
@@ -276,6 +270,23 @@ local function getPlayerPawn()
     return nil
 end
 
+-- Per-course pawn cache: the controller lookup is an uncached FindAllOf in
+-- UEHelpers, which ran eight times a second on course. The cached pawn is
+-- re-validated on every use and re-resolved every 2 s (a re-possession
+-- lands within that); the course edges drop it.
+local cachedPawn = nil
+local cachedPawnAt = 0.0
+local PAWN_REFRESH_S = 2.0
+local function getPlayerPawnCached()
+    local now = os.clock()
+    if cachedPawn and (now - cachedPawnAt) < PAWN_REFRESH_S and isValidActor(cachedPawn) then
+        return cachedPawn
+    end
+    cachedPawn = getPlayerPawn()
+    cachedPawnAt = now
+    return cachedPawn
+end
+
 --- Set vehicle lights using V2's working method calls
 --- @param obj userdata Vehicle/Pawn
 --- @param on boolean
@@ -285,23 +296,19 @@ local function setVehicleLights(obj, on)
     local want = on
     local success = false
 
-    -- Drive the player's lights via SetLightOn, the game's input-path TOGGLE whose
-    -- argument IS the RHL-animation flag. SetLightOn(true) flips is_light_on AND plays
-    -- the native pop-up raise/lower animation. This is what 3.0.17 did (pops animated);
-    -- 3.0.18 replaced it with a bare `is_light_on = want` write which is deterministic
-    -- but never animates: the pop-up regression. (Note: the 2-arg SetLIght setter does
-    -- NOT drive the rig, confirmed; SetLightOn is the one that animates.)
-    --   It is a TOGGLE, so we read the ACTUAL current state and only toggle when it
-    --   differs from `want`. That keeps the result deterministic (is_light_on always
-    --   ends at `want`, so the owner-gated visibility below can't invert) while still
-    --   animating on a real transition. Unconditional toggling was the 3.0.18 inversion.
+    -- SetLightOn is the game's input-path toggle and its argument is the RHL
+    -- animation flag: SetLightOn(true) flips is_light_on and plays the pop-up
+    -- animation (a bare is_light_on write never animates, and the 2-arg
+    -- SetLIght setter does not drive the rig). Read the actual state and
+    -- toggle only when it differs from want: is_light_on always ends at want,
+    -- so the owner-gated visibility below cannot invert, and a real move animates.
     local cur = nil
     pcall(function() local v = obj.is_light_on; if type(v) == "boolean" then cur = v end end)
     local toggled = false
     if cur == nil then
         pcall(function() obj.is_light_on = want end)   -- state unreadable: deterministic write (no anim)
     elseif cur ~= want then
-        toggled = safeCallMethod(obj, 'SetLightOn', true)  -- toggle cur->want + animate pops
+        toggled = safeCallMethod(obj, 'SetLightOn', true)  -- toggle to want and animate the pops
     end
     Log.Debug(MODULE, "Player light setter", {on = want, cur = cur, toggled = toggled})
     success = true
@@ -334,11 +341,9 @@ local function setVehicleLights(obj, on)
                     -- (fall back to the requested state if the owner can't be read).
                     local lit = ownerLightsOn(comp)
                     if lit == nil then lit = want end
-                    -- SetVisibility controls rendering
                     if comp.SetVisibility then
                         comp:SetVisibility(lit, true)  -- propagate to children
                     end
-                    -- Also try SetActive for component activation
                     if comp.SetActive then
                         comp:SetActive(lit)
                     end
@@ -429,9 +434,9 @@ local function saveState()
     end
 end
 
---- Load persisted brightness level, and the persisted MANUAL on/off state.
---- Auto vs manual is config-authoritative (set in config only), so a persisted
---- mode is restored only when it is a manual state AND config is not "auto".
+--- Load the persisted brightness level and manual on/off state. Auto vs manual
+--- is config-authoritative, so a persisted mode is restored only when it is a
+--- manual state and config is not "auto".
 --- @param allowModeOverride boolean true when config mode is manual
 local function loadState(allowModeOverride)
     local ok, f = pcall(io.open, getStateFilePath(), "r")
@@ -513,7 +518,7 @@ function Headlights.Init()
     end
 
     -- Restore persisted brightness, and the manual on/off state only when config
-    -- is NOT auto (auto mode is configured in config only, never persisted/keybound).
+    -- is not auto (auto mode is configured in config only, never persisted).
     loadState(currentMode ~= "auto")
 
     isInitialized = true
@@ -524,14 +529,13 @@ function Headlights.Init()
 end
 
 -- Gesture edge-detector state (used by the hold-gesture block below; declared
--- ABOVE OnCourseLoad so its reset there writes these locals, not globals).
+-- above OnCourseLoad so its reset there writes these locals, not globals).
 local gHbPrev = nil           -- last is_hibeam_on
 local gHbRise = nil           -- os.clock() at the button-down edge
 
---- Called on a fresh course load. The cached on/off state is stale and the game's
---- native auto may have left a cast-only light enabled, so schedule a one-time
---- reconcile: re-assert force modes and force the next auto tick to drive the lights
---- to the correct state (after a short settle for the exposure lens).
+--- Fresh course load: the cached on/off state is stale and the game's native
+--- auto may have left a cast-only light on, so schedule the one-time reconcile
+--- (re-assert force modes, force the next auto tick after a short settle).
 function Headlights.OnCourseLoad()
     headlightsOn = false        -- unknown until we assert
     lastTOD = nil
@@ -539,28 +543,29 @@ function Headlights.OnCourseLoad()
     entryAssertPending = true   -- force one auto assert, ignoring the stale cache
     courseTicks = 0
     srcOrig = {}                -- fresh world = fresh light components
+    cachedPawn, cachedPawnAt = nil, 0.0
+    lastForcedOn, forcedOffSince = false, nil
     brightnessReassertAt = nil
     -- Gesture edge state: a button held across the load screen must not read
-    -- as a release whose "held" time spans the load = a phantom hold-OFF.
+    -- as a release whose "held" time spans the load = a phantom hold-off.
     gHbPrev, gHbRise = nil, nil
     Log.Info(MODULE, "Course load: will re-assert headlight state")
 end
 
 -- ===== Light-button hold-gesture (keyboard + controller) =====
--- The vanilla light/hi-beam button is momentary: is_hibeam_on is true only while held.
--- We read that state (it is set the same for keyboard AND controller, so this is
--- device-agnostic) and act on RELEASE by how long it was held: a short press turns
--- headlights ON, a long hold turns them OFF (manual mode only). See thresholds above.
--- (gHbPrev/gHbRise are declared above OnCourseLoad.)
+-- The vanilla light/hi-beam button is momentary: is_hibeam_on is true only
+-- while held, for keyboard and controller alike. Release after a short press
+-- turns the headlights on, after a long hold off (manual mode only; see the
+-- thresholds above). gHbPrev/gHbRise are declared above OnCourseLoad.
 
--- Manual on/off from a gesture. ABSOLUTE (short press = ON, hold = OFF), not a toggle,
--- so it is deterministic regardless of what we think the current state is. No-op in auto.
+-- Manual on/off from a gesture: absolute (tap = on, hold = off), not a toggle,
+-- so it is deterministic whatever the cached state says. No-op in auto.
 local function gestureSetLights(want)
     if currentMode == "auto" then return end
     local target = want and "force_on" or "force_off"
     if currentMode ~= target then
         currentMode = target
-        modeChanged = true   -- Tick actuates (SetLightOn -> pops animate)
+        modeChanged = true   -- Tick actuates (SetLightOn animates the pops)
         saveState()
     end
 end
@@ -578,9 +583,8 @@ local function handleLightGesture(pawn)
         gHbRise = now                              -- button down
     else
         -- Hi-beam released: the game's OffHiBeam recompute resets lamp intensity
-        -- as the flash ends. Re-assert IMMEDIATELY (the pending block runs right
-        -- after this handler in the same tick) and once more shortly after, in
-        -- case the game's recompute lands later than the release edge.
+        -- as the flash ends, so re-assert now (the pending block runs later this
+        -- tick) and once more shortly after in case the recompute lands late.
         if headlightsOn then
             pendingBrightnessApply = true
             brightnessRetryCount = 0
@@ -622,18 +626,18 @@ function Headlights.Tick()
         end
     end
 
-    if not actors.IsOnCourse() then return end
+    if not actors.IsOnCourse() then cachedPawn = nil; return end
 
     -- Don't run during PA
     if State.IsPAFrozen and State.IsPAFrozen() then return end
 
     -- Get player pawn (vehicle); required for any light control
-    local pawn = getPlayerPawn()
+    local pawn = getPlayerPawnCached()
     if not pawn then return end  -- No vehicle, skip tick
 
     courseTicks = courseTicks + 1
 
-    handleLightGesture(pawn)  -- light-button hold gesture (tap = lights ON, hold = OFF)
+    handleLightGesture(pawn)  -- light-button hold gesture (tap = lights on, hold = off)
 
     -- Debounced post-flash re-assert (set on the hi-beam release edge)
     if brightnessReassertAt and os.clock() >= brightnessReassertAt then
@@ -644,10 +648,9 @@ function Headlights.Tick()
         end
     end
 
-    -- Deferred brightness application. Processed HERE, before the force-mode
-    -- returns and the auto TOD-change throttle: the old placement at the end of
-    -- the auto path made it unreachable in force modes and delayed it by the
-    -- throttle window in auto.
+    -- Deferred brightness application, ahead of the force-mode returns and the
+    -- auto TOD throttle: placed after them it was unreachable in force modes
+    -- and delayed by the throttle window in auto.
     if pendingBrightnessApply and headlightsOn then
         brightnessRetryCount = brightnessRetryCount + 1
         local multiplier = BRIGHTNESS_MULTIPLIERS[currentBrightnessLevel]
@@ -689,29 +692,50 @@ function Headlights.Tick()
     local currentTOD = tod.GetCurrentTOD()
     if not currentTOD then return end
 
-    -- Only update on significant TOD change or mode change (avoid spam). A pending
-    -- entry assert must keep evaluating until it fires, so it bypasses this guard.
-    if not modeChanged and not entryAssertPending and lastTOD and math.abs(currentTOD - lastTOD) < 5 then
+    -- Re-evaluate on a five-unit TOD move (3.75 s at normal speed) or a mode
+    -- change. A pending entry assert bypasses the guard, and so does a forced
+    -- context change (tunnel cover, wet preset): the TOD guard never elapses
+    -- while the clock is paused, so a bore entry could wait for Alt+T. Entering
+    -- cover flips at once; leaving holds FORCED_OFF_HOLD_S so a short gap
+    -- between bores does not blink the lamps (09-02 leak hunt: 1-2 s off/on
+    -- pairs at bore mouths).
+    local forcedNow = autoForcedOn()
+    local forcedChanged = false
+    if forcedNow ~= lastForcedOn then
+        if forcedNow then
+            forcedChanged = true
+            lastForcedOn = true
+            forcedOffSince = nil
+        else
+            forcedOffSince = forcedOffSince or os.clock()
+            if (os.clock() - forcedOffSince) >= FORCED_OFF_HOLD_S then
+                forcedChanged = true
+                lastForcedOn = false
+                forcedOffSince = nil
+            end
+        end
+    else
+        forcedOffSince = nil
+    end
+    if not modeChanged and not entryAssertPending and not forcedChanged
+       and lastTOD and math.abs(currentTOD - lastTOD) < 5 then
         return
     end
     lastTOD = currentTOD
     modeChanged = false
 
-    -- Course-entry reconcile: seed the hysteresis with the car's ACTUAL light
-    -- state first. The game's native auto may have already made the right call
-    -- (lights ON at a dusk spawn); computing from a cold headlightsOn=false
-    -- seed inside the dead band (OffLens..OnLens) overrode that to OFF and kept
-    -- it off until the lens crossed OnLens ("lights start on, then turn off").
-    -- A real daytime cast-only desync still clears: the day lens sits below
-    -- OffLens, so an adopted ON immediately computes back to OFF.
+    -- Course-entry reconcile: seed the hysteresis with the car's actual light
+    -- state. A cold headlightsOn=false seed inside the dead band overrode the
+    -- game's correct dusk-spawn on ("lights start on, then turn off"); a real
+    -- daytime cast-only desync still clears, since day sits above OFF_ELEV.
     if entryAssertPending and courseTicks >= ENTRY_SETTLE_TICKS then
         local actual = nil
         pcall(function() local v = pawn.is_light_on; if type(v) == "boolean" then actual = v end end)
         if actual ~= nil then headlightsOn = actual end
     end
 
-    -- Driven by the sun's elevation with hysteresis; lens/TOD are fallbacks.
-    local shouldBeOn = computeAutoDesired(currentTOD)
+    -- Driven by the sun's elevation with hysteresis; TOD is the fallback.
+    local shouldBeOn = computeAutoDesired(currentTOD, lastForcedOn)
 
     if entryAssertPending and courseTicks >= ENTRY_SETTLE_TICKS then
         -- Course-entry reconcile: drive the lights to the desired state unconditionally,
@@ -737,30 +761,9 @@ function Headlights.Tick()
 
 end
 
---- Cycle headlight mode: auto -> force_on -> force_off -> auto
---- @return string newMode
-function Headlights.CycleMode()
-    if currentMode == "auto" then
-        currentMode = "force_on"
-    elseif currentMode == "force_on" then
-        currentMode = "force_off"
-    else
-        currentMode = "auto"
-    end
-
-    -- Flag for update on next tick
-    modeChanged = true
-    saveState()
-
-    Log.Info(MODULE, "Headlight mode cycled", {mode = currentMode})
-    return currentMode
-end
-
---- Manual on/off toggle. Flips between force_on / force_off based on the current
---- light state. Intentionally a NO-OP while config Mode = "auto": auto is full-auto
---- and untouchable at runtime (there is no on-screen mode indicator, so a hidden
---- runtime switch out of auto just looks like "auto stopped working"). Manual on/off
---- belongs to a manual config only.
+--- Manual on/off toggle between force_on / force_off. Deliberately a no-op
+--- while config Mode = "auto": there is no on-screen mode indicator, so a
+--- hidden runtime switch out of auto just looks like "auto stopped working".
 --- @return string newMode
 function Headlights.ToggleManual()
     if currentMode == "auto" then
@@ -778,17 +781,15 @@ function Headlights.ToggleManual()
     return currentMode
 end
 
--- Auto mode is configured in config only (Config.Headlights.Mode = "auto"); there
--- is intentionally no runtime auto toggle (a second toggle could desync from the
--- manual on/off state).
+-- Auto mode is config-only (Config.Headlights.Mode = "auto"); a runtime auto
+-- toggle could desync from the manual on/off state, so there is none.
 
---- Toggle the lights on the car displayed in the garage. The player pawn is nil in
---- the garage, so we get the car from the garage manager via GetDisplayVehicle (NOT
---- FindAllOf, which would hit every car). Gated on GetIsMovingRHL so we never toggle
---- while the pop-up rig is mid-move (that is the documented desync cause). SetLightOn
---- (single-arg RHL-animation toggle) flips is_light_on AND animates the pops, so
---- pop-ups work in the garage too. All on the game thread (object writes off-thread
---- during outgame can corrupt reflection). Pattern taken from the reference mod.
+--- Toggle the lights on the car displayed in the garage. The player pawn is nil
+--- there, so the car comes from the garage manager's GetDisplayVehicle (not
+--- FindAllOf, which would hit every car). Gated on GetIsMovingRHL: toggling
+--- while the pop-up rig is mid-move is the documented desync cause. SetLightOn
+--- animates the pops. Game thread only (outgame object writes off-thread can
+--- corrupt reflection).
 --- @return boolean attempted
 function Headlights.ToggleGarageLights()
     if not ExecuteInGameThread then return false end
@@ -827,15 +828,11 @@ function Headlights.ToggleGarageLights()
 end
 
 --- Config.Headlights.GarageAlwaysOn (2026-08-11): keep the displayed car's
---- lights ON for the whole garage visit (the show-floor look; pairs with the
---- dark-garage exposure seed). Same GT body as the toggle above but
---- STATE-CHECKED: reads is_light_on first and only fires the animated
---- SetLightOn toggle when the lights are actually off, so the periodic
---- re-assert is a pure no-op while they are on and the RHL rig can never be
---- flip-flopped. The re-check also covers garage vehicle swaps (a freshly
---- displayed car spawns lights-off and gets caught within one throttle
---- window). Alt+Q still toggles manually; auto-on simply re-arms within a
---- couple of seconds.
+--- lights on for the whole garage visit (pairs with the dark-garage exposure
+--- seed). Same GT body as the toggle but state-checked: SetLightOn fires only
+--- when the lights are off, so the periodic re-assert is a no-op while on (the
+--- RHL rig can never flip-flop) and a freshly displayed car is caught within
+--- one throttle window. Alt+Q still toggles; auto-on re-arms within seconds.
 --- @return boolean attempted
 function Headlights.EnsureGarageLightsOn()
     if not ExecuteInGameThread then return false end
@@ -886,46 +883,6 @@ function Headlights.OnManualToggleKey()
     return Headlights.ToggleManual()
 end
 
---- Set headlight mode directly
---- @param mode string "auto" | "force_on" | "force_off"
-function Headlights.SetMode(mode)
-    if mode == "auto" or mode == "force_on" or mode == "force_off" then
-        currentMode = mode
-        modeChanged = true
-        saveState()
-        Log.Info(MODULE, "Headlight mode set", {mode = currentMode})
-    end
-end
-
---- Get current mode
---- @return string
-function Headlights.GetMode()
-    return currentMode
-end
-
---- Check if headlights are currently on
---- @return boolean
-function Headlights.AreHeadlightsOn()
-    return headlightsOn
-end
-
---- Get status for debugging
---- @return table
-function Headlights.GetStatus()
-    return {
-        initialized = isInitialized,
-        mode = currentMode,
-        headlightsOn = headlightsOn,
-        lastTOD = lastTOD,
-        onElev = ON_ELEV,
-        offElev = OFF_ELEV,
-        onTOD = HEADLIGHT_ON_TOD,
-        offTOD = HEADLIGHT_OFF_TOD,
-        brightnessLevel = currentBrightnessLevel,
-        brightnessMultiplier = BRIGHTNESS_MULTIPLIERS[currentBrightnessLevel],
-    }
-end
-
 -- ============== BRIGHTNESS CONTROL ==============
 -- Uses BP_CarLightSpriteComponent_C:SetIntensity for visual brightness
 
@@ -935,12 +892,11 @@ end
 applyBrightness = function(multiplier)
     local count = 0
 
-    -- Pawn-level source templates. The flash recompute pulls intensity from
-    -- these (component-source scaling alone did not survive a hi-beam flash:
-    -- lamps dropped to stock until the delayed re-assert), so the multiplier is
-    -- baked in here too; same cached-original rule so it never compounds.
+    -- Pawn-level source templates: the flash recompute pulls intensity from
+    -- these (component-source scaling alone did not survive a hi-beam flash),
+    -- so the multiplier is baked in here too, from the cached original.
     pcall(function()
-        local pawn = getPlayerPawn()
+        local pawn = getPlayerPawnCached()
         if not pawn then return end
         local key = nil
         pcall(function() key = "pawn:" .. pawn:GetFullName() end)
@@ -987,8 +943,8 @@ applyBrightness = function(multiplier)
             for _, light in ipairs(components) do
                 if light and light:IsValid() then
                     pcall(function()
-                        -- Cache this component's ORIGINAL source intensities once,
-                        -- before we ever scale them (first-seen value = stock).
+                        -- Cache the original source intensities once, before any
+                        -- scaling (first-seen value = stock).
                         local key = nil
                         pcall(function() key = light:GetFullName() end)
                         local orig = key and srcOrig[key] or nil
@@ -1000,9 +956,8 @@ applyBrightness = function(multiplier)
                             if key then srcOrig[key] = orig end
                         end
 
-                        -- Bake the multiplier into the SOURCE props (from the
-                        -- original base) so the game's own hi-beam/setup
-                        -- recomputes land on the scaled value instead of stock.
+                        -- Bake the multiplier into the source props so the game's
+                        -- hi-beam/setup recomputes land on the scaled value.
                         if type(orig.normal) == "number" and orig.normal > 0 then
                             pcall(function() light.Normal_intensity = orig.normal * multiplier end)
                         end
@@ -1025,9 +980,8 @@ applyBrightness = function(multiplier)
         end
     end)
 
-    -- Toggle headlights off then on to force refresh
+    -- Toggle BP_HeadLightComponent visibility off then on to force a refresh
     if count > 0 then
-        -- Quick toggle via BP_HeadLightComponent visibility
         pcall(function()
             local headlightComps = FindAllOf("BP_HeadLightComponent_C")
             if headlightComps then

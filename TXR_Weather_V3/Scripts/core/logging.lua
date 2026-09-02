@@ -23,24 +23,21 @@ local LEVEL_NAMES = {
 local logFile = nil
 local logPath = nil
 local minLevel = LOG_LEVELS.DEBUG
-local logToConsole = true       -- honored from config (was previously ignored)
+local logToConsole = true       -- honored from config
 local isInitialized = false
-local sessionStartTime = nil
 local MOD_VERSION = "3.0.0"  -- overwritten from config.version in Init (Config.Version.String)
 
--- Flush throttling: avoid a synchronous disk flush on every log line.
--- INFO/DEBUG flushes are batched; WARN/ERROR flush immediately so crash
--- diagnostics are never lost.
+-- Flush throttling: INFO/DEBUG flushes are batched; WARN/ERROR flush at
+-- once so crash diagnostics survive.
 local FLUSH_INTERVAL = 0.5  -- seconds
 local lastFlush = 0
 
--- Tuning-feedback side channel: lines with these module tags (the Alt+D /
--- Alt+Shift+D exposure feedback and the Alt+Z/X/C/V skylight nudges) are ALSO
--- appended to one persistent Logs/tuning_feedback.log, so users can send just
--- the relevant datapoints instead of digging through full session logs. The
--- file accumulates across sessions with a session marker, is only created on
--- the first feedback press, and every line is flushed (presses are rare and
--- must survive a crash).
+-- Tuning-feedback side channel: lines with these module tags (the Alt+D
+-- exposure feedback and the Alt+Z/X/C/V skylight nudges among them) are
+-- also appended to the persistent Logs/tuning_feedback.log, so users can
+-- send just the datapoints. It accumulates across sessions with a session
+-- marker, is created on the first feedback press, and every line is
+-- flushed (presses are rare and must survive a crash).
 local FEEDBACK_TAGS = { ExposureTune = true, SkylightTune = true, RainSpot = true, StarTune = true }
 local FEEDBACK_FILENAME = "tuning_feedback.log"
 local feedbackFile = nil
@@ -66,16 +63,23 @@ local function getLogFileName()
     return string.format("TXR_Weather_V3_%s.log", date)
 end
 
+-- Logs live in Mods/<mod>/Logs/. The debug.getinfo source path mixes
+-- separators (package.path contributes "/", the module dot becomes "\"),
+-- so the match accepts either and anchors on the core/ folder, the same
+-- derivation persistence.lua uses for the mod root. The directory is
+-- created once per session: os.execute spawns a shell, and a per-call
+-- spawn used to fire again on the first feedback key press with the game
+-- full screen.
+local logsDirCached = nil
+
 local function ensureLogDirectory()
-    -- Try to create Logs directory if it doesn't exist
-    -- UE4SS mods typically run from Mods/ModName/Scripts/
-    -- We'll put logs in Mods/ModName/Logs/
-    local baseDir = debug.getinfo(1, "S").source:match("@?(.*/)") or "./"
-    local logsDir = baseDir .. "../Logs/"
-    
-    -- Attempt to create directory (may fail silently if exists)
-    os.execute('mkdir "' .. logsDir .. '" 2>nul')
-    
+    if logsDirCached then return logsDirCached end
+    local source = (debug.getinfo(1, "S").source or ""):gsub("@", "")
+    local scriptsDir = source:match("(.+)[/\\]core[/\\]")
+    local modRoot = scriptsDir and scriptsDir:match("(.+)[/\\]")
+    local logsDir = modRoot and (modRoot .. "/Logs/") or "./../Logs/"
+    os.execute('mkdir "' .. logsDir:gsub("/", "\\") .. '" 2>nul')
+    logsDirCached = logsDir
     return logsDir
 end
 
@@ -151,7 +155,7 @@ function Logging.Init(config)
     -- Honor console logging flag (default on)
     logToConsole = (config.logToConsole ~= false)
 
-    -- Stamp the real mod version into the session header (was hardcoded "3.0.0").
+    -- Stamp the real mod version into the session header.
     if config.version then MOD_VERSION = tostring(config.version) end
 
     -- Initialize file logging
@@ -169,7 +173,6 @@ function Logging.Init(config)
         end
     end
     
-    sessionStartTime = os.time()
     isInitialized = true
     
     -- Write session header
@@ -190,33 +193,6 @@ function Logging.Init(config)
     writeToConsole(header)
     
     return true
-end
-
---- Shutdown the logging system
-function Logging.Shutdown()
-    if not isInitialized then return end
-    
-    local footer = string.format(
-        "================================================================================\n" ..
-        "Log Session Ended: %s\n" ..
-        "Session Duration: %d seconds\n" ..
-        "================================================================================",
-        getDateTimeString(),
-        os.time() - sessionStartTime
-    )
-    
-    if logFile then
-        writeToFile(footer, true)
-        logFile:close()
-        logFile = nil
-    end
-    if feedbackFile then
-        pcall(function() feedbackFile:close() end)
-        feedbackFile = nil
-    end
-    writeToConsole(footer)
-
-    isInitialized = false
 end
 
 --- Core logging function
@@ -256,7 +232,6 @@ function Logging.Log(level, module, message, data)
         end
     end
     
-    -- Output to both file and console
     -- WARN/ERROR flush immediately so they survive a crash; lower levels batch.
     if logFile then
         writeToFile(line, level >= LOG_LEVELS.WARN)
@@ -286,27 +261,10 @@ function Logging.Error(module, message, data)
     Logging.Log(LOG_LEVELS.ERROR, module, message, data)
 end
 
---- Set minimum log level at runtime
---- @param level string|number "DEBUG", "INFO", "WARN", "ERROR" or numeric
-function Logging.SetLevel(level)
-    if type(level) == "string" then
-        minLevel = LOG_LEVELS[level:upper()] or LOG_LEVELS.DEBUG
-    else
-        minLevel = level
-    end
-    Logging.Info("Logging", "Log level changed", {level = LEVEL_NAMES[minLevel]})
-end
-
---- Get current log file path
---- @return string|nil
-function Logging.GetLogPath()
-    return logPath
-end
-
---- Check if logging is initialized
---- @return boolean
-function Logging.IsInitialized()
-    return isInitialized
+--- True when DEBUG lines would be written (release builds run at INFO), so
+--- a module can skip work whose only output is Log.Debug.
+function Logging.IsDebugEnabled()
+    return minLevel <= LOG_LEVELS.DEBUG
 end
 
 -- Export log levels for external use

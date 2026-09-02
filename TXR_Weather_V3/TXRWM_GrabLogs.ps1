@@ -27,7 +27,7 @@ Say '================================================' White
 $exeName = 'TokyoXtremeRacer-Win64-Shipping.exe'
 $win64 = $null
 
-if ($GamePath -and (Test-Path (Join-Path $GamePath $exeName))) { $win64 = $GamePath }
+if ($GamePath -and (Test-Path -LiteralPath (Join-Path $GamePath $exeName))) { $win64 = $GamePath }
 
 if (-not $win64) {
     # walk up from where this script sits (works when dropped anywhere in
@@ -35,8 +35,8 @@ if (-not $win64) {
     $probe = $PSScriptRoot
     for ($i = 0; $i -lt 7; $i++) {
         if (-not $probe) { break }
-        if (Test-Path (Join-Path $probe $exeName)) { $win64 = $probe; break }
-        $hit = Get-ChildItem $probe -Filter $exeName -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (Test-Path -LiteralPath (Join-Path $probe $exeName)) { $win64 = $probe; break }
+        $hit = Get-ChildItem -LiteralPath $probe -Filter $exeName -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($hit) { $win64 = $hit.DirectoryName; break }
         $probe = Split-Path $probe -Parent
     }
@@ -50,14 +50,14 @@ if (-not $win64) {
             $steam = $steam -replace '/', '\'
             $libs = @($steam)
             $vdf = Join-Path $steam 'steamapps\libraryfolders.vdf'
-            if (Test-Path $vdf) {
-                foreach ($m in [regex]::Matches((Get-Content $vdf -Raw), '"path"\s+"([^"]+)"')) {
+            if (Test-Path -LiteralPath $vdf) {
+                foreach ($m in [regex]::Matches((Get-Content -LiteralPath $vdf -Raw), '"path"\s+"([^"]+)"')) {
                     $libs += ($m.Groups[1].Value -replace '\\\\', '\')
                 }
             }
             foreach ($lib in ($libs | Select-Object -Unique)) {
                 $cand = Join-Path $lib 'steamapps\common\TokyoXtremeRacer\TokyoXtremeRacer\Binaries\Win64'
-                if (Test-Path (Join-Path $cand $exeName)) { $win64 = $cand; break }
+                if (Test-Path -LiteralPath (Join-Path $cand $exeName)) { $win64 = $cand; break }
             }
         }
     } catch {}
@@ -67,7 +67,7 @@ while (-not $win64) {
     Say 'Could not find the game automatically.' Yellow
     Say "Paste the path to the game's Binaries\Win64 folder (contains $exeName):" Yellow
     $p = (Read-Host 'Path').Trim().Trim('"')
-    if ($p -and (Test-Path (Join-Path $p $exeName))) { $win64 = $p }
+    if ($p -and (Test-Path -LiteralPath (Join-Path $p $exeName))) { $win64 = $p }
     else { Say 'That folder does not contain the game exe. Try again.' Red }
 }
 Say "Game: $win64" Green
@@ -90,12 +90,12 @@ try {
     $manifest.Add("OS: $($os.Caption) $($os.Version)")
 } catch {}
 try {
-    $cfgRaw = Get-Content (Join-Path $modDir 'Scripts\config.lua') -Raw -ErrorAction Stop
+    $cfgRaw = Get-Content -LiteralPath (Join-Path $modDir 'Scripts\config.lua') -Raw -ErrorAction Stop
     $vm = [regex]::Match($cfgRaw, 'Config\.Version\s*=\s*\{\s*String\s*=\s*"([^"]+)"')
     if ($vm.Success) { $manifest.Add("Mod version: $($vm.Groups[1].Value)") }
 } catch {}
 try {
-    $exe = Get-Item (Join-Path $win64 $exeName)
+    $exe = Get-Item -LiteralPath (Join-Path $win64 $exeName)
     $manifest.Add(("Game exe: {0:N0} bytes  {1}  filever {2}" -f $exe.Length,
         $exe.LastWriteTime.ToString('yyyy-MM-dd HH:mm'), $exe.VersionInfo.FileVersion))
 } catch {}
@@ -104,8 +104,8 @@ try {
     # from Win64 on a standard install, skipped quietly elsewhere.
     $steamapps = $win64; for ($i = 0; $i -lt 5; $i++) { $steamapps = Split-Path $steamapps -Parent }
     if ($steamapps -and ((Split-Path $steamapps -Leaf) -eq 'steamapps')) {
-        foreach ($acf in (Get-ChildItem $steamapps -Filter 'appmanifest_*.acf' -ErrorAction SilentlyContinue)) {
-            $raw = Get-Content $acf.FullName -Raw
+        foreach ($acf in (Get-ChildItem -LiteralPath $steamapps -Filter 'appmanifest_*.acf' -ErrorAction SilentlyContinue)) {
+            $raw = Get-Content -LiteralPath $acf.FullName -Raw
             if ($raw -match '"installdir"\s+"TokyoXtremeRacer"') {
                 if ($raw -match '"buildid"\s+"(\d+)"') { $manifest.Add("Steam buildid: $($Matches[1])  ($($acf.Name))") }
                 break
@@ -138,7 +138,7 @@ Grab (Join-Path $ue4ss 'Mods\mods.txt') 'ue4ss' 'enabled mods' | Out-Null
 
 # ue4ss crash dumps: all from the last 48h, else the newest one; cap total
 $manifest.Add('[ue4ss crash dumps]')
-$dumps = @(Get-ChildItem $ue4ss -Filter 'crash_*.dmp' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+$dumps = @(Get-ChildItem -LiteralPath $ue4ss -Filter 'crash_*.dmp' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
 $recent = @($dumps | Where-Object { $_.LastWriteTime -gt (Get-Date).AddHours(-48) })
 if ($recent.Count -eq 0 -and $dumps.Count -gt 0) { $recent = @($dumps[0]) }
 $budget = 150MB
@@ -151,8 +151,8 @@ if ($dumps.Count -eq 0) { $manifest.Add('  (none found)') }
 Say 'Collecting mod logs...' Cyan
 $manifest.Add('[mod logs]')
 $logDir = Join-Path $modDir 'Logs'
-if (Test-Path $logDir) {
-    foreach ($f in (Get-ChildItem $logDir -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 10)) {
+if (Test-Path -LiteralPath $logDir) {
+    foreach ($f in (Get-ChildItem -LiteralPath $logDir -Filter '*.log' | Sort-Object LastWriteTime -Descending | Select-Object -First 10)) {
         Grab $f.FullName 'modlogs' $f.LastWriteTime.ToString('yyyy-MM-dd HH:mm') | Out-Null
     }
     foreach ($n in 'slab_rows.txt', 'tuning_feedback.log', 'editor_hud.txt') {
@@ -172,8 +172,8 @@ try {
     # replay-BP serialization case): list EVERYTHING, copy nothing big.
     $gameRoot = Split-Path (Split-Path $win64 -Parent) -Parent
     $paksDir = Join-Path $gameRoot 'Content\Paks'
-    if (Test-Path $paksDir) {
-        $rows = @(foreach ($f in (Get-ChildItem $paksDir -Recurse -File -ErrorAction SilentlyContinue)) {
+    if (Test-Path -LiteralPath $paksDir) {
+        $rows = @(foreach ($f in (Get-ChildItem -LiteralPath $paksDir -Recurse -File -ErrorAction SilentlyContinue)) {
             '{0,15:N0}  {1}  {2}' -f $f.Length, $f.LastWriteTime.ToString('yyyy-MM-dd HH:mm'),
                 $f.FullName.Substring($paksDir.Length + 1)
         })
@@ -185,8 +185,8 @@ try {
 $manifest.Add('[installed ue4ss mods]')
 try {
     # enabled.txt starts a mod REGARDLESS of mods.txt: record both switches.
-    $rows = @(foreach ($d in (Get-ChildItem (Join-Path $ue4ss 'Mods') -Directory -ErrorAction SilentlyContinue)) {
-        $en = Test-Path (Join-Path $d.FullName 'enabled.txt')
+    $rows = @(foreach ($d in (Get-ChildItem -LiteralPath (Join-Path $ue4ss 'Mods') -Directory -ErrorAction SilentlyContinue)) {
+        $en = Test-Path -LiteralPath (Join-Path $d.FullName 'enabled.txt')
         '{0,-28} enabled.txt={1}  {2}' -f $d.Name, $(if ($en) { 'YES' } else { 'no ' }),
             $d.LastWriteTime.ToString('yyyy-MM-dd HH:mm')
     })
@@ -197,8 +197,8 @@ try {
 $manifest.Add('[engine ini]')
 $iniDir = Join-Path $saved 'Config\Windows'
 $gotIni = $false
-if (Test-Path $iniDir) {
-    foreach ($f in (Get-ChildItem $iniDir -Filter 'Engine.ini*' -ErrorAction SilentlyContinue)) {
+if (Test-Path -LiteralPath $iniDir) {
+    foreach ($f in (Get-ChildItem -LiteralPath $iniDir -Filter 'Engine.ini*' -ErrorAction SilentlyContinue)) {
         if (Grab $f.FullName 'engineini' '') { $gotIni = $true }
     }
 }
@@ -207,15 +207,15 @@ if (-not $gotIni) { $manifest.Add('  (none found)') }
 Say 'Collecting engine crash reports...' Cyan
 $manifest.Add('[engine crashes]')
 $crashRoot = Join-Path $saved 'Crashes'
-if (Test-Path $crashRoot) {
-    foreach ($d in (Get-ChildItem $crashRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 3)) {
+if (Test-Path -LiteralPath $crashRoot) {
+    foreach ($d in (Get-ChildItem -LiteralPath $crashRoot -Directory | Sort-Object LastWriteTime -Descending | Select-Object -First 3)) {
         Grab $d.FullName 'crashes' $d.LastWriteTime.ToString('yyyy-MM-dd HH:mm') | Out-Null
     }
 } else { $manifest.Add('  (none found)') }
 $gameLogs = Join-Path $saved 'Logs'
-if (Test-Path $gameLogs) {
+if (Test-Path -LiteralPath $gameLogs) {
     $manifest.Add('[game logs]')
-    foreach ($f in (Get-ChildItem $gameLogs -File | Sort-Object LastWriteTime -Descending | Select-Object -First 3)) {
+    foreach ($f in (Get-ChildItem -LiteralPath $gameLogs -File | Sort-Object LastWriteTime -Descending | Select-Object -First 3)) {
         Grab $f.FullName 'gamelogs' '' | Out-Null
     }
 }
@@ -227,9 +227,9 @@ if (-not $OutDir) { $OutDir = [Environment]::GetFolderPath('Desktop') }
 $zip = Join-Path $OutDir ("TXRWM_logs_$stamp.zip")
 Say 'Zipping...' Cyan
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
-Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 
-$zi = Get-Item $zip
+$zi = Get-Item -LiteralPath $zip
 Say '' White
 Say ("DONE: {0}  ({1:N1} MB)" -f $zip, ($zi.Length / 1MB)) Green
 Say 'Send this file to the mod author.' Green

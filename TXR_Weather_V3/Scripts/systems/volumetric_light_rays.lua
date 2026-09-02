@@ -1,15 +1,13 @@
 -- TXR Weather Mod v3.0
 -- systems/volumetric_light_rays.lua
--- Volumetric Cloud Light Rays: UDS god-ray shafts that stab down through gaps in
--- the cloud cover. Rendered by a Niagara system of additive ray cards (the same
--- render path as rain / wind debris, so it works in TXR). NOT a post-process effect
--- (no MID, no weighted blendable), so it does not hit the screen-effect dead-end.
---
--- Enabled + applied via UDS's "Static Properties - Volumetric Cloud Light Rays" on
--- the game thread, deferred past BeginPlay by a settle gate (the proven Stars /
--- WindDebris pattern). `Individual Clouds Light Rays` > 0 casts rays through NATURAL
--- cloud gaps, so we get them on overcast skies without painting cloud coverage.
--- Shows in daytime under broken/overcast cloud with the sun behind the clouds.
+-- Volumetric Cloud Light Rays: UDS god-ray shafts through gaps in the cloud
+-- cover, a Niagara system of additive ray cards (the rain / wind debris render
+-- path, so it works in TXR; not a post-process effect, no MID, no weighted
+-- blendable). Enabled via UDS's light-rays Static Properties bake on the game
+-- thread behind a settle gate (the Stars / WindDebris pattern). `Individual
+-- Clouds Light Rays` > 0 casts rays through natural cloud gaps, so overcast
+-- skies get them without painting coverage; shows in daytime under broken
+-- cloud with the sun behind the clouds.
 
 local LightRays = {}
 
@@ -51,7 +49,7 @@ local appliedThisCourse = false
 local diagTicks = 0
 -- Plausibility gate (2026-07-28): sun shafts through cloud gaps
 -- are nonsense under a solid deck, in fog, or in rain: these presets force
--- the rays OFF; a change back to broken cover brings them back. Override
+-- the rays off; a change back to broken cover brings them back. Override
 -- the set via Config.LightRays.DisabledPresets (array of preset names).
 local weatherBlocked = false
 local DISABLED_PRESETS = {
@@ -170,16 +168,20 @@ function LightRays.Init()
     return true
 end
 
+--- Course edge (main.lua's debounced lifecycle): re-arm the one-shot.
+function LightRays.OnCourseUnload()
+    settleTicks = 0
+    appliedThisCourse = false
+end
+
 --- Per-tick: enable once per course, after the settle gate, if configured on.
 function LightRays.Tick()
     if not initialized or not enabled then return end
 
+    -- Actors missing = a blip or a real exit: no re-arm here (a photomode
+    -- open used to re-run the bake); OnCourseUnload does it
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then
-        settleTicks = 0
-        appliedThisCourse = false
-        return
-    end
+    if not actors or not actors.IsOnCourse() then return end
 
     settleTicks = settleTicks + 1
     if not appliedThisCourse and settleTicks >= SETTLE_TICKS then
@@ -199,10 +201,10 @@ function LightRays.Tick()
     end
 end
 
---- Weather plausibility: weather.Apply reports every preset change here.
---- On a state change the same GT apply path re-runs (no extra settle: any
---- mid-course weather change means the course settled long ago), so a
---- turn to Overcast kills the rays and a clearing sky restores them.
+--- Weather plausibility: weather.Apply reports every preset change here. On a
+--- state change the same GT apply path re-runs without a settle (a mid-course
+--- weather change means the course settled long ago), so a turn to Overcast
+--- kills the rays and a clearing sky restores them.
 function LightRays.OnWeatherChange(presetName)
     if not initialized then return end
     local blocked = DISABLED_PRESETS[presetName] == true
@@ -213,17 +215,6 @@ function LightRays.OnWeatherChange(presetName)
     if appliedThisCourse and enabled then
         apply()
     end
-end
-
-function LightRays.GetStatus()
-    return {
-        initialized = initialized,
-        enabled = enabled,
-        applied = applied,
-        appliedThisCourse = appliedThisCourse,
-        intensity = intensity,
-        individual = individual,
-    }
 end
 
 return LightRays

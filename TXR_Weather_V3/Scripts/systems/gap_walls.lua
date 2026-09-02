@@ -1,29 +1,28 @@
 -- TXR Weather Mod v3.0
 -- systems/gap_walls.lua
--- Shadow-blocker slabs: the SHIPPING half of the light-leak fix.
--- Extracted from tunnels.lua 2026-08-12; the authoring half (the live
--- editor) was split out to systems/slab_editor.lua 2026-08-14, which
--- release builds simply OMIT: no file, no keys, no dead config.
+-- Shadow-blocker slabs: the shipping half of the light-leak fix.
+-- Extracted from tunnels.lua 2026-08-12; the authoring half lives in
+-- systems/slab_editor.lua (split 2026-08-14), which release builds omit:
+-- no file, no keys, no dead config.
 --
--- WHY THIS EXISTS: the map's covered galleries leak low sun through
--- geometry SEAMS (gaps with no faces, which no flag or material can
--- close: proven at the ginza gallery over three field rounds). The fix
--- is invisible shadow-only geometry standing on the seam line.
+-- Why: the map's covered galleries leak low sun through geometry seams
+-- (gaps with no faces, which no flag or material can close: proven at
+-- the ginza gallery over three field rounds). Invisible shadow-only
+-- geometry on the seam line is the fix.
 --
--- THE MACHINERY: hidden StaticMeshActors built from the engine cube
--- (proven cooked: the vehicle hitboxes use it), CastShadow +
--- bCastHiddenShadow so they write shadow depth without rendering,
--- collision off so nothing can ever hit them (except geo.solid props,
--- which keep collision and render: the jump ramp, cloned ground).
--- Movable mobility: VSM re-renders their shadow every frame, which is
--- what makes live editing possible.
+-- Machinery: hidden StaticMeshActors built from the engine cube (cooked:
+-- the vehicle hitboxes use it), CastShadow + bCastHiddenShadow so they
+-- write shadow depth without rendering, collision off so nothing can hit
+-- them (geo.solid props keep collision and render: the jump ramp, cloned
+-- ground). Movable mobility: VSM re-renders their shadow every frame,
+-- which is what makes live editing possible.
 --
--- Config.GapWalls.Slabs is the authoritative site list; the editor
+-- Site list: data/gap_slabs.lua plus Config.GapWalls.Slabs; the editor
 -- prints paste-ready rows for it (Logs/slab_rows.txt).
 --
--- COUPLING: one read-only external, Tunnels.GetCarPos() (the
--- containment poll's cached car position) for the proximity gate.
--- The editor consumes SpawnSlabGT/GetSlabs/DefaultVisible from here.
+-- Coupling: Tunnels.GetCarPos() (read-only, the containment poll's cached
+-- car position) for the proximity gate. The editor consumes
+-- SpawnSlabGT/GetSlabs/DefaultVisible from here.
 
 local GapWalls = {}
 
@@ -69,8 +68,8 @@ end
 -- ============== CONFIG-DERIVED (filled in Init, with safe fallbacks) ==============
 local enabled = false          -- Config.GapWalls.Enabled
 local GAP_VISIBLE = false      -- Config.GapWalls.Visible (debug: render
-                               -- the slabs so placement can be checked
-                               -- by eye at ANY sun state)
+                               -- the slabs to check placement by eye at
+                               -- any sun state)
 local GAP_MESH = "/Engine/BasicShapes/Cube.Cube"
 -- cm, world axes; scale in meters (cube = 1 m).
 local GAP_SLABS = {}
@@ -102,7 +101,7 @@ local gapActors = {}
 -- Chain generation: GT.After continuations survive world swaps (gt.lua has
 -- no unload purge), so each chunk closure carries the generation it was
 -- armed under and aborts if a course load/unload bumped it since. Without
--- this, a stale continuation re-entered the NEXT world gate-bypassed and
+-- this a stale continuation re-entered the next world past the gate and
 -- could interleave with the tick's fresh chain (double spawn bursts).
 local gapChainGen = 0
 local gapChainArmedAt = 0.0   -- os.clock at arm, for the wedge self-heal
@@ -121,7 +120,7 @@ end
 
 -- ============== INTERNAL: spawning (game thread) ==============
 
---- FRotator (degrees) -> FQuat table, UE's own conversion formula.
+--- FRotator (degrees) to FQuat table, UE's own conversion formula.
 --- Built in Lua so the deferred spawn's FTransform never touches the
 --- rotator marshal (which drops Pitch and mis-axes Roll on this stack).
 local function rotatorToQuat(pitchDeg, yawDeg, rollDeg)
@@ -137,15 +136,15 @@ local function rotatorToQuat(pitchDeg, yawDeg, rollDeg)
     }
 end
 
---- Deferred REFLECTED spawn (RE-UE4SS #527): world:SpawnActor is
---- UE4SS's own re-implementation of engine spawn internals and is
---- reported cross-game to corrupt state "after 3-10 spawns";
---- GameplayStatics' deferred pair spawns through the game's OWN
---- reflection instead, and its FTransform carries the full QUATERNION
---- (pitch AND roll land correctly, no rotator marshal involved).
+--- Deferred reflected spawn (RE-UE4SS #527): world:SpawnActor is UE4SS's
+--- own re-implementation of engine spawn internals, reported cross-game
+--- to corrupt state "after 3-10 spawns". GameplayStatics' deferred pair
+--- spawns through the game's own reflection, and its FTransform carries
+--- the full quaternion (pitch and roll land correctly, no rotator marshal).
 local function spawnDeferredGT(world, cls, geo)
     local a = nil
     local why = nil
+    local begun = nil   -- the actor Begin returned, for cleanup if Finish throws
     local ok, err = pcall(function()
         local UEH = getUEHelpers()
         local gps = UEH and UEH.GetGameplayStatics and UEH.GetGameplayStatics()
@@ -160,10 +159,9 @@ local function spawnDeferredGT(world, cls, geo)
             Scale3D = { X = 1.0, Y = 1.0, Z = 1.0 },
         }
         -- 1 = ESpawnActorCollisionHandlingMethod::AlwaysSpawn; trailing
-        -- 1 = ESpawnActorScaleMethod::MultiplyWithRoot (the UE5.1+ 6th
-        -- param this call never passed - prime suspect for the fallback;
-        -- harmless either way: Scale3D is 1,1,1 and the real scale is
-        -- applied via SetActorScale3D afterwards).
+        -- 1 = ESpawnActorScaleMethod::MultiplyWithRoot, the UE5.1+ scale
+        -- method both halves of the pair take (Scale3D is 1,1,1 here; the
+        -- real scale comes from SetActorScale3D afterwards).
         local actor = gps:BeginDeferredActorSpawnFromClass(
             world, cls, tf, 1, nil, 1)
         if actor == nil then why = "Begin returned nil"; return end
@@ -171,10 +169,21 @@ local function spawnDeferredGT(world, cls, geo)
             why = "Begin returned invalid " .. type(actor)
             return
         end
-        gps:FinishSpawningActor(actor, tf)
+        begun = actor
+        -- Finish takes the scale method too. The two-argument call was
+        -- refused by UE4SS ("expected 3 parameters, received 2") on every
+        -- course entry through 4.0.0, so this path never completed and
+        -- each slab fell back to the pseudo spawn below.
+        gps:FinishSpawningActor(actor, tf, 1)
         a = actor
     end)
     if not ok then why = tostring(err) end
+    if begun and not a then
+        -- Begin succeeded and Finish threw: the half-built actor is already
+        -- in the level, so destroy it before the fallback spawns the slab
+        -- a second time.
+        pcall(function() begun:K2_DestroyActor() end)
+    end
     if (not a) and (not deferFailLogged) then
         deferFailLogged = true
         Log.Warn(MODULE, "Deferred spawn fell back", { why = why or "unknown" })
@@ -182,16 +191,15 @@ local function spawnDeferredGT(world, cls, geo)
     return a
 end
 
---- Spawn ONE slab from a geo table. Returns the actor or nil.
+--- Spawn one slab from a geo table. Returns the actor or nil.
 local function spawnOneSlabGT(world, cls, mesh, geo, visible)
     local a = spawnDeferredGT(world, cls, geo)
     local deferred = a ~= nil
     if not a then
         pcall(function()
-            -- Pseudo-path fallback. Roll is NOT in the spawn rotator:
-            -- it lands on the wrong axis there (field 2026-08-24:
-            -- pitch and roll moved the same); it goes in as a LOCAL
-            -- delta below instead.
+            -- Pseudo-path fallback. Roll stays out of the spawn rotator:
+            -- it lands on the wrong axis there (field 2026-08-24: pitch
+            -- and roll moved the same) and goes in as a local delta below.
             a = world:SpawnActor(cls,
                 { X = geo.cx, Y = geo.cy, Z = geo.cz },
                 { Pitch = geo.pitch or 0.0, Yaw = geo.yaw, Roll = 0.0 })
@@ -229,12 +237,11 @@ local function spawnOneSlabGT(world, cls, mesh, geo, visible)
         pcall(function() comp:SetCastShadow(false) end)
         pcall(function() comp:SetCastShadow(true) end)
     end
-    -- PSEUDO PATH ONLY: roll as a LOCAL rotation delta (after mobility
-    -- is Movable): a local X-axis roll composes onto yaw+pitch exactly
-    -- as FRotator's Yaw*Pitch*Roll does, and the K2 rotator marshal's
-    -- pitch-drop cannot touch a pitch-0 delta. The deferred path
-    -- already carries roll inside its quaternion (adding it again
-    -- would double it).
+    -- Pseudo path only: roll as a local rotation delta (after mobility is
+    -- Movable). A local X-axis roll composes onto yaw+pitch exactly as
+    -- FRotator's Yaw*Pitch*Roll does, and the K2 rotator marshal's
+    -- pitch-drop cannot touch a pitch-0 delta. The deferred path already
+    -- carries roll in its quaternion (adding it again would double it).
     if not deferred and geo.roll and geo.roll ~= 0.0 then
         pcall(function() a:K2_AddActorLocalRotation(
             { Pitch = 0.0, Yaw = 0.0, Roll = geo.roll },
@@ -244,13 +251,12 @@ local function spawnOneSlabGT(world, cls, mesh, geo, visible)
 end
 
 --- GT body: resolve the cube mesh and spawn the configured slabs in
---- CHUNKS of GAP_CHUNK per GT window, the chain continuing via
---- GT.After. Mesh/class/world are re-resolved EVERY chunk (no refs
---- carried across the gaps) and the teardown gate is re-checked at
---- run time like every GT closure; any bail-out clears the chain flag
---- so the 5s tick can re-arm. `gen` is the chain generation captured at
---- arm time: a stale continuation (world changed since) aborts silently
---- without touching the new world's state.
+--- chunks of GAP_CHUNK per GT window, the chain continuing via GT.After.
+--- Mesh/class/world are re-resolved every chunk (no refs carried across
+--- the gaps) and the teardown gate is re-checked at run time; any
+--- bail-out clears the chain flag so the 5s tick can re-arm. gen is the
+--- chain generation captured at arm time: a stale continuation (world
+--- changed since) aborts without touching the new world's state.
 local function spawnGapWallsGT(gen)
     if gen ~= gapChainGen then return end
     if gapSpawned then gapChainActive = false; return end
@@ -264,8 +270,8 @@ local function spawnGapWallsGT(gen)
         local m = StaticFindObject(GAP_MESH)
         if m and m.IsValid and m:IsValid() then mesh = m end
     end)
-    -- First attempt always logs (two silent-failure rounds were enough):
-    -- one line tells us the gate fired AND whether the mesh resolves.
+    -- The first attempt always logs (two silent-failure rounds were
+    -- enough): one line says the gate fired and whether the mesh resolves.
     if gapSpawnCursor == 0
         and (gapTries <= 1 or (not mesh and gapTries >= GAP_MAX_TRIES - 1)) then
         Log.Info(MODULE, "Gap walls attempt", {
@@ -367,9 +373,8 @@ function GapWalls.Init()
     end
 
     -- Site list: data/gap_slabs.lua is the authored campaign home
-    -- (config.lua is user knobs and gets replaced on update; the
-    -- campaign will be LARGE). Config.GapWalls.Slabs appends on top
-    -- as a user/experiment extension hook.
+    -- (config.lua is user knobs, replaced on update, and the campaign is
+    -- large); Config.GapWalls.Slabs appends on top as an extension hook.
     pcall(function()
         local d = require("data.gap_slabs")
         if type(d) == "table" then GAP_SLABS = d end
@@ -393,14 +398,21 @@ function GapWalls.Init()
     return true
 end
 
+--- Real map teardown (main's LoadMapPreHook): the slabs die with the
+--- world, so the per-world state resets here and only here.
+function GapWalls.OnMapTeardown()
+    resetWorldState()
+end
+
 function GapWalls.OnCourseLoad()
-    resetWorldState()   -- spawned slabs died with the old world
+    -- A course re-entry inside the same world (post-race sky respawn) keeps
+    -- its live slabs: re-spawning them stacked a second set per cascade
+    if not gapSpawned then resetWorldState() end
     armed = true
 end
 
 function GapWalls.OnCourseUnload()
     armed = false
-    resetWorldState()
 end
 
 --- Per-tick entry (8 Hz from main); self-paces internally.
@@ -438,22 +450,5 @@ end
 function GapWalls.DefaultVisible()
     return GAP_VISIBLE
 end
-
-function GapWalls.GetStatus()
-    return {
-        initialized = isInitialized,
-        enabled = enabled,
-        armed = armed,
-        spawned = gapSpawned,
-        slabs = #gapActors,
-    }
-end
-
-function GapWalls.IsInitialized()
-    return isInitialized
-end
-
---- Alias so the module can be ticked as either Tick() or Update().
-GapWalls.Update = GapWalls.Tick
 
 return GapWalls

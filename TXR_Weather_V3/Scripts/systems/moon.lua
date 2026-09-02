@@ -1,15 +1,11 @@
 -- TXR Weather Mod v3.0
 -- systems/moon.lua
--- Moon appearance: realistic moon phases (instead of a flat full disc), optional
--- phase change over time, and a scale knob for a bigger, more cinematic moon. All
--- of this is sky-rendered on the moon (no MID, no weighted blendable), so it works
--- in TXR like the stars.
---
--- Applied via UDS's "Static Properties - Moon" on the game thread, deferred past
--- BeginPlay by a settle gate (the proven Stars / WindDebris / LightRays pattern).
---
--- Note: Moon Phase Changes Over Time and a fixed Moon Phase conflict (over-time
--- wins). Set PhaseOverTime=false if you want to pin a specific phase.
+-- Moon appearance: real phases instead of a flat full disc, optional phase
+-- change over time, and a scale knob. Sky-rendered on the moon (no MID, no
+-- weighted blendable), so it works in TXR like the stars. Applied via UDS's
+-- moon Static Properties bake on the game thread behind a settle gate (the
+-- Stars / WindDebris / LightRays pattern). Moon Phase Changes Over Time beats
+-- a fixed Moon Phase; set PhaseOverTime=false to pin a phase.
 
 local Moon = {}
 
@@ -108,16 +104,20 @@ function Moon.Init()
     return true
 end
 
+--- Course edge (main.lua's debounced lifecycle): re-arm the one-shot.
+function Moon.OnCourseUnload()
+    settleTicks = 0
+    appliedThisCourse = false
+end
+
 --- Per-tick: apply once per course, after the settle gate, if configured on.
 function Moon.Tick()
     if not initialized or not enabled then return end
 
+    -- Actors missing = a blip or a real exit: no re-arm here (a photomode
+    -- open used to re-run the bake); OnCourseUnload does it
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then
-        settleTicks = 0
-        appliedThisCourse = false
-        return
-    end
+    if not actors or not actors.IsOnCourse() then return end
 
     settleTicks = settleTicks + 1
     if not appliedThisCourse and settleTicks >= SETTLE_TICKS then
@@ -127,17 +127,6 @@ function Moon.Tick()
             Log.Info(MODULE, "Moon appearance applied")
         end
     end
-end
-
-function Moon.GetStatus()
-    return {
-        initialized = initialized,
-        enabled = enabled,
-        applied = applied,
-        renderPhases = renderPhases,
-        phaseOverTime = phaseOverTime,
-        scale = scale,
-    }
 end
 
 return Moon

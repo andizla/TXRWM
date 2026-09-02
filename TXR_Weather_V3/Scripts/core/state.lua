@@ -62,9 +62,8 @@ local state = {
         currentSpeed = 1.0,
     },
     
-    -- Module status flags. Pre-seeded with the modules that report status; any
-    -- other module that calls SetModuleStatus is added on first call (the setter is
-    -- self-registering), so this list does not have to be kept exhaustive.
+    -- Module status flags. SetModuleStatus is self-registering, so this
+    -- pre-seeded list need not be exhaustive.
     modules = {
         logging = false,
         utils = false,
@@ -135,12 +134,6 @@ function State.HasActors()
     return state.actors.uds ~= nil and state.actors.udw ~= nil
 end
 
---- Get last actor discovery timestamp
---- @return number
-function State.GetLastDiscoveryTime()
-    return state.actors.lastDiscovery
-end
-
 -- ============== WORLD CONTEXT ==============
 
 --- Set world context
@@ -151,12 +144,6 @@ function State.SetWorldContext(context, mapName)
     state.world.context = context
     state.world.mapName = mapName
     state.world.isOnCourse = (context == "course")
-end
-
---- Get previous world context (for transition detection)
---- @return string
-function State.GetLastWorldContext()
-    return state.world.lastContext
 end
 
 --- Get world context
@@ -171,19 +158,7 @@ function State.IsOnCourse()
     return state.world.isOnCourse
 end
 
---- Get map name
---- @return string|nil
-function State.GetMapName()
-    return state.world.mapName
-end
-
 -- ============== WEATHER STATE ==============
-
---- Set current weather preset (what we applied)
---- @param presetName string
-function State.SetCurrentPreset(presetName)
-    state.weather.currentPreset = presetName
-end
 
 --- Get current weather preset name
 --- @return string|nil
@@ -321,30 +296,6 @@ function State.CaptureForPA(tod, cloud, fog, speed, preset)
     state.pa.entryTime = os.time()
 end
 
---- Get captured PA state
---- @return table|nil Captured state or nil if none
-function State.GetCapturedPAState()
-    if not state.pa.capturedTOD then return nil end
-    return {
-        tod = state.pa.capturedTOD,
-        cloud = state.pa.capturedCloud,
-        fog = state.pa.capturedFog,
-        speed = state.pa.capturedSpeed,
-        preset = state.pa.capturedPreset,
-    }
-end
-
---- Clear captured PA state
-function State.ClearPAState()
-    state.pa.capturedTOD = nil
-    state.pa.capturedCloud = nil
-    state.pa.capturedFog = nil
-    state.pa.capturedSpeed = nil
-    state.pa.capturedPreset = nil
-    state.pa.frozen = false
-    state.pa.entryTime = nil
-end
-
 --- Set PA frozen flag
 --- @param frozen boolean
 function State.SetPAFrozen(frozen)
@@ -369,11 +320,10 @@ function State.IsPhotoSessionOpen()
     return state.photo.sessionOpen
 end
 
---- GT pump health (set by main's watchdog): false means UE4SS removed
---- its engine-tick Lua hook ("Ref was not function", upstream #346) and
---- EVERY ExecuteInGameThread marshal is silently inert until the game
---- restarts. Consumers use this to skip futile marshals and to surface
---- the condition (overlay banner, pulse gate).
+--- GT pump health (set by main's watchdog): false means UE4SS removed its
+--- engine-tick Lua hook ("Ref was not function", upstream #346) and every
+--- ExecuteInGameThread marshal is inert until the game restarts. Consumers
+--- skip futile marshals and surface the condition (overlay banner, pulse gate).
 function State.SetGTPumpAlive(alive)
     state.gtPumpAlive = alive
 end
@@ -382,30 +332,17 @@ function State.IsGTPumpAlive()
     return state.gtPumpAlive ~= false   -- default true before first beat
 end
 
---- Check if we have captured state from course
---- @return boolean
-function State.HasCapturedPAState()
-    return state.pa.capturedTOD ~= nil
-end
-
 -- ============== MODULE STATUS ==============
 
---- Set module enabled/initialized status. Self-registering: a module name not in
---- the pre-seeded list is added rather than silently dropped (the old guard meant
---- e.g. the exposure module's status never recorded, undercounting "modules loaded").
+--- Set module enabled/initialized status. Self-registering: a name not in the
+--- pre-seeded list is added, not dropped (a guard here once left the exposure
+--- module uncounted in "modules loaded").
 --- @param moduleName string
 --- @param enabled boolean
 function State.SetModuleStatus(moduleName, enabled)
     if type(moduleName) == "string" then
         state.modules[moduleName] = enabled
     end
-end
-
---- Get module status
---- @param moduleName string
---- @return boolean
-function State.GetModuleStatus(moduleName)
-    return state.modules[moduleName] or false
 end
 
 --- Get all module statuses
@@ -445,93 +382,7 @@ function State.SetLastError(error)
     state.session.lastError = error
 end
 
---- Get last error
---- @return string|nil
-function State.GetLastError()
-    return state.session.lastError
-end
-
---- Get session duration in seconds
---- @return number
-function State.GetSessionDuration()
-    return os.time() - state.session.startTime
-end
-
--- ============== FULL STATE OPERATIONS ==============
-
---- Reset all state (call on mod reload or map change)
---- @param preserveSession boolean If true, keep session info
-function State.Reset(preserveSession)
-    -- Clear actor references
-    State.ClearActors()
-    
-    -- Reset world context
-    state.world.context = "unknown"
-    state.world.lastContext = "unknown"
-    state.world.mapName = nil
-    state.world.isOnCourse = false
-    
-    -- Reset weather state
-    state.weather.currentPreset = nil
-    state.weather.targetPreset = nil
-    state.weather.isTransitioning = false
-    state.weather.transitionStart = 0
-    state.weather.transitionDuration = 0
-    
-    -- Reset time state
-    state.time.lastKnownTOD = nil
-    state.time.isPaused = false
-    state.time.currentSpeed = 1.0
-    
-    -- Clear PA state
-    State.ClearPAState()
-    
-    -- Keep module statuses (they represent loaded modules, not runtime state)
-    
-    -- Optionally reset session
-    if not preserveSession then
-        state.session.loopCount = 0
-        state.session.lastError = nil
-    end
-end
-
---- Export state for persistence
---- @return table Serializable state subset
-function State.Export()
-    return {
-        weather = {
-            currentPreset = state.weather.currentPreset,
-        },
-        time = {
-            lastKnownTOD = state.time.lastKnownTOD,
-            currentSpeed = state.time.currentSpeed,
-        },
-        modules = state.modules,
-    }
-end
-
---- Import state from persistence
---- @param data table Previously exported state
-function State.Import(data)
-    if not data then return end
-    
-    if data.weather then
-        state.weather.currentPreset = data.weather.currentPreset
-    end
-    
-    if data.time then
-        state.time.lastKnownTOD = data.time.lastKnownTOD
-        state.time.currentSpeed = data.time.currentSpeed or 1.0
-    end
-    
-    if data.modules then
-        for k, v in pairs(data.modules) do
-            if state.modules[k] ~= nil then
-                state.modules[k] = v
-            end
-        end
-    end
-end
+-- ============== DEBUG ==============
 
 --- Get a debug snapshot of current state
 --- @return table

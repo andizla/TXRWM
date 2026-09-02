@@ -1,15 +1,12 @@
 -- TXR Weather Mod v3.0
 -- systems/wind_debris.lua
--- Enables UDW's wind debris: small particles (leaves/dust) flying through the air,
--- scaled by the Wind Intensity of the current weather state (so it shows in windy /
--- stormy presets). It's a Niagara effect, the same render path as rain, so it works
--- in TXR (unlike the post-process effects).
---
--- Enabling at runtime needs UDW's "Static Properties - Wind Debris" to apply (the
--- static-properties footgun). We set the bool (+ optional spawn count) and call that
--- function on the GAME THREAD, deferred past BeginPlay by a settle gate (same safe
--- pattern as Stars / Moon). This is separate from the do-not-touch rain/dry
--- pipeline in weather.lua and does not interact with it.
+-- Enables UDW's wind debris: small particles (leaves/dust) scaled by the Wind
+-- Intensity of the weather state, so it shows in windy / stormy presets. A
+-- Niagara effect on the rain render path, so it works in TXR. Enabling at
+-- runtime needs UDW's wind-debris Static Properties bake (the static-properties
+-- footgun): set the bool (+ optional spawn count) and call it on the game
+-- thread behind a settle gate (the Stars / Moon pattern). Separate from the
+-- do-not-touch rain/dry pipeline in weather.lua.
 
 local WindDebris = {}
 
@@ -54,9 +51,9 @@ local function getUDW()
     return actors.GetUDW()
 end
 
---- Read back UDW state to classify a no-show. enable=false -> didn't stick;
---- particlesNil=true -> Niagara not created (needs a make step); wind low -> just
---- not windy enough (debris scales with Wind Intensity).
+--- Read back UDW state to classify a no-show: enable=false means the write did
+--- not stick, particlesNil=true means the Niagara was not created (needs a make
+--- step), low wind means it is just not windy enough.
 local function logReadback(tag)
     local udw = getUDW()
     if not udw then return end
@@ -123,16 +120,20 @@ function WindDebris.Init()
     return true
 end
 
+--- Course edge (main.lua's debounced lifecycle): re-arm the one-shot.
+function WindDebris.OnCourseUnload()
+    settleTicks = 0
+    appliedThisCourse = false
+end
+
 --- Per-tick: enable once per course, after the settle gate, if configured on.
 function WindDebris.Tick()
     if not initialized or not enabled then return end
 
+    -- Actors missing = a blip or a real exit: no re-arm here (a photomode
+    -- open used to re-run the bake); OnCourseUnload does it
     local actors = getActors()
-    if not actors or not actors.IsOnCourse() then
-        settleTicks = 0
-        appliedThisCourse = false
-        return
-    end
+    if not actors or not actors.IsOnCourse() then return end
 
     settleTicks = settleTicks + 1
     if not appliedThisCourse and settleTicks >= SETTLE_TICKS then
@@ -151,16 +152,6 @@ function WindDebris.Tick()
             logReadback("tick")
         end
     end
-end
-
-function WindDebris.GetStatus()
-    return {
-        initialized = initialized,
-        enabled = enabled,
-        applied = applied,
-        appliedThisCourse = appliedThisCourse,
-        spawnCount = spawnCount,
-    }
 end
 
 return WindDebris
